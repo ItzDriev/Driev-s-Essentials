@@ -1,7 +1,7 @@
 ## Interface: 11507
 ## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r
 ## Notes: Customizable settings collection for Classic Era.
-## Version: 1.0.4
+## Version: 1.0.5
 ## Author: Driev
 ## SavedVariables: DrievSettingsDB
 ## IconTexture: Interface\Icons\INV_Misc_Gear_01

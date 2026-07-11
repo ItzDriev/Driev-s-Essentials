@@ -2308,9 +2308,22 @@ local function buildTrinketsPanel(parent)
         local d = getTData(); if d then d.tinyTooltips = checked end
     end
 
+    local watchdogCB = createCheckbox(displayPanel,
+        "Auto-recover stuck trinket swaps (watchdog)", 340)
+    watchdogCB:SetPoint("TOPLEFT", tinyTipCB, "BOTTOMLEFT", -20, -6)
+    watchdogCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.swapWatchdog = checked end
+    end
+
+    local watchdogHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    watchdogHint:SetPoint("TOPLEFT", watchdogCB, "BOTTOMLEFT", 20, -8)
+    watchdogHint:SetText("Failsafe for frame-long combat drops that dont give enough time for the trinket swap to go out, auto re-queues the trinket you were trying to queue.")
+    watchdogHint:SetTextColor(unpack(C.textDim))
+    watchdogHint:SetWidth(340); watchdogHint:SetJustifyH("LEFT")
+
     -- ── Keybind display controls ───────────────────────────────────────────────
     local showBindCB = createCheckbox(displayPanel, "Show keybind text on trinket buttons", 340)
-    showBindCB:SetPoint("TOPLEFT", tinyTipCB, "BOTTOMLEFT", -20, -6)
+    showBindCB:SetPoint("TOPLEFT", watchdogHint, "BOTTOMLEFT", -20, -18)
     showBindCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.showBindings = checked end
         if addon.Trinkets then addon.Trinkets.updateHotkeys() end
@@ -2676,6 +2689,7 @@ local function buildTrinketsPanel(parent)
         notifyCB:SetChecked(d.notify or false)
         ttCB:SetChecked(d.showTooltips ~= false)
         tinyTipCB:SetChecked(d.tinyTooltips or false)
+        watchdogCB:SetChecked(d.swapWatchdog ~= false)
         showBindCB:SetChecked(d.showBindings ~= false)
         truncBindCB:SetChecked(d.truncateBindings ~= false)
         keyUpCB:SetChecked(d.triggerOnKeyUp or false)

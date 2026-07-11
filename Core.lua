@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.0.4"
+addon.version = "1.0.5"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras. WeakAuras.ScanEvents

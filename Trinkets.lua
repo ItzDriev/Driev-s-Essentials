@@ -538,6 +538,64 @@ local function updateQueueIndicators()
     end
 end
 
+-- If a swap's protected calls get silently blocked (e.g. combat resumes in
+-- the split-second around the call — ADDON_ACTION_BLOCKED doesn't raise a
+-- catchable Lua error), PLAYER_EQUIPMENT_CHANGED never fires for that slot,
+-- swapPending is never cleared by updateWornIcons(), and the icon/cooldown
+-- freeze forever with nothing else the addon can key off of. This watchdog
+-- notices: if the slot is still pending after the timeout, undo the grayout
+-- and re-queue the swap so it retries automatically instead of staying stuck.
+local SWAP_WATCHDOG_TIMEOUT = 1.0
+
+-- [which] = a counter bumped every time a swap is attempted on that slot.
+-- Each attempt's watchdog closure snapshots the counter as its "generation";
+-- if a newer attempt has since started on the same slot before the watchdog
+-- fires, the watchdog is stale and must no-op instead of acting on outdated
+-- bag/slot data — otherwise rapid repeat swaps on one slot can leave two
+-- watchdogs racing over a single shared swapPending flag, and the stale one
+-- can re-queue an old, no-longer-wanted trinket that nothing else can clear.
+local swapGen = {}
+
+local function attemptSwap(targetSlot, bag, slot, texture)
+    -- Guard against an unrelated item already sitting on the cursor (e.g.
+    -- from something outside this addon's control).
+    if CursorHasItem() then return end
+
+    local which = targetSlot - SLOT_TOP
+    -- Guard against overlapping swap attempts on the SAME slot (e.g. two
+    -- fast clicks on different trinkets for the same slot). The pickup pair
+    -- below is only treated as an atomic bag<->equipment swap by the client
+    -- once the prior attempt's swap has actually been confirmed — and that
+    -- confirmation (PLAYER_EQUIPMENT_CHANGED, tracked via swapPending) can
+    -- lag well behind the cursor itself going back to empty. Firing another
+    -- PickupContainerItem/PickupInventoryItem pair into that still-settling
+    -- transaction is what strands the second trinket on the cursor, so key
+    -- the guard off swapPending rather than CursorHasItem() alone.
+    if swapPending[which] then return end
+
+    grayOutDisplaySlot(targetSlot)
+    markSwappedOut(targetSlot)
+    menuSwapFreeze = true
+    C_Container.PickupContainerItem(bag, slot)
+    PickupInventoryItem(targetSlot)
+
+    if getData().swapWatchdog == false then return end
+
+    swapGen[which] = (swapGen[which] or 0) + 1
+    local myGen = swapGen[which]
+    C_Timer.After(SWAP_WATCHDOG_TIMEOUT, function()
+        if swapGen[which] ~= myGen then return end  -- superseded by a newer attempt
+        if not swapPending[which] then return end   -- swap resolved normally
+        swapPending[which] = nil
+        local btn = displayFrame and displayFrame["t"..which]
+        if btn and btn.icon then btn.icon:SetDesaturated(false) end
+        menuSwapFreeze = false
+        combatQueue[targetSlot] = combatQueue[targetSlot]
+            or { bag = bag, slot = slot, texture = texture }
+        updateQueueIndicators()
+    end)
+end
+
 -- Ported from TrinketMenu's TrinketMenu.ProcessAutoQueue, adapted to this
 -- addon's simpler per-slot { sort, stats } data (no Stop-marker/profile
 -- system). Two bugs this fixes vs. the original version:
@@ -616,11 +674,7 @@ local function processQueue(which)
                                         combatQueue[slot] = { bag = bag, slot = s, texture = tex }
                                         updateQueueIndicators()
                                     else
-                                        grayOutDisplaySlot(slot)
-                                        markSwappedOut(slot)
-                                        menuSwapFreeze = true
-                                        C_Container.PickupContainerItem(bag, s)
-                                        PickupInventoryItem(slot)
+                                        attemptSwap(slot, bag, s, tex)
                                     end
                                     return
                                 end
@@ -1081,15 +1135,11 @@ getOrCreateMenu = function()
                 return
             end
             if self._bag and self._slot then
-                grayOutDisplaySlot(targetSlot)
-                markSwappedOut(targetSlot)   -- keep the outgoing trinket's equip cd visible in the menu
-                menuSwapFreeze = true         -- don't repaint menu timers until the rebuild
-                C_Container.PickupContainerItem(self._bag, self._slot)
-                PickupInventoryItem(targetSlot)
                 -- The bag-menu rebuild is scheduled from updateWornIcons() once
                 -- PLAYER_EQUIPMENT_CHANGED actually lands the new trinket, not
                 -- from here — starting it at click time raced against network
                 -- latency and could rebuild the menu before the icon updated.
+                attemptSwap(targetSlot, self._bag, self._slot, self.icon:GetTexture())
             end
         end)
 
@@ -1524,15 +1574,22 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         combatQueue = {}
         updateQueueIndicators()
         C_Timer.After(0.1, function()
+            -- Combat can resume during this delay (e.g. a brief regen gap
+            -- mid-fight). PickupContainerItem/PickupInventoryItem are
+            -- protected and throw ADDON_ACTION_BLOCKED if called while back
+            -- in combat lockdown, so re-queue instead of firing blind.
+            if InCombatLockdown() then
+                for targetSlot, q in pairs(queued) do
+                    combatQueue[targetSlot] = combatQueue[targetSlot] or q
+                end
+                updateQueueIndicators()
+                return
+            end
             -- Equipping fires PLAYER_EQUIPMENT_CHANGED per slot, which handles
             -- the icon update and bag-menu rebuild scheduling itself.
             for targetSlot, q in pairs(queued) do
                 if q.bag and q.slot then
-                    grayOutDisplaySlot(targetSlot)
-                    markSwappedOut(targetSlot)
-                    menuSwapFreeze = true
-                    C_Container.PickupContainerItem(q.bag, q.slot)
-                    PickupInventoryItem(targetSlot)
+                    attemptSwap(targetSlot, q.bag, q.slot, q.texture)
                 end
             end
         end)
