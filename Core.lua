@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.0.5"
+addon.version = "1.0.7"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras. WeakAuras.ScanEvents
@@ -77,6 +77,11 @@ local defaults = {
             blockModCtrl     = false,
             blockModAlt      = false,
             blockModShift    = false,
+            swapWatchdog     = true,
+            softQueueMod     = "shift",
+            multiQueue       = false,
+            encounters       = {},   -- [encounterID] = { enabled, mainTop, mainBottom, softTop, softBottom }
+            debugEncounters  = false, -- gate for the Stockades (debug raid) test encounters
         },
     },
 }
@@ -289,6 +294,7 @@ function addon.RefreshAllModules()
         if addon.Trinkets.applyVisibility    then addon.Trinkets.applyVisibility() end
         if addon.Trinkets.applyClickTrigger   then addon.Trinkets.applyClickTrigger() end
         if addon.Trinkets.applyModifierBlockers then addon.Trinkets.applyModifierBlockers() end
+        if addon.Trinkets.applySoftQueueMod   then addon.Trinkets.applySoftQueueMod() end
         if addon.Trinkets.populateQueueSorts  then addon.Trinkets.populateQueueSorts() end
     end
     if addon.Particles and addon.Particles.refresh then addon.Particles.refresh() end

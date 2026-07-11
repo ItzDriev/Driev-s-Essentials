@@ -1351,6 +1351,36 @@ local function buildMenuOrderList(parent)
         updateThumb()
     end)
 
+    -- Click-drag on the thumb (previously only the mouse wheel scrolled).
+    local sbDragging, sbStartY, sbStartScroll = false, 0, 0
+    thumb:EnableMouse(true)
+    thumb:SetScript("OnMouseDown", function(_, button)
+        if button ~= "LeftButton" then return end
+        sbDragging    = true
+        sbStartY      = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+        sbStartScroll = sf:GetVerticalScroll()
+    end)
+    thumb:SetScript("OnMouseUp", function(_, button)
+        if button == "LeftButton" then sbDragging = false end
+    end)
+    thumb:SetScript("OnUpdate", function()
+        if not sbDragging then return end
+        local n = #rows
+        local visRows = math.floor(LIST_H / ROW_H)
+        local maxScroll = math.max(0, (n - visRows) * ROW_H)
+        local tH = track:GetHeight()
+        local thumbH = thumb:GetHeight()
+        if tH > thumbH and maxScroll > 0 then
+            local curY  = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+            local delta = sbStartY - curY
+            sf:SetVerticalScroll(math.max(0, math.min(
+                sbStartScroll + delta * maxScroll / (tH - thumbH), maxScroll)))
+            updateThumb()
+        end
+    end)
+    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
+    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
+
     local function makeBtn(label, y)
         local b = CreateFrame("Button", nil, container, "BackdropTemplate")
         b:SetSize(72, 22)
@@ -1610,6 +1640,37 @@ local function buildSortList(parent, which)
         updateThumb()
     end)
 
+    -- Click-drag on the thumb. Without these handlers the thumb was purely a
+    -- visual indicator (only the mouse wheel scrolled the list).
+    local sbDragging, sbStartY, sbStartScroll = false, 0, 0
+    thumb:EnableMouse(true)
+    thumb:SetScript("OnMouseDown", function(_, button)
+        if button ~= "LeftButton" then return end
+        sbDragging   = true
+        sbStartY     = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+        sbStartScroll = sf:GetVerticalScroll()
+    end)
+    thumb:SetScript("OnMouseUp", function(_, button)
+        if button == "LeftButton" then sbDragging = false end
+    end)
+    thumb:SetScript("OnUpdate", function()
+        if not sbDragging then return end
+        local n = #rows
+        local visRows = math.floor(LIST_H / ROW_H)
+        local maxScroll = math.max(0, (n - visRows) * ROW_H)
+        local tH = track:GetHeight()
+        local thumbH = thumb:GetHeight()
+        if tH > thumbH and maxScroll > 0 then
+            local curY  = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+            local delta = sbStartY - curY
+            sf:SetVerticalScroll(math.max(0, math.min(
+                sbStartScroll + delta * maxScroll / (tH - thumbH), maxScroll)))
+            updateThumb()
+        end
+    end)
+    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
+    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
+
     -- Move buttons (right side of list)
     local btnX = LIST_W + 6
     local function makeBtn(label, y)
@@ -1794,6 +1855,420 @@ local function buildSortList(parent, which)
 
     container:Refresh()
     return container
+end
+
+-- Ordered list of every trinket the player has been seen carrying/wearing
+-- (accumulated in d.menuOrder), resolved to { id, name, texture }. Feeds the
+-- per-encounter trinket pickers. Ids whose item data isn't cached yet are
+-- skipped — they reappear once GetItemInfo resolves them.
+local function registeredTrinkets(d)
+    local out = {}
+    for _, id in ipairs(d and d.menuOrder or {}) do
+        local name, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(id) or id)
+        if name then out[#out + 1] = { id = id, name = name, texture = tex } end
+    end
+    return out
+end
+
+-- One shared popup reused by EVERY trinket dropdown. Building a full backdropped
+-- menu + scrollbar per dropdown (there are ~190 across the Encounters/Debug grid)
+-- created enough frames to trip WoW's "script ran too long" watchdog during the
+-- settings build. Now each dropdown is just a light button that borrows this
+-- single picker on click. Created lazily on first open.
+local trinketPicker
+local function getTrinketPicker()
+    if trinketPicker then return trinketPicker end
+    local ROW, MAX_VIS, SBW = 22, 8, 10
+    local active                     -- ctx of the dropdown currently open (or nil)
+    local nOpts, scrollOff = 0, 0
+    local itemPool = {}
+
+    local catcher = CreateFrame("Button", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:SetFrameStrata("DIALOG")
+    catcher:Hide()
+
+    local menu = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    menu:SetFrameStrata("DIALOG")
+    menu:SetFrameLevel(catcher:GetFrameLevel() + 10)
+    applyBackdrop(menu, 1, C.panelBG, C.tabBorder)
+    menu:EnableMouseWheel(true)
+    menu:Hide()
+
+    local mtrack = CreateFrame("Frame", nil, menu, "BackdropTemplate")
+    mtrack:SetWidth(SBW)
+    mtrack:SetPoint("TOPRIGHT",    menu, "TOPRIGHT",    -1, -1)
+    mtrack:SetPoint("BOTTOMRIGHT", menu, "BOTTOMRIGHT", -1,  1)
+    applyBackdrop(mtrack, 1, C.panelDark, C.tabBorder)
+    local mthumb = CreateFrame("Button", nil, mtrack, "BackdropTemplate")
+    mthumb:SetWidth(SBW - 2)
+    applyBackdrop(mthumb, 1, C.tabIdle, C.tabBorder)
+    mthumb:SetPoint("TOPLEFT", mtrack, "TOPLEFT", 1, 0)
+    mtrack:Hide()
+
+    local function close() menu:Hide(); catcher:Hide(); active = nil end
+
+    local function layoutItems()
+        local visN   = math.min(nOpts, MAX_VIS)
+        local maxOff = math.max(0, nOpts - MAX_VIS)
+        scrollOff = math.max(0, math.min(scrollOff, maxOff))
+        local scrolled = nOpts > MAX_VIS
+        local rightPad = scrolled and (SBW + 1) or 1
+        for i, item in ipairs(itemPool) do
+            local pos = i - 1 - scrollOff   -- 0-based row within the visible window
+            if i <= nOpts and pos >= 0 and pos < MAX_VIS then
+                item:ClearAllPoints()
+                item:SetPoint("TOPLEFT", menu, "TOPLEFT", 1, -1 - pos * ROW)
+                item:SetPoint("RIGHT",   menu, "RIGHT", -rightPad, 0)
+                item:Show()
+            else
+                item:Hide()
+            end
+        end
+        menu:SetHeight(visN * ROW + 2)
+        if scrolled then
+            mtrack:Show()
+            local trackH = visN * ROW
+            local thumbH = math.max(16, trackH * MAX_VIS / nOpts)
+            local frac   = maxOff > 0 and (scrollOff / maxOff) or 0
+            mthumb:SetHeight(thumbH)
+            mthumb:ClearAllPoints()
+            mthumb:SetPoint("TOPLEFT", mtrack, "TOPLEFT", 1, -(frac * (trackH - thumbH)))
+        else
+            mtrack:Hide()
+        end
+    end
+
+    local function rebuildItems()
+        local opts = { { id = nil, name = "None" } }
+        for _, t in ipairs(active.list()) do opts[#opts + 1] = t end
+        nOpts, scrollOff = #opts, 0
+        while #itemPool < #opts do
+            local i = #itemPool + 1
+            local item = CreateFrame("Button", nil, menu, "BackdropTemplate")
+            item:SetHeight(ROW)
+            applyBackdrop(item, 1, C.panelDark, { 0, 0, 0, 0 })
+            local iico = item:CreateTexture(nil, "ARTWORK")
+            iico:SetSize(16, 16); iico:SetPoint("LEFT", 3, 0)
+            iico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            local il = item:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            il:SetPoint("LEFT", iico, "RIGHT", 3, 0); il:SetPoint("RIGHT", -3, 0)
+            il:SetJustifyH("LEFT"); il:SetTextColor(unpack(C.textWhite))
+            item.ico, item.lbl = iico, il
+            item:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
+            item:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.panelDark)) end)
+            itemPool[i] = item
+        end
+        for i, item in ipairs(itemPool) do
+            local o = opts[i]
+            if o then
+                if o.id then item.ico:SetTexture(o.texture or ""); item.ico:Show()
+                else item.ico:SetTexture(""); item.ico:Hide() end
+                item.lbl:SetText(o.name)
+                item:SetScript("OnClick", function()
+                    if active then active.setVal(o.id); active.refresh() end
+                    close()
+                end)
+            end
+        end
+        layoutItems()
+    end
+
+    menu:SetScript("OnMouseWheel", function(_, delta)
+        scrollOff = scrollOff - delta
+        layoutItems()
+    end)
+
+    local mDragging, mStartY, mStartOff = false, 0, 0
+    mthumb:SetScript("OnMouseDown", function(_, button)
+        if button ~= "LeftButton" then return end
+        mDragging = true
+        mStartY   = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+        mStartOff = scrollOff
+    end)
+    mthumb:SetScript("OnMouseUp", function(_, button)
+        if button == "LeftButton" then mDragging = false end
+    end)
+    mthumb:SetScript("OnUpdate", function()
+        if not mDragging then return end
+        local trackH = math.min(nOpts, MAX_VIS) * ROW
+        local thumbH = mthumb:GetHeight()
+        local maxOff = math.max(0, nOpts - MAX_VIS)
+        if trackH > thumbH and maxOff > 0 then
+            local curY  = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+            local delta = mStartY - curY
+            scrollOff = math.floor(mStartOff + delta * maxOff / (trackH - thumbH) + 0.5)
+            layoutItems()
+        end
+    end)
+    mthumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
+    mthumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
+    catcher:SetScript("OnClick", close)
+
+    trinketPicker = {
+        active = function() return active end,
+        close  = close,
+        openFor = function(ctx)
+            active = ctx
+            menu:ClearAllPoints()
+            menu:SetPoint("TOPLEFT",  ctx.dd, "BOTTOMLEFT",  0, -2)
+            menu:SetPoint("TOPRIGHT", ctx.dd, "BOTTOMRIGHT", 0, -2)
+            rebuildItems()
+            menu:Show(); catcher:Show()
+        end,
+    }
+    return trinketPicker
+end
+
+-- A dropdown whose options are the live registered-trinket list (rebuilt each
+-- time it opens, so newly discovered trinkets appear without a reload) plus a
+-- "None" entry. getVal/setVal read/write the stored item id (nil = None);
+-- listProvider() returns the current registeredTrinkets list. The popup itself
+-- is the single shared getTrinketPicker() instance — this is just the button.
+local function createTrinketDropdown(parent, width, getVal, setVal, listProvider)
+    local dd = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    dd:SetSize(width, 22)
+    applyBackdrop(dd, 1, C.panelDark, C.tabBorder)
+
+    local ico = dd:CreateTexture(nil, "ARTWORK")
+    ico:SetSize(16, 16)
+    ico:SetPoint("LEFT", 3, 0)
+    ico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    local text = dd:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    text:SetPoint("LEFT", ico, "RIGHT", 3, 0)
+    text:SetPoint("RIGHT", -14, 0)
+    text:SetJustifyH("LEFT")
+    text:SetTextColor(unpack(C.textWhite))
+
+    local arrow = dd:CreateTexture(nil, "OVERLAY")
+    arrow:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
+    arrow:SetSize(14, 14)
+    arrow:SetPoint("RIGHT", -2, -1)
+
+    local function refresh()
+        local id = getVal()
+        if id then
+            local name, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(id) or id)
+            ico:SetTexture(tex or ""); ico:Show()
+            text:SetText(name or ("[" .. id .. "]"))
+        else
+            ico:SetTexture(""); ico:Hide()
+            text:SetText("None")
+        end
+    end
+
+    local ctx = { dd = dd, setVal = setVal, refresh = refresh, list = listProvider }
+
+    dd:SetScript("OnClick", function()
+        local p = getTrinketPicker()
+        if p.active() == ctx then p.close() else p.openFor(ctx) end
+    end)
+    dd:SetScript("OnEnter", function() dd:SetBackdropBorderColor(unpack(C.red)) end)
+    dd:SetScript("OnLeave", function() dd:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    dd:SetScript("OnHide", function()
+        if trinketPicker and trinketPicker.active() == ctx then trinketPicker.close() end
+    end)
+
+    dd.Refresh = refresh
+    refresh()
+    return dd
+end
+
+-- "Specific Auto Queue" trinkets sub-tab: a nested tab bar (currently just
+-- "Encounters") over a scrollable 2×2 grid of the four main raids. Each boss is
+-- a checkbox + name plus a 2×2 grid of trinket pickers — rows are the Top/Bottom
+-- equipment slots, columns are the Main queue and the Soft queue — so ticking a
+-- boss can preset two full sets of trinkets to auto-queue when you engage it.
+local function buildSpecificAutoQueuePanel(parent, getTData)
+    local shell = CreateFrame("Frame", nil, parent)
+    shell:SetAllPoints()
+    shell:Hide()
+
+    local bar = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+    bar:SetHeight(24)
+    bar:SetPoint("TOPLEFT", 4, -4)
+    bar:SetPoint("TOPRIGHT", -4, -4)
+    applyBackdrop(bar, 1, C.panelDark)
+
+    local content = CreateFrame("Frame", nil, shell)
+    content:SetPoint("TOPLEFT", bar, "BOTTOMLEFT", 0, -2)
+    content:SetPoint("BOTTOMRIGHT", 0, 0)
+
+    local encShell, encInner = makeScrollPanel(content, 1)
+
+    local raidByKey = {}
+    for _, r in ipairs(addon.RAIDS or {}) do raidByKey[r.key] = r end
+
+    local refreshers = {}
+
+    local function entry(d, id, create)
+        if not d then return nil end
+        d.encounters = d.encounters or {}
+        local e = d.encounters[id]
+        if not e and create then e = {}; d.encounters[id] = e end
+        return e
+    end
+    local function prune(d, id)
+        local e = d.encounters and d.encounters[id]
+        if e and not e.enabled and not e.mainTop and not e.mainBottom
+           and not e.softTop and not e.softBottom then
+            d.encounters[id] = nil
+        end
+    end
+
+    -- Per-boss block is two dropdown rows (Top slot / Bottom slot) × two columns
+    -- (Main queue / Soft queue). cols() derives the four x-offsets from the block
+    -- origin so the column headers and the dropdowns can't drift apart.
+    local NAME_W, DD_W, LBL_W = 140, 96, 26
+    local SUBROW, BLOCK_H = 24, 56
+    local function cols(xOff)
+        local nameX = xOff + 22
+        local lblX  = nameX + NAME_W + 2
+        local mainX = lblX + LBL_W + 4
+        local softX = mainX + DD_W + 10
+        return nameX, lblX, mainX, softX
+    end
+
+    local function buildBossRow(inner, boss, xOff, y)
+        local nameX, lblX, mainX, softX = cols(xOff)
+
+        local cb = createCheckbox(inner, "", 18)
+        cb:SetPoint("TOPLEFT", inner, "TOPLEFT", xOff, -y)
+        cb.OnChange = function(_, checked)
+            local d = getTData(); if not d then return end
+            entry(d, boss.id, true).enabled = checked or nil
+            prune(d, boss.id)
+        end
+
+        local nm = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        nm:SetPoint("TOPLEFT", inner, "TOPLEFT", nameX, -(y + 2))
+        nm:SetWidth(NAME_W); nm:SetJustifyH("LEFT")
+        nm:SetText(boss.name); nm:SetTextColor(unpack(C.textWhite))
+
+        local function slotLabel(txt, py)
+            local l = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            l:SetPoint("TOPLEFT", inner, "TOPLEFT", lblX, -(py + 4))
+            l:SetText(txt); l:SetTextColor(unpack(C.textGrey))
+        end
+        slotLabel("TOP", y)
+        slotLabel("BOT", y + SUBROW)
+
+        local list = function() return registeredTrinkets(getTData()) end
+        local function fieldDD(field, px, py)
+            local dd = createTrinketDropdown(inner, DD_W,
+                function() local e = entry(getTData(), boss.id); return e and e[field] end,
+                function(id) local d = getTData(); if not d then return end
+                    entry(d, boss.id, true)[field] = id; prune(d, boss.id) end,
+                list)
+            dd:SetPoint("TOPLEFT", inner, "TOPLEFT", px, -py)
+            return dd
+        end
+
+        local mainTopDD = fieldDD("mainTop",    mainX, y)
+        local softTopDD = fieldDD("softTop",    softX, y)
+        local mainBotDD = fieldDD("mainBottom", mainX, y + SUBROW)
+        local softBotDD = fieldDD("softBottom", softX, y + SUBROW)
+
+        refreshers[#refreshers + 1] = function()
+            local e = entry(getTData(), boss.id)
+            cb:SetChecked(e and e.enabled or false)
+            mainTopDD.Refresh(); softTopDD.Refresh()
+            mainBotDD.Refresh(); softBotDD.Refresh()
+        end
+    end
+
+    local function buildRaidBlock(inner, raid, xOff, yTop)
+        if not raid then return yTop end
+        local _, _, mainX, softX = cols(xOff)
+
+        local title = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOPLEFT", inner, "TOPLEFT", xOff, -yTop)
+        title:SetText(raid.label)
+        title:SetTextColor(unpack(C.red))
+
+        local hMain = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        hMain:SetPoint("TOPLEFT", inner, "TOPLEFT", mainX, -(yTop + 24))
+        hMain:SetText("Main"); hMain:SetTextColor(unpack(C.red))
+        local hSoft = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        hSoft:SetPoint("TOPLEFT", inner, "TOPLEFT", softX, -(yTop + 24))
+        hSoft:SetText("Soft"); hSoft:SetTextColor(unpack(C.red))
+
+        local y = yTop + 44
+        for _, boss in ipairs(raid.bosses) do
+            buildBossRow(inner, boss, xOff, y)
+            y = y + BLOCK_H
+        end
+        return y
+    end
+
+    local hint = encInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hint:SetPoint("TOPLEFT", encInner, "TOPLEFT", 16, -8)
+    hint:SetWidth(780); hint:SetJustifyH("LEFT")
+    hint:SetText("On engaging a ticked boss (once you're in combat), the Main trinkets queue to swap in first; the Soft trinkets then swap in afterwards, once the Main trinket has been used and its effect has expired.")
+    hint:SetTextColor(unpack(C.textDim))
+
+    -- Two columns. 4-across won't fit: each boss block (checkbox + name + a 2×2
+    -- grid of ~96px dropdowns) is ~360px, and four (~1440px) blow past the
+    -- ~830px content width — so the four raids stack 2×2 with the second row
+    -- (BWL / MC) below the first (Naxx / AQ40), reached by scrolling.
+    local COL_L_X, COL_R_X = 16, 420
+    local leftY = buildRaidBlock(encInner, raidByKey["naxx"], COL_L_X, 40)
+    buildRaidBlock(encInner, raidByKey["bwl"], COL_L_X, leftY + 24)
+    local rightY = buildRaidBlock(encInner, raidByKey["aq40"], COL_R_X, 40)
+    buildRaidBlock(encInner, raidByKey["mc"], COL_R_X, rightY + 24)
+
+    -- ── Debug nested panel: The Stockades ────────────────────────────────────
+    -- Stockades is a real low-level 5-man whose ENCOUNTER_START ids are confirmed
+    -- (same list the Particles tab uses), so it's a convenient way to test the
+    -- auto-queue without a raid. Gated behind its own module-enable checkbox.
+    local debugShell, debugInner = makeScrollPanel(content, 1)
+
+    local dbgEnableCB = createCheckbox(debugInner,
+        "Enable Debug module (The Stockades encounters)", 380)
+    dbgEnableCB:SetPoint("TOPLEFT", debugInner, "TOPLEFT", 16, -10)
+    dbgEnableCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.debugEncounters = checked or nil end
+    end
+    refreshers[#refreshers + 1] = function()
+        local d = getTData()
+        dbgEnableCB:SetChecked(d and d.debugEncounters or false)
+    end
+
+    local dbgHint = debugInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    dbgHint:SetPoint("TOPLEFT", debugInner, "TOPLEFT", 16, -34)
+    dbgHint:SetWidth(780); dbgHint:SetJustifyH("LEFT")
+    dbgHint:SetText("For testing: configure trinkets for The Stockades bosses, then run the dungeon. These only auto-queue while the Debug module above is enabled.")
+    dbgHint:SetTextColor(unpack(C.textDim))
+
+    buildRaidBlock(debugInner, raidByKey["debug"], 16, 66)
+
+    -- Refresh on every open of the sub-tab. Hook `shell` (what selectSubTab
+    -- actually toggles), not the nested shells — those are shown at build time
+    -- and don't re-fire their own OnShow when the parent re-opens.
+    shell:HookScript("OnShow", function()
+        for _, fn in ipairs(refreshers) do fn() end
+    end)
+
+    -- Nested tabs: Encounters (the four main raids) and Debug (Stockades).
+    shell.nestedTabs   = {
+        encounters = createTab(bar, "Encounters", 110),
+        debug      = createTab(bar, "Debug", 80),
+    }
+    shell.nestedPanels = { encounters = encShell, debug = debugShell }
+    shell.nestedTabs.encounters:SetHeight(20)
+    shell.nestedTabs.encounters:SetPoint("LEFT", 4, 0)
+    shell.nestedTabs.encounters:SetScript("OnClick", function()
+        activateTab(shell.nestedTabs, shell.nestedPanels, "encounters")
+    end)
+    shell.nestedTabs.debug:SetHeight(20)
+    shell.nestedTabs.debug:SetPoint("LEFT", shell.nestedTabs.encounters, "RIGHT", 4, 0)
+    shell.nestedTabs.debug:SetScript("OnClick", function()
+        activateTab(shell.nestedTabs, shell.nestedPanels, "debug")
+    end)
+    activateTab(shell.nestedTabs, shell.nestedPanels, "encounters")
+
+    return shell
 end
 
 local function buildTrinketsPanel(parent)
@@ -2309,7 +2784,7 @@ local function buildTrinketsPanel(parent)
     end
 
     local watchdogCB = createCheckbox(displayPanel,
-        "Auto-recover stuck trinket swaps (watchdog)", 340)
+        "Auto re-queue failed trinket swaps (watchdog)", 340)
     watchdogCB:SetPoint("TOPLEFT", tinyTipCB, "BOTTOMLEFT", -20, -6)
     watchdogCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.swapWatchdog = checked end
@@ -2317,13 +2792,51 @@ local function buildTrinketsPanel(parent)
 
     local watchdogHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     watchdogHint:SetPoint("TOPLEFT", watchdogCB, "BOTTOMLEFT", 20, -8)
-    watchdogHint:SetText("Failsafe for frame-long combat drops that dont give enough time for the trinket swap to go out, auto re-queues the trinket you were trying to queue.")
+    watchdogHint:SetText("When a swap silently fails (e.g. a frame-long combat drop too short for the swap to go out), the stuck grayed-out trinket is always auto-recovered. This option additionally re-queues the failed swap to retry automatically.")
     watchdogHint:SetTextColor(unpack(C.textDim))
     watchdogHint:SetWidth(340); watchdogHint:SetJustifyH("LEFT")
 
+    -- ── Preemptive (soft) queue modifier ───────────────────────────────────────
+    local softQRow = CreateFrame("Frame", nil, displayPanel)
+    softQRow:SetSize(360, 22)
+    softQRow:SetPoint("TOPLEFT", watchdogHint, "BOTTOMLEFT", -20, -14)
+
+    local softQLbl = softQRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    softQLbl:SetPoint("LEFT", 0, 0)
+    softQLbl:SetText("Preemptive queue modifier:")
+    softQLbl:SetTextColor(unpack(C.textGrey))
+
+    local softQDD = createDropdown(softQRow, 90,
+        { { value = "shift", label = "Shift" }, { value = "ctrl", label = "Ctrl" } },
+        function() local d = getTData(); return (d and d.softQueueMod) or "shift" end,
+        function(v) local d = getTData(); if d then d.softQueueMod = v end
+            if addon.Trinkets and addon.Trinkets.applySoftQueueMod then
+                addon.Trinkets.applySoftQueueMod()
+            end
+        end)
+    softQDD:SetPoint("LEFT", softQLbl, "RIGHT", 8, 0)
+
+    local softQHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    softQHint:SetPoint("TOPLEFT", softQRow, "BOTTOMLEFT", 0, -8)
+    softQHint:SetText("Hold this modifier and click a trinket in the bag menu to preemptively queue it — it swaps in only once your current trinket has been used and its effect has run out. Shown as a gold-bordered icon in the bottom-right corner.")
+    softQHint:SetTextColor(unpack(C.textDim))
+    softQHint:SetWidth(340); softQHint:SetJustifyH("LEFT")
+
+    local multiQCB = createCheckbox(displayPanel, "Chain two trinkets per slot in combat", 340)
+    multiQCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -12)
+    multiQCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.multiQueue = checked end
+    end
+
+    local multiQHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    multiQHint:SetPoint("TOPLEFT", multiQCB, "BOTTOMLEFT", 20, -8)
+    multiQHint:SetText("When on, clicking a second trinket in combat (while one is already queued) chains it to swap in after the first — instead of replacing it. First shows top-left, second bottom-right.")
+    multiQHint:SetTextColor(unpack(C.textDim))
+    multiQHint:SetWidth(340); multiQHint:SetJustifyH("LEFT")
+
     -- ── Keybind display controls ───────────────────────────────────────────────
     local showBindCB = createCheckbox(displayPanel, "Show keybind text on trinket buttons", 340)
-    showBindCB:SetPoint("TOPLEFT", watchdogHint, "BOTTOMLEFT", -20, -18)
+    showBindCB:SetPoint("TOPLEFT", multiQHint, "BOTTOMLEFT", -20, -14)
     showBindCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.showBindings = checked end
         if addon.Trinkets then addon.Trinkets.updateHotkeys() end
@@ -2690,6 +3203,8 @@ local function buildTrinketsPanel(parent)
         ttCB:SetChecked(d.showTooltips ~= false)
         tinyTipCB:SetChecked(d.tinyTooltips or false)
         watchdogCB:SetChecked(d.swapWatchdog ~= false)
+        softQDD.Refresh()
+        multiQCB:SetChecked(d.multiQueue or false)
         showBindCB:SetChecked(d.showBindings ~= false)
         truncBindCB:SetChecked(d.truncateBindings ~= false)
         keyUpCB:SetChecked(d.triggerOnKeyUp or false)
@@ -2709,16 +3224,50 @@ local function buildTrinketsPanel(parent)
     end
     displayShell:SetScript("OnShow", refreshDisplay)
 
-    -- ── Queue sub-panels ──────────────────────────────────────────────────────
-    local topQueuePanel, topQueueInner = makeScrollPanel(subContent)
+    -- ── Auto Queue sub-tab (nested Top Slot / Bottom Slot) ─────────────────────
+    local autoQueueShell = CreateFrame("Frame", nil, subContent)
+    autoQueueShell:SetAllPoints()
+    autoQueueShell:Hide()
+
+    local aqBar = CreateFrame("Frame", nil, autoQueueShell, "BackdropTemplate")
+    aqBar:SetHeight(24)
+    aqBar:SetPoint("TOPLEFT", 4, -4)
+    aqBar:SetPoint("TOPRIGHT", -4, -4)
+    applyBackdrop(aqBar, 1, C.panelDark)
+
+    local aqContent = CreateFrame("Frame", nil, autoQueueShell)
+    aqContent:SetPoint("TOPLEFT", aqBar, "BOTTOMLEFT", 0, -2)
+    aqContent:SetPoint("BOTTOMRIGHT", 0, 0)
+
+    local topQueuePanel, topQueueInner = makeScrollPanel(aqContent)
     local topList = buildSortList(topQueueInner, 0)
     topList:SetPoint("TOPLEFT", 14, -14)
     topQueuePanel:SetScript("OnShow", function() topList:Refresh() end)
 
-    local botQueuePanel, botQueueInner = makeScrollPanel(subContent)
+    local botQueuePanel, botQueueInner = makeScrollPanel(aqContent)
     local botList = buildSortList(botQueueInner, 1)
     botList:SetPoint("TOPLEFT", 14, -14)
     botQueuePanel:SetScript("OnShow", function() botList:Refresh() end)
+
+    autoQueueShell.nestedTabs = {
+        top    = createTab(aqBar, "Top Slot", 90),
+        bottom = createTab(aqBar, "Bottom Slot", 100),
+    }
+    autoQueueShell.nestedPanels = { top = topQueuePanel, bottom = botQueuePanel }
+    autoQueueShell.nestedTabs.top:SetHeight(20)
+    autoQueueShell.nestedTabs.top:SetPoint("LEFT", 4, 0)
+    autoQueueShell.nestedTabs.top:SetScript("OnClick", function()
+        activateTab(autoQueueShell.nestedTabs, autoQueueShell.nestedPanels, "top")
+    end)
+    autoQueueShell.nestedTabs.bottom:SetHeight(20)
+    autoQueueShell.nestedTabs.bottom:SetPoint("LEFT", autoQueueShell.nestedTabs.top, "RIGHT", 4, 0)
+    autoQueueShell.nestedTabs.bottom:SetScript("OnClick", function()
+        activateTab(autoQueueShell.nestedTabs, autoQueueShell.nestedPanels, "bottom")
+    end)
+    activateTab(autoQueueShell.nestedTabs, autoQueueShell.nestedPanels, "top")
+    -- Nested panels only re-fire their own OnShow on a nested-tab switch, not
+    -- when the parent sub-tab re-opens — so refresh both lists on parent show.
+    autoQueueShell:HookScript("OnShow", function() topList:Refresh(); botList:Refresh() end)
 
     -- ── Menu Order sub-panel ──────────────────────────────────────────────────
     local menuOrderPanel, menuOrderInner = makeScrollPanel(subContent)
@@ -2743,15 +3292,15 @@ local function buildTrinketsPanel(parent)
 
     -- ── Sub-tabs ──────────────────────────────────────────────────────────────
     panel.subTabs["display"]   = createTab(subBar, "Display", 80)
-    panel.subTabs["top"]       = createTab(subBar, "Top Slot", 90)
-    panel.subTabs["bottom"]    = createTab(subBar, "Bottom Slot", 100)
     panel.subTabs["order"]     = createTab(subBar, "Menu Order", 100)
+    panel.subTabs["specific"]  = createTab(subBar, "Specific Auto Queue (beta)", 205)
+    panel.subTabs["autoqueue"] = createTab(subBar, "Auto Queue", 100)
     panel.subPanels["display"] = displayShell
-    panel.subPanels["top"]     = topQueuePanel
-    panel.subPanels["bottom"]  = botQueuePanel
     panel.subPanels["order"]   = menuOrderPanel
+    panel.subPanels["specific"] = buildSpecificAutoQueuePanel(subContent, getTData)
+    panel.subPanels["autoqueue"] = autoQueueShell
 
-    -- Tab order: Display, Menu Order, Top Slot, Bottom Slot
+    -- Tab order: Display, Menu Order, Specific Auto Queue, Auto Queue
     panel.subTabs["display"]:SetHeight(22)
     panel.subTabs["display"]:SetPoint("LEFT", 4, 0)
     panel.subTabs["display"]:SetScript("OnClick", function() selectSubTab(panel, "display") end)
@@ -2760,13 +3309,13 @@ local function buildTrinketsPanel(parent)
     panel.subTabs["order"]:SetPoint("LEFT", panel.subTabs["display"], "RIGHT", 4, 0)
     panel.subTabs["order"]:SetScript("OnClick", function() selectSubTab(panel, "order") end)
 
-    panel.subTabs["top"]:SetHeight(22)
-    panel.subTabs["top"]:SetPoint("LEFT", panel.subTabs["order"], "RIGHT", 4, 0)
-    panel.subTabs["top"]:SetScript("OnClick", function() selectSubTab(panel, "top") end)
+    panel.subTabs["specific"]:SetHeight(22)
+    panel.subTabs["specific"]:SetPoint("LEFT", panel.subTabs["order"], "RIGHT", 4, 0)
+    panel.subTabs["specific"]:SetScript("OnClick", function() selectSubTab(panel, "specific") end)
 
-    panel.subTabs["bottom"]:SetHeight(22)
-    panel.subTabs["bottom"]:SetPoint("LEFT", panel.subTabs["top"], "RIGHT", 4, 0)
-    panel.subTabs["bottom"]:SetScript("OnClick", function() selectSubTab(panel, "bottom") end)
+    panel.subTabs["autoqueue"]:SetHeight(22)
+    panel.subTabs["autoqueue"]:SetPoint("LEFT", panel.subTabs["specific"], "RIGHT", 4, 0)
+    panel.subTabs["autoqueue"]:SetScript("OnClick", function() selectSubTab(panel, "autoqueue") end)
 
     selectSubTab(panel, "display")
     return panel

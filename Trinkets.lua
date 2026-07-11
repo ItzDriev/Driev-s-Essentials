@@ -71,6 +71,18 @@ local function getData()
     end
     if not d.menuOrder then d.menuOrder = {} end
     if not d.hidden then d.hidden = {} end   -- [itemID] = true → hidden from the bag menu
+    -- [encounterID] = { enabled, mainTop, mainBottom, softTop, softBottom } —
+    -- per-boss trinkets auto-queued once you're in combat on that encounter.
+    if not d.encounters then d.encounters = {} end
+    -- One-time migration of the pre-2-set beta layout (top/bottom → main slots).
+    -- Flag lives in the profile so each profile migrates once, independently.
+    if not d.encMigrated then
+        for _, e in pairs(d.encounters) do
+            if e.top ~= nil then e.mainTop = e.mainTop or e.top; e.top = nil end
+            if e.bottom ~= nil then e.mainBottom = e.mainBottom or e.bottom; e.bottom = nil end
+        end
+        d.encMigrated = true
+    end
     return d
 end
 
@@ -79,6 +91,13 @@ end
 local baggedTrinkets  = {}
 local numTrinkets     = 0
 local combatQueue     = {}   -- [targetSlot] = { bag, slot, texture }
+-- Preemptive ("soft") queue: [targetSlot] = { id, bag, slot, texture }. Unlike
+-- combatQueue (which fires the moment combat ends), a soft-queued trinket waits
+-- for a GAMEPLAY condition — the currently-equipped trinket must have been used
+-- and its on-use buff expired (see isSwapGateOpen/processSoftQueue) — so you can
+-- line up the next trinket without it swapping the active one out mid-effect.
+-- Runtime-only, same lifetime as combatQueue (not persisted across relog).
+local softQueue       = {}
 local pendingMenuShow = false  -- true when showMenu found 0 trinkets due to unloaded item data
 local itemInfoTimer   = nil    -- debounce timer for GET_ITEM_INFO_RECEIVED
 -- Whether hidden trinkets are currently revealed. Latched from the Alt state
@@ -498,13 +517,15 @@ end
 
 -- ── Combat queue indicators ──────────────────────────────────────────────────
 
+local IND_SIZE = 15   -- queue-indicator badge size (slightly smaller than the icon)
+
 local function getOrCreateQueueIndicator(which)
     if not displayFrame then return nil end
     local btn = displayFrame["t"..which]
     if not btn then return nil end
     if btn._queueInd then return btn._queueInd end
     local f = CreateFrame("Frame", nil, btn)
-    f:SetSize(18, 18)
+    f:SetSize(IND_SIZE, IND_SIZE)
     f:SetPoint("TOPLEFT", btn, "TOPLEFT", 1, -1)
     f:SetFrameStrata("HIGH")
     local ico = f:CreateTexture(nil, "ARTWORK")
@@ -516,15 +537,41 @@ local function getOrCreateQueueIndicator(which)
     return f
 end
 
+-- The preemptive/soft-queue badge sits in the opposite (bottom-right) corner so
+-- it's distinguishable at a glance from the combat/auto-queue badge (top-left),
+-- and carries a gold border to read as "waiting, not yet firing".
+local function getOrCreateSoftIndicator(which)
+    if not displayFrame then return nil end
+    local btn = displayFrame["t"..which]
+    if not btn then return nil end
+    if btn._softInd then return btn._softInd end
+    local f = CreateFrame("Frame", nil, btn, "BackdropTemplate")
+    f:SetSize(IND_SIZE, IND_SIZE)
+    f:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -1, 1)
+    f:SetFrameStrata("HIGH")
+    f:SetBackdrop({ edgeFile = WHITE, edgeSize = 1.5 })
+    f:SetBackdropBorderColor(1, 0.82, 0, 1)
+    local ico = f:CreateTexture(nil, "ARTWORK")
+    ico:SetPoint("TOPLEFT", f, "TOPLEFT", 1.5, -1.5)
+    ico:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -1.5, 1.5)
+    ico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    f.icon = ico
+    f:Hide()
+    btn._softInd = f
+    return f
+end
+
 -- Same inset used by TrinketMenu: while a swap is actually pending in combat
 -- it shows the incoming item's icon; otherwise, if this slot's auto queue is
 -- simply enabled, it shows TrinketMenu's own gear icon as an "armed" marker.
+-- The bottom-right badge separately shows any preemptive/soft-queued trinket.
 local function updateQueueIndicators()
     local d = getData()
     for which = 0, 1 do
+        local slot = SLOT_TOP + which
         local f = getOrCreateQueueIndicator(which)
         if f then
-            local q = combatQueue[SLOT_TOP + which]
+            local q = combatQueue[slot]
             if q then
                 f.icon:SetTexture(q.texture or "")
                 f:Show()
@@ -535,6 +582,16 @@ local function updateQueueIndicators()
                 f:Hide()
             end
         end
+        local sf = getOrCreateSoftIndicator(which)
+        if sf then
+            local sq = softQueue[slot]
+            if sq then
+                sf.icon:SetTexture(sq.texture or "")
+                sf:Show()
+            else
+                sf:Hide()
+            end
+        end
     end
 end
 
@@ -542,9 +599,12 @@ end
 -- the split-second around the call — ADDON_ACTION_BLOCKED doesn't raise a
 -- catchable Lua error), PLAYER_EQUIPMENT_CHANGED never fires for that slot,
 -- swapPending is never cleared by updateWornIcons(), and the icon/cooldown
--- freeze forever with nothing else the addon can key off of. This watchdog
--- notices: if the slot is still pending after the timeout, undo the grayout
--- and re-queue the swap so it retries automatically instead of staying stuck.
+-- freeze forever with nothing else the addon can key off of. After the timeout
+-- this recovers: un-gray the frozen icon and unfreeze the menu so the slot is
+-- usable again. Undoing that stuck state is UNCONDITIONAL — it's a pure bug fix
+-- with no downside. The user-facing "watchdog" toggle only governs the extra
+-- step of auto-RE-QUEUING the failed swap for retry (which can misfire on a
+-- slow-but-successful swap), so that part alone is gated behind the setting.
 local SWAP_WATCHDOG_TIMEOUT = 1.0
 
 -- [which] = a counter bumped every time a swap is attempted on that slot.
@@ -579,21 +639,50 @@ local function attemptSwap(targetSlot, bag, slot, texture)
     C_Container.PickupContainerItem(bag, slot)
     PickupInventoryItem(targetSlot)
 
-    if getData().swapWatchdog == false then return end
-
     swapGen[which] = (swapGen[which] or 0) + 1
     local myGen = swapGen[which]
     C_Timer.After(SWAP_WATCHDOG_TIMEOUT, function()
         if swapGen[which] ~= myGen then return end  -- superseded by a newer attempt
         if not swapPending[which] then return end   -- swap resolved normally
+
+        -- Always recover the stuck grayed/frozen state so the slot is usable.
         swapPending[which] = nil
         local btn = displayFrame and displayFrame["t"..which]
         if btn and btn.icon then btn.icon:SetDesaturated(false) end
         menuSwapFreeze = false
-        combatQueue[targetSlot] = combatQueue[targetSlot]
-            or { bag = bag, slot = slot, texture = texture }
+
+        -- Only auto-re-queue the failed swap when the watchdog is enabled.
+        if getData().swapWatchdog ~= false then
+            combatQueue[targetSlot] = combatQueue[targetSlot]
+                or { bag = bag, slot = slot, texture = texture }
+        end
         updateQueueIndicators()
     end)
+end
+
+-- Whether slot `which`'s currently-equipped trinket is clear to be swapped
+-- AWAY: true once it's been genuinely used since being equipped and its on-use
+-- buff (if any) has expired. A trinket with no on-use spell, or an empty slot,
+-- is always clear. Also (re)initialises the used-tracker when the equipped item
+-- changes, so this is safe to call as the single source of truth every tick.
+-- Shared by both the auto-queue (processQueue) and the preemptive/soft-queue
+-- (processSoftQueue) so the two obey the exact same "used + expired" rule.
+local function isSwapGateOpen(which)
+    local slot      = SLOT_TOP + which
+    local link      = GetInventoryItemLink("player", slot)
+    local currentID = link and link:match("item:(%d+)")
+
+    local tracker = queueUsedTracker[which]
+    if tracker.id ~= currentID then
+        tracker.id, tracker.used = currentID, false
+    end
+
+    if not currentID then return true end
+    -- Trinkets with no on-use spell (purely passive) have nothing to "use".
+    if GetItemSpell(tonumber(currentID) or currentID) == nil then return true end
+    if not tracker.used then return false end          -- never used yet
+    if itemBuffActive(currentID) then return false end  -- its on-use buff still running
+    return true
 end
 
 -- Ported from TrinketMenu's TrinketMenu.ProcessAutoQueue, adapted to this
@@ -624,6 +713,9 @@ local function processQueue(which)
     if not q or not q.enabled then return end
 
     local slot = SLOT_TOP + which
+    -- A manual preemptive queue on this slot takes precedence over the
+    -- automatic sort-list queue — don't fight the player's explicit choice.
+    if softQueue[slot] then return end
     if IsInventoryItemLocked(slot) then return end
     -- Don't fight the player: skip this tick if they're mid-drag, targeting a
     -- ground/unit-targeted spell, or casting/channelling — equipping now
@@ -634,25 +726,13 @@ local function processQueue(which)
     local link      = GetInventoryItemLink("player", slot)
     local currentID = link and link:match("item:(%d+)")
 
-    -- Track whether the equipped trinket has actually been USED since it was
-    -- equipped (see markTrinketUsed, hooked to UNIT_SPELLCAST_SUCCEEDED) —
-    -- reset that tracking whenever the equipped item itself changes.
-    local tracker = queueUsedTracker[which]
-    if tracker.id ~= currentID then
-        tracker.id, tracker.used = currentID, false
-    end
-
+    -- Pinned trinkets are never auto-swapped out.
     if currentID then
         local curStats = q.stats and q.stats[currentID]
-        if curStats and curStats.keep then return end   -- pinned: never auto-swap this one out
-        -- Trinkets with no on-use spell (purely passive queue members) have
-        -- nothing to "use", so the used-gate doesn't apply to them.
-        local hasUseSpell = GetItemSpell(tonumber(currentID) or currentID) ~= nil
-        if hasUseSpell then
-            if not tracker.used then return end          -- never used yet: don't swap it away
-            if itemBuffActive(currentID) then return end  -- its own on-use buff is still running
-        end
+        if curStats and curStats.keep then return end
     end
+    -- Gate: current trinket must have been used and its on-use buff expired.
+    if not isSwapGateOpen(which) then return end
 
     for i = 1, #q.sort do
         local id = q.sort[i]
@@ -685,6 +765,183 @@ local function processQueue(which)
             end
         end
     end
+
+-- Whether the player owns trinket `id` at all — worn in either trinket slot or
+-- sitting in bags. GetItemCount alone misses equipped copies.
+local function ownsTrinket(id)
+    if GetItemCount(tonumber(id) or id) > 0 then return true end
+    for which = 0, 1 do
+        local link = GetInventoryItemLink("player", SLOT_TOP + which)
+        if link and link:match("item:(%d+)") == id then return true end
+    end
+    return false
+end
+
+-- Fires a preemptively (soft) queued trinket. Bags are re-scanned live for the
+-- queued item ID (its bag/slot may have shifted since it was queued) rather than
+-- trusting the stored position. In combat it hands off to combatQueue (fires on
+-- the next combat end via attemptSwap), matching the auto-queue's own behaviour.
+local function processSoftQueue(which)
+    local slot = SLOT_TOP + which
+    local sq = softQueue[slot]
+    if not sq then return end
+
+    -- A first-stage swap is still pending for this slot (queued for combat end,
+    -- or its swap in flight). The soft-queued trinket is meant to follow THAT
+    -- one, so hold until it has actually landed — otherwise the gate below would
+    -- evaluate against the wrong (soon-to-be-replaced) equipped trinket and this
+    -- could fire early, clobbering the first-stage swap. Central to chain mode.
+    if combatQueue[slot] then return end
+    if swapPending[which] then return end
+
+    -- Dropped only if the trinket is genuinely gone (neither worn nor in bags).
+    -- A soft-queued trinket that's currently EQUIPPED is intentionally kept — it
+    -- may be displaced (by a main queue or a manual swap) and then re-equipped.
+    if not ownsTrinket(sq.id) then
+        softQueue[slot] = nil
+        updateQueueIndicators()
+        return
+    end
+
+    if IsInventoryItemLocked(slot) then return end
+    if CursorHasItem() or SpellIsTargeting() then return end
+    if CastingInfo() or ChannelInfo() then return end
+
+    -- Normally wait for the equipped trinket to have been used and its buff to
+    -- have expired. There's ONE exception — swap early — but only when ALL of:
+    --   * it was never used (so we're not throwing away a buff mid-duration),
+    --   * it's stuck on a real cooldown (> the ~30s equip lockout) so it can't
+    --     be used any time soon, and
+    --   * the soft trinket is itself ready to go.
+    -- This keeps the "don't stall behind a trinket whose long on-use cooldown
+    -- was already ticking when equipped" fix, while NOT firing when the trinket
+    -- was just popped (buff still running), nor when the soft trinket shares
+    -- that cooldown (e.g. a Diamond Flask-style shared trinket cooldown), where
+    -- swapping to it would gain nothing.
+    if not isSwapGateOpen(which) then
+        local curLink = GetInventoryItemLink("player", slot)
+        local curID   = curLink and curLink:match("item:(%d+)")
+        local neverUsed  = not queueUsedTracker[which].used
+        local mainStuck  = curID and neverUsed and not trinketNearReady(curID)
+        if not (mainStuck and trinketNearReady(sq.id)) then return end
+    end
+
+    for bag = 0, 4 do
+        for s = 1, (C_Container.GetContainerNumSlots(bag) or 0) do
+            local bl  = C_Container.GetContainerItemLink(bag, s)
+            local bid = bl and bl:match("item:(%d+)")
+            if bid == sq.id then
+                local info = C_Container.GetContainerItemInfo(bag, s)
+                if info and not info.isLocked then
+                    softQueue[slot] = nil
+                    if UnitAffectingCombat("player") then
+                        combatQueue[slot] = { bag = bag, slot = s, texture = sq.texture }
+                    else
+                        attemptSwap(slot, bag, s, sq.texture)
+                    end
+                    updateQueueIndicators()
+                    return
+                end
+            end
+        end
+    end
+
+    -- Gate is open (we'd swap now) but the trinket isn't in bags. If it's already
+    -- worn here, the soft queue is satisfied/redundant (e.g. the same trinket was
+    -- also main-queued) — clear it so its icon doesn't linger.
+    local curLink = GetInventoryItemLink("player", slot)
+    if curLink and curLink:match("item:(%d+)") == sq.id then
+        softQueue[slot] = nil
+        updateQueueIndicators()
+    end
+end
+
+-- Locate a trinket by item ID in the player's bags. Returns bag, slot (or nil).
+local function findBagTrinket(id)
+    for bag = 0, 4 do
+        for s = 1, (C_Container.GetContainerNumSlots(bag) or 0) do
+            local bl = C_Container.GetContainerItemLink(bag, s)
+            if bl and bl:match("item:(%d+)") == id then
+                return bag, s
+            end
+        end
+    end
+end
+
+-- Push a configured boss's chosen trinkets into the queues so the swaps happen
+-- the next time combat allows. Two presets per slot: the Main trinket goes to
+-- the combat queue (fires first), the Soft trinket to the soft queue (fires
+-- after the Main one has been used and its effect expired — same chaining as a
+-- manual soft queue). Main needs a bag copy and is skipped if already worn; the
+-- Soft trinket may be one you currently have EQUIPPED (a common case: engage
+-- with X/Y on, main-queue a/b, soft-queue X/Y back), so it's queued as long as
+-- you own it — processSoftQueue re-equips it from bags once it's displaced.
+local function queueEncounterTrinkets(enc)
+    if not enc then return end
+    local changed = false
+    for which = 0, 1 do
+        local slot      = SLOT_TOP + which
+        local link      = GetInventoryItemLink("player", slot)
+        local currentID = link and link:match("item:(%d+)")
+
+        -- Explicit if/else (not `a and b or c`) so a nil top field can't fall
+        -- through to the bottom field and queue a trinket into the wrong slot.
+        local mid, sid
+        if which == 0 then mid, sid = enc.mainTop, enc.softTop
+                      else mid, sid = enc.mainBottom, enc.softBottom end
+
+        if mid and currentID ~= mid then
+            local bag, s = findBagTrinket(mid)
+            if bag then
+                local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(mid) or mid)
+                combatQueue[slot] = { bag = bag, slot = s, texture = tex }
+                changed = true
+            end
+        end
+
+        -- Skip a Soft trinket identical to this slot's Main (it'd be redundant).
+        if sid and sid ~= mid and ownsTrinket(sid) then
+            local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(sid) or sid)
+            softQueue[slot] = { id = sid, texture = tex }
+            changed = true
+        end
+    end
+    if changed then updateQueueIndicators() end
+end
+
+-- Specific Auto Queue must only fire once you're BOTH inside a configured
+-- encounter AND actually in combat — never on ENCOUNTER_START alone. Some
+-- bosses don't put the raid in combat immediately, so queuing at encounter
+-- start could swap your equipped trinket out during that pre-combat window.
+-- Gating on real combat means the swap is only lined up once you're fighting.
+-- Called from both ENCOUNTER_START and PLAYER_REGEN_DISABLED (whichever makes
+-- both conditions true second); the per-encounter latch keeps it to one queue.
+local currentEncounterID = nil
+local encounterQueued    = false
+
+-- Encounter ids belonging to the "debug" raid (The Stockades). These only
+-- auto-queue when the Debug module is explicitly enabled, so they can't fire
+-- by accident just from running the dungeon.
+local debugEncounterIDs = {}
+for _, raid in ipairs(addon.RAIDS or {}) do
+    if raid.key == "debug" then
+        for _, boss in ipairs(raid.bosses) do
+            if boss.id then debugEncounterIDs[boss.id] = true end
+        end
+    end
+end
+
+local function maybeQueueEncounter()
+    if encounterQueued then return end
+    if not currentEncounterID then return end
+    if not UnitAffectingCombat("player") then return end
+    if debugEncounterIDs[currentEncounterID] and not getData().debugEncounters then return end
+    local enc = getData().encounters[currentEncounterID]
+    if enc and enc.enabled then
+        queueEncounterTrinkets(enc)
+        encounterQueued = true
+    end
+end
 
 -- ── Menu positioning ─────────────────────────────────────────────────────────
 
@@ -1125,21 +1382,63 @@ getOrCreateMenu = function()
                 return
             end
             local targetSlot = (btn == "RightButton") and SLOT_BOT or SLOT_TOP
+
+            -- Preemptive (soft) queue: hold the configured modifier and click to
+            -- line this trinket up WITHOUT swapping now — it fires later, once the
+            -- currently-equipped trinket has been used and its buff has expired
+            -- (see processSoftQueue). Clicking the same trinket again toggles it
+            -- off; clicking a different one replaces the pending entry.
+            local mod = getData().softQueueMod or "shift"
+            local modHeld = (mod == "shift" and IsShiftKeyDown())
+                         or (mod == "ctrl"  and IsControlKeyDown())
+            if modHeld and self._id and self._bag and self._slot then
+                if softQueue[targetSlot] and softQueue[targetSlot].id == self._id then
+                    softQueue[targetSlot] = nil
+                else
+                    softQueue[targetSlot] = {
+                        id      = self._id,
+                        bag     = self._bag,
+                        slot    = self._slot,
+                        texture = self.icon:GetTexture(),
+                    }
+                end
+                updateQueueIndicators()
+                return
+            end
+
             if UnitAffectingCombat("player") then
-                combatQueue[targetSlot] = {
-                    bag     = self._bag,
-                    slot    = self._slot,
-                    texture = self.icon:GetTexture(),
-                }
+                if getData().multiQueue and combatQueue[targetSlot] and self._id then
+                    -- Chain mode: a trinket is already lined up as the next swap,
+                    -- so queue this one to follow it — it swaps in only after the
+                    -- first has been equipped, used, and its effect has expired
+                    -- (see processSoftQueue's combatQueue guard). Lets you pre-set
+                    -- two trinkets at once mid-encounter instead of the second
+                    -- overwriting the first.
+                    softQueue[targetSlot] = {
+                        id      = self._id,
+                        bag     = self._bag,
+                        slot    = self._slot,
+                        texture = self.icon:GetTexture(),
+                    }
+                else
+                    softQueue[targetSlot] = nil   -- explicit action supersedes any pending soft queue
+                    combatQueue[targetSlot] = {
+                        bag     = self._bag,
+                        slot    = self._slot,
+                        texture = self.icon:GetTexture(),
+                    }
+                end
                 updateQueueIndicators()
                 return
             end
             if self._bag and self._slot then
+                softQueue[targetSlot] = nil   -- explicit action supersedes any pending soft queue
                 -- The bag-menu rebuild is scheduled from updateWornIcons() once
                 -- PLAYER_EQUIPMENT_CHANGED actually lands the new trinket, not
                 -- from here — starting it at click time raced against network
                 -- latency and could rebuild the menu before the icon updated.
                 attemptSwap(targetSlot, self._bag, self._slot, self.icon:GetTexture())
+                updateQueueIndicators()
             end
         end)
 
@@ -1161,8 +1460,37 @@ end
 
 -- ── Display frame ─────────────────────────────────────────────────────────────
 
+-- Suppress the secure "use item" action for the configured soft-queue modifier
+-- on the two worn buttons, so <modifier>+click soft-queues the equipped trinket
+-- (handled in the PreClick below) instead of firing its on-use. Secure
+-- SetAttribute is combat-protected, so this only applies out of combat; a change
+-- made during combat lands once combat ends.
+local function applySoftQueueMod()
+    if not displayFrame or InCombatLockdown() then return end
+    local mod = getData().softQueueMod or "shift"
+    for which = 0, 1 do
+        local btn = displayFrame["t"..which]
+        if btn then
+            for _, m in ipairs({ "shift", "ctrl", "alt" }) do
+                if m == mod then
+                    btn:SetAttribute(m .. "-type1", "macro")
+                    btn:SetAttribute(m .. "-macrotext1", "")
+                else
+                    btn:SetAttribute(m .. "-type1", nil)
+                    btn:SetAttribute(m .. "-macrotext1", nil)
+                end
+            end
+        end
+    end
+end
+
 local function getOrCreateDisplay()
     if displayFrame then return displayFrame end
+    -- The worn buttons use SecureActionButtonTemplate; creating a secure frame
+    -- (and the SetAttribute calls below) is blocked in combat. Bail so a login
+    -- or /reload mid-fight doesn't error — PLAYER_REGEN_ENABLED soft-loads it
+    -- once combat ends. Callers must tolerate a nil return.
+    if InCombatLockdown() then return nil end
 
     local f = CreateFrame("Frame", "DrievTrinketDisplay", UIParent, "BackdropTemplate")
     -- BTN_PAD pixels of invisible draggable area around the two buttons
@@ -1253,6 +1581,27 @@ local function getOrCreateDisplay()
             end)
         end)
 
+        -- <modifier>+click soft-queues the currently-worn trinket for this slot,
+        -- so it re-equips after a later swap. The secure use is suppressed for
+        -- that modifier by applySoftQueueMod, so it only queues. Clicking the
+        -- same worn trinket again toggles the soft entry off.
+        btn:SetScript("PreClick", function()
+            local mod  = getData().softQueueMod or "shift"
+            local held = (mod == "shift" and IsShiftKeyDown())
+                      or (mod == "ctrl"  and IsControlKeyDown())
+            if not held then return end
+            local s    = SLOT_TOP + which
+            local link = GetInventoryItemLink("player", s)
+            local id   = link and link:match("item:(%d+)")
+            if not id then return end
+            if softQueue[s] and softQueue[s].id == id then
+                softQueue[s] = nil
+            else
+                softQueue[s] = { id = id, texture = GetInventoryItemTexture("player", s) }
+            end
+            updateQueueIndicators()
+        end)
+
         -- Keybind text anchored to top-right of the icon
         local hk = btn:CreateFontString(nil, "OVERLAY")
         hk:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
@@ -1276,6 +1625,7 @@ local function getOrCreateDisplay()
     f:Hide()
     displayFrame = f
     applyModifierBlockers()
+    applySoftQueueMod()
     layoutDisplay()   -- apply configured edge padding / button gap
     return f
 end
@@ -1319,6 +1669,7 @@ local function applyPosition()
     -- first PLAYER_ENTERING_WORLD the frame hasn't been built yet, so reading
     -- displayFrame directly would be nil and the saved position lost.
     local f = getOrCreateDisplay()
+    if not f then return end
     local d = getData()
     if d.px and d.py then
         f:ClearAllPoints()
@@ -1328,6 +1679,7 @@ end
 
 local function applyVisibility()
     local f = getOrCreateDisplay()
+    if not f then return end   -- deferred: display can't be built in combat yet
     local d = getData()
     if not d.enabled then
         f:Hide()
@@ -1387,6 +1739,7 @@ local menuMovable = { getPosition = getMenuPosition, setPosition = setMenuPositi
 -- not a drag) to open the precise X/Y position editor.
 local function enterMoveMode()
     local f = getOrCreateDisplay()
+    if not f then return end
     editing = true
     f:SetFrameStrata("TOOLTIP")
     addon.ShowEditBox(f)
@@ -1497,12 +1850,15 @@ local function savePosition()
 end
 
 local function getPosition()
-    local x, y = getOrCreateDisplay():GetCenter()
+    local f = getOrCreateDisplay()
+    if not f then return 0, 0 end
+    local x, y = f:GetCenter()
     return x or 0, y or 0
 end
 
 local function setPosition(x, y)
     local f = getOrCreateDisplay()
+    if not f then return end
     f:ClearAllPoints()
     f:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
     local d = getData(); d.px, d.py = x, y
@@ -1527,13 +1883,19 @@ eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 eventFrame:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN")
 eventFrame:RegisterEvent("UPDATE_BINDINGS")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+eventFrame:RegisterEvent("ENCOUNTER_START")
+eventFrame:RegisterEvent("ENCOUNTER_END")
 eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "PLAYER_ENTERING_WORLD" then
         applyVisibility()   -- creates the frame, applies scale + saved position
         populateQueueSorts()
-        initMasque()
+        -- Only register Masque once the display actually exists — if init ran
+        -- mid-combat the display is deferred, and initMasque would otherwise
+        -- create its group with no buttons and then refuse to re-run later.
+        if displayFrame then initMasque() end
         -- Pre-warm item info for bag trinkets so first hover doesn't stall
         C_Timer.After(0.5, scanBags)
     elseif event == "PLAYER_EQUIPMENT_CHANGED" then
@@ -1557,6 +1919,18 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
             local name = GetSpellInfo(arg3)
             if name then markTrinketUsed(name) end
         end
+    elseif event == "ENCOUNTER_START" then
+        -- arg1 = encounterID. Record it, but only actually queue once we're also
+        -- in combat (see maybeQueueEncounter) — not on encounter start alone.
+        currentEncounterID = arg1
+        encounterQueued    = false
+        maybeQueueEncounter()
+    elseif event == "ENCOUNTER_END" then
+        currentEncounterID = nil
+        encounterQueued    = false
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        -- Entered combat: if we're mid-encounter with a config, queue now.
+        maybeQueueEncounter()
     elseif event == "GET_ITEM_INFO_RECEIVED" then
         -- Debounce: item data loads in bursts, wait for the burst to settle
         if itemInfoTimer then itemInfoTimer:Cancel() end
@@ -1570,6 +1944,13 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
             end
         end)
     elseif event == "PLAYER_REGEN_ENABLED" then
+        -- Soft-load: if init happened mid-combat (login/reload during a fight),
+        -- the secure display couldn't be built then — build it now, out of combat.
+        if not displayFrame then
+            applyVisibility()
+            populateQueueSorts()
+            initMasque()
+        end
         local queued = combatQueue
         combatQueue = {}
         updateQueueIndicators()
@@ -1600,6 +1981,8 @@ eventFrame:SetScript("OnUpdate", function(_, elapsed)
     tickElapsed = tickElapsed + elapsed
     if tickElapsed < 1.0 then return end
     tickElapsed = 0
+    processSoftQueue(0)
+    processSoftQueue(1)
     processQueue(0)
     processQueue(1)
     tickNotify()
@@ -1623,6 +2006,7 @@ addon.Trinkets = {
     applyDisplayScale  = applyDisplayScale,
     applyClickTrigger  = applyClickTrigger,
     applyModifierBlockers = applyModifierBlockers,
+    applySoftQueueMod  = applySoftQueueMod,
     layoutDisplay      = layoutDisplay,
     positionMenu       = positionMenu,
     populateQueueSorts = populateQueueSorts,
