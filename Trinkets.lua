@@ -651,10 +651,22 @@ local function attemptSwap(targetSlot, bag, slot, texture)
         if btn and btn.icon then btn.icon:SetDesaturated(false) end
         menuSwapFreeze = false
 
-        -- Only auto-re-queue the failed swap when the watchdog is enabled.
+        -- Only auto-recover-and-retry the failed swap when the watchdog is on.
         if getData().swapWatchdog ~= false then
-            combatQueue[targetSlot] = combatQueue[targetSlot]
-                or { bag = bag, slot = slot, texture = texture }
+            if UnitAffectingCombat("player") then
+                -- In combat the swap can't happen now — park it in the combat
+                -- queue to flush on combat end.
+                combatQueue[targetSlot] = combatQueue[targetSlot]
+                    or { bag = bag, slot = slot, texture = texture }
+            else
+                -- Out of combat the swap should be possible; something transient
+                -- (e.g. a brief CC that had already dropped combat) blocked it.
+                -- Retry directly rather than parking it in the combat queue,
+                -- which would never flush without a combat-end event and would
+                -- leave the indicator stuck. attemptSwap's own watchdog keeps
+                -- retrying until it lands.
+                attemptSwap(targetSlot, bag, slot, texture)
+            end
         end
         updateQueueIndicators()
     end)
@@ -751,7 +763,7 @@ local function processQueue(which)
                                 local info = C_Container.GetContainerItemInfo(bag, s)
                                 if info and not info.isLocked then
                                     if UnitAffectingCombat("player") then
-                                        combatQueue[slot] = { bag = bag, slot = s, texture = tex }
+                                        combatQueue[slot] = { id = id, bag = bag, slot = s, texture = tex }
                                         updateQueueIndicators()
                                     else
                                         attemptSwap(slot, bag, s, tex)
@@ -835,7 +847,7 @@ local function processSoftQueue(which)
                 if info and not info.isLocked then
                     softQueue[slot] = nil
                     if UnitAffectingCombat("player") then
-                        combatQueue[slot] = { bag = bag, slot = s, texture = sq.texture }
+                        combatQueue[slot] = { id = sq.id, bag = bag, slot = s, texture = sq.texture }
                     else
                         attemptSwap(slot, bag, s, sq.texture)
                     end
@@ -894,7 +906,7 @@ local function queueEncounterTrinkets(enc)
             local bag, s = findBagTrinket(mid)
             if bag then
                 local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(mid) or mid)
-                combatQueue[slot] = { bag = bag, slot = s, texture = tex }
+                combatQueue[slot] = { id = mid, bag = bag, slot = s, texture = tex }
                 changed = true
             end
         end
@@ -1407,22 +1419,15 @@ getOrCreateMenu = function()
             end
 
             if UnitAffectingCombat("player") then
-                if getData().multiQueue and combatQueue[targetSlot] and self._id then
-                    -- Chain mode: a trinket is already lined up as the next swap,
-                    -- so queue this one to follow it — it swaps in only after the
-                    -- first has been equipped, used, and its effect has expired
-                    -- (see processSoftQueue's combatQueue guard). Lets you pre-set
-                    -- two trinkets at once mid-encounter instead of the second
-                    -- overwriting the first.
-                    softQueue[targetSlot] = {
-                        id      = self._id,
-                        bag     = self._bag,
-                        slot    = self._slot,
-                        texture = self.icon:GetTexture(),
-                    }
+                -- A plain click manages the MAIN (combat) queue only: queue this
+                -- trinket, or UN-queue it if it's the one already queued for this
+                -- slot (click again to toggle off). The soft queue is left
+                -- untouched — it's managed solely by modifier+click.
+                if combatQueue[targetSlot] and combatQueue[targetSlot].id == self._id then
+                    combatQueue[targetSlot] = nil
                 else
-                    softQueue[targetSlot] = nil   -- explicit action supersedes any pending soft queue
                     combatQueue[targetSlot] = {
+                        id      = self._id,
                         bag     = self._bag,
                         slot    = self._slot,
                         texture = self.icon:GetTexture(),
@@ -1432,7 +1437,6 @@ getOrCreateMenu = function()
                 return
             end
             if self._bag and self._slot then
-                softQueue[targetSlot] = nil   -- explicit action supersedes any pending soft queue
                 -- The bag-menu rebuild is scheduled from updateWornIcons() once
                 -- PLAYER_EQUIPMENT_CHANGED actually lands the new trinket, not
                 -- from here — starting it at click time raced against network
@@ -1902,6 +1906,21 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         -- Updates the icon/cooldown instantly and schedules the (debounced,
         -- user-configured-delay) bag-menu rebuild itself — see updateWornIcons().
         updateWornIcons()
+        -- If a slot's queued trinket is now the one worn there (e.g. it landed,
+        -- or you equipped it yourself), the combat-queue entry is fulfilled —
+        -- clear it so its indicator can't linger.
+        local cleared = false
+        for which = 0, 1 do
+            local q = combatQueue[SLOT_TOP + which]
+            if q and q.id then
+                local link = GetInventoryItemLink("player", SLOT_TOP + which)
+                if link and link:match("item:(%d+)") == q.id then
+                    combatQueue[SLOT_TOP + which] = nil
+                    cleared = true
+                end
+            end
+        end
+        if cleared then updateQueueIndicators() end
         C_Timer.After(0.3, populateQueueSorts)
     elseif event == "UNIT_INVENTORY_CHANGED" then
         if arg1 == "player" then

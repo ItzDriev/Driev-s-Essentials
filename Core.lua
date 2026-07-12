@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.0.7"
+addon.version = "1.0.8"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras. WeakAuras.ScanEvents
@@ -79,7 +79,6 @@ local defaults = {
             blockModShift    = false,
             swapWatchdog     = true,
             softQueueMod     = "shift",
-            multiQueue       = false,
             encounters       = {},   -- [encounterID] = { enabled, mainTop, mainBottom, softTop, softBottom }
             debugEncounters  = false, -- gate for the Stockades (debug raid) test encounters
         },

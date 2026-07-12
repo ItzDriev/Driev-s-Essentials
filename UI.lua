@@ -2822,21 +2822,9 @@ local function buildTrinketsPanel(parent)
     softQHint:SetTextColor(unpack(C.textDim))
     softQHint:SetWidth(340); softQHint:SetJustifyH("LEFT")
 
-    local multiQCB = createCheckbox(displayPanel, "Chain two trinkets per slot in combat", 340)
-    multiQCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -12)
-    multiQCB.OnChange = function(_, checked)
-        local d = getTData(); if d then d.multiQueue = checked end
-    end
-
-    local multiQHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    multiQHint:SetPoint("TOPLEFT", multiQCB, "BOTTOMLEFT", 20, -8)
-    multiQHint:SetText("When on, clicking a second trinket in combat (while one is already queued) chains it to swap in after the first — instead of replacing it. First shows top-left, second bottom-right.")
-    multiQHint:SetTextColor(unpack(C.textDim))
-    multiQHint:SetWidth(340); multiQHint:SetJustifyH("LEFT")
-
     -- ── Keybind display controls ───────────────────────────────────────────────
     local showBindCB = createCheckbox(displayPanel, "Show keybind text on trinket buttons", 340)
-    showBindCB:SetPoint("TOPLEFT", multiQHint, "BOTTOMLEFT", -20, -14)
+    showBindCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
     showBindCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.showBindings = checked end
         if addon.Trinkets then addon.Trinkets.updateHotkeys() end
@@ -3204,7 +3192,6 @@ local function buildTrinketsPanel(parent)
         tinyTipCB:SetChecked(d.tinyTooltips or false)
         watchdogCB:SetChecked(d.swapWatchdog ~= false)
         softQDD.Refresh()
-        multiQCB:SetChecked(d.multiQueue or false)
         showBindCB:SetChecked(d.showBindings ~= false)
         truncBindCB:SetChecked(d.truncateBindings ~= false)
         keyUpCB:SetChecked(d.triggerOnKeyUp or false)
