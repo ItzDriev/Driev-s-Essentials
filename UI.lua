@@ -2950,7 +2950,7 @@ local function buildTrinketsPanel(parent)
 
         local prompt = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         prompt:SetPoint("TOP", 0, -14)
-        prompt:SetText("Press a key or mouse button to bind")
+        prompt:SetText("Press a key or mouse button (not left/right)")
         prompt:SetTextColor(unpack(C.textWhite))
 
         local hint = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -2963,11 +2963,11 @@ local function buildTrinketsPanel(parent)
         clickArea:SetAllPoints(popup)
         clickArea:RegisterForClicks("AnyUp")
 
-        local function finishCapture(rawKey)   -- nil = cancel/clear
-            if bindCapture.action then
+        local function finishCapture(rawKey)   -- nil = cancel (binding left unchanged)
+            if rawKey and bindCapture.action then
                 local old = GetBindingKey(bindCapture.action)
                 if old then SetBinding(old) end
-                if rawKey then SetBinding(rawKey, bindCapture.action) end
+                SetBinding(rawKey, bindCapture.action)
                 SaveBindings(GetCurrentBindingSet())
                 if bindCapture.label then
                     local k = GetBindingKey(bindCapture.action)
@@ -3000,17 +3000,26 @@ local function buildTrinketsPanel(parent)
             Button5      = "BUTTON5", Button6      = "BUTTON6",
             Button7      = "BUTTON7", Button8      = "BUTTON8",
         }
-        clickArea:SetScript("OnClick", function(_, btn)
+        -- Bind a mouse button — but never left/right click: binding those would
+        -- hijack normal clicking, so a left/right click just cancels the capture
+        -- instead. Wired to BOTH the popup's own click area AND the full-screen
+        -- catcher below, so any bindable mouse button can be pressed anywhere on
+        -- screen (no need to hover the little popup, unlike before).
+        local function onCaptureClick(_, btn)
             local rawKey = btnToKey[btn]
-            if not rawKey then return end
+            if rawKey == "BUTTON1" or rawKey == "BUTTON2" or not rawKey then
+                finishCapture(nil)   -- left/right click (or unknown) = cancel
+                return
+            end
             local mod = ""
             if IsControlKeyDown() then mod = "CTRL-"  .. mod end
             if IsAltKeyDown()     then mod = "ALT-"   .. mod end
             if IsShiftKeyDown()   then mod = "SHIFT-" .. mod end
             finishCapture(mod .. rawKey)
-        end)
-
-        catcher:SetScript("OnClick", function() finishCapture(nil) end)
+        end
+        clickArea:SetScript("OnClick", onCaptureClick)
+        catcher:RegisterForClicks("AnyUp")
+        catcher:SetScript("OnClick", onCaptureClick)
 
         capturePopup = popup
         popup._catcher = catcher
@@ -3024,14 +3033,15 @@ local function buildTrinketsPanel(parent)
 
     local kbDesc = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     kbDesc:SetPoint("TOPLEFT", kbHeader, "BOTTOMLEFT", 0, -4)
-    kbDesc:SetText("Left-click to bind key/mouse.  Right-click to clear.")
+    kbDesc:SetText("Set a keybind for using the Top/Bottom slot\nLeft-click to open bind menu for key/mouse, Right-click to clear the keybind")
     kbDesc:SetTextColor(unpack(C.textGrey))
+    kbDesc:SetJustifyH("LEFT")
 
     local kbBindBtns = {}
     local prevKbAnchor = kbDesc
     for which = 0, 1 do
         local action   = "CLICK DrievTrinketBtn"..which..":LeftButton"
-        local slotName = (which == 0) and "Top Slot" or "Bottom Slot"
+        local slotName = (which == 0) and "Use Top Slot" or "Use Bottom Slot"
 
         local slotLbl = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         slotLbl:SetPoint("TOPLEFT", prevKbAnchor, "BOTTOMLEFT", 0, -18)
