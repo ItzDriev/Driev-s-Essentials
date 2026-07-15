@@ -822,6 +822,46 @@ local function buildRaidFramesPanel(parent)
     return shell
 end
 
+-- Wraps the Raid settings and Raid Frames panels under one top-level "Raid" tab
+-- with its own sub-tab bar (General / Raid Frames), mirroring the Particles and
+-- Trinkets tabs' sub-tab layout.
+local function buildRaidTabPanel(parent)
+    local panel = CreateFrame("Frame", nil, parent)
+    panel:SetAllPoints()
+    panel:Hide()
+
+    local subBar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+    subBar:SetHeight(26)
+    subBar:SetPoint("TOPLEFT", 4, -4)
+    subBar:SetPoint("TOPRIGHT", -4, -4)
+    applyBackdrop(subBar, 1, C.panelDark)
+
+    local subContent = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+    subContent:SetPoint("TOPLEFT", subBar, "BOTTOMLEFT", 0, -2)
+    subContent:SetPoint("BOTTOMRIGHT", -4, 4)
+    applyBackdrop(subContent, 1, C.panelDeep)
+
+    panel.subTabs   = {}
+    panel.subPanels = {}
+
+    local generalTab = createTab(subBar, "General", 80)
+    generalTab:SetHeight(22)
+    generalTab:SetPoint("LEFT", 4, 0)
+    generalTab:SetScript("OnClick", function() selectSubTab(panel, "general") end)
+    panel.subTabs["general"]   = generalTab
+    panel.subPanels["general"] = buildRaidSettingsPanel(subContent)
+
+    local framesTab = createTab(subBar, "Raid Frames", 110)
+    framesTab:SetHeight(22)
+    framesTab:SetPoint("LEFT", generalTab, "RIGHT", 4, 0)
+    framesTab:SetScript("OnClick", function() selectSubTab(panel, "raidframes") end)
+    panel.subTabs["raidframes"]   = framesTab
+    panel.subPanels["raidframes"] = buildRaidFramesPanel(subContent)
+
+    selectSubTab(panel, "general")
+    return panel
+end
+
 -- Scrollable dropdown that anchors cleanly beneath (or above) its button.
 -- getItems() is called once on first open; onChange(name) fires on selection.
 local function createScrollDropdown(parent, width, getItems, onChange)
@@ -2384,6 +2424,57 @@ local function buildTrinketsPanel(parent)
     dockHint:SetTextColor(unpack(C.textDim))
     dockHint:SetWidth(340); dockHint:SetJustifyH("LEFT")
 
+    -- ── Swap delay ─────────────────────────────────────────────────────────────
+    local swapLabel = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    swapLabel:SetPoint("TOPLEFT", dockHint, "BOTTOMLEFT", -20, -14)
+    swapLabel:SetText("Menu rebuild delay after swap:")
+    swapLabel:SetTextColor(unpack(C.textGrey))
+
+    local swapMinus = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
+    swapMinus:SetSize(22, 22)
+    swapMinus:SetPoint("LEFT", swapLabel, "RIGHT", 8, 0)
+    applyBackdrop(swapMinus, 1, C.panelDark, C.tabBorder)
+    local swapMinusLbl = swapMinus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    swapMinusLbl:SetPoint("CENTER"); swapMinusLbl:SetText("-"); swapMinusLbl:SetTextColor(unpack(C.textWhite))
+
+    local swapNum = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    swapNum:SetPoint("LEFT", swapMinus, "RIGHT", 6, 0)
+    swapNum:SetWidth(30); swapNum:SetJustifyH("CENTER")
+    swapNum:SetTextColor(unpack(C.textWhite))
+
+    local swapPlus = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
+    swapPlus:SetSize(22, 22)
+    swapPlus:SetPoint("LEFT", swapNum, "RIGHT", 6, 0)
+    applyBackdrop(swapPlus, 1, C.panelDark, C.tabBorder)
+    local swapPlusLbl = swapPlus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    swapPlusLbl:SetPoint("CENTER"); swapPlusLbl:SetText("+"); swapPlusLbl:SetTextColor(unpack(C.textWhite))
+
+    local swapSec = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    swapSec:SetPoint("LEFT", swapPlus, "RIGHT", 4, 0)
+    swapSec:SetText("s"); swapSec:SetTextColor(unpack(C.textDim))
+
+    local refreshSwapDelay
+    refreshSwapDelay = function()
+        local d = getTData()
+        swapNum:SetText(string.format("%.1f", (d and d.swapDelay) or 1.0))
+    end
+
+    swapMinus:SetScript("OnClick", function()
+        local d = getTData(); if not d then return end
+        d.swapDelay = math.max(0.1, math.floor(((d.swapDelay or 1.0) - 0.1) * 10 + 0.5) / 10)
+        refreshSwapDelay()
+    end)
+    swapMinus:SetScript("OnEnter", function() swapMinus:SetBackdropBorderColor(unpack(C.red)) end)
+    swapMinus:SetScript("OnLeave", function() swapMinus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
+    swapPlus:SetScript("OnClick", function()
+        local d = getTData(); if not d then return end
+        d.swapDelay = math.min(5.0, math.floor(((d.swapDelay or 1.0) + 0.1) * 10 + 0.5) / 10)
+        refreshSwapDelay()
+    end)
+    swapPlus:SetScript("OnEnter", function() swapPlus:SetBackdropBorderColor(unpack(C.red)) end)
+    swapPlus:SetScript("OnLeave", function() swapPlus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
     -- ── Layout section ────────────────────────────────────────────────────────
     local layoutHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     layoutHeader:SetPoint("TOPLEFT", dockHint, "BOTTOMLEFT", -20, -18)
@@ -2770,22 +2861,9 @@ local function buildTrinketsPanel(parent)
         local d = getTData(); if d then d.notify = checked end
     end
 
-    local ttCB = createCheckbox(displayPanel, "Show tooltips in bag menu", 300)
-    ttCB:SetPoint("TOPLEFT", notifyCB, "BOTTOMLEFT", 0, -6)
-    ttCB.OnChange = function(_, checked)
-        local d = getTData(); if d then d.showTooltips = checked end
-    end
-
-    local tinyTipCB = createCheckbox(displayPanel,
-        "Tiny tooltips (name, charges and cooldown only)", 340)
-    tinyTipCB:SetPoint("TOPLEFT", ttCB, "BOTTOMLEFT", 20, -6)
-    tinyTipCB.OnChange = function(_, checked)
-        local d = getTData(); if d then d.tinyTooltips = checked end
-    end
-
     local watchdogCB = createCheckbox(displayPanel,
         "Auto re-queue failed trinket swaps (watchdog)", 340)
-    watchdogCB:SetPoint("TOPLEFT", tinyTipCB, "BOTTOMLEFT", -20, -6)
+    watchdogCB:SetPoint("TOPLEFT", notifyCB, "BOTTOMLEFT", 0, -6)
     watchdogCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.swapWatchdog = checked end
     end
@@ -2803,7 +2881,7 @@ local function buildTrinketsPanel(parent)
 
     local softQLbl = softQRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     softQLbl:SetPoint("LEFT", 0, 0)
-    softQLbl:SetText("Preemptive queue modifier:")
+    softQLbl:SetText("Soft queue modifier:")
     softQLbl:SetTextColor(unpack(C.textGrey))
 
     local softQDD = createDropdown(softQRow, 90,
@@ -2822,24 +2900,9 @@ local function buildTrinketsPanel(parent)
     softQHint:SetTextColor(unpack(C.textDim))
     softQHint:SetWidth(340); softQHint:SetJustifyH("LEFT")
 
-    -- ── Keybind display controls ───────────────────────────────────────────────
-    local showBindCB = createCheckbox(displayPanel, "Show keybind text on trinket buttons", 340)
-    showBindCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
-    showBindCB.OnChange = function(_, checked)
-        local d = getTData(); if d then d.showBindings = checked end
-        if addon.Trinkets then addon.Trinkets.updateHotkeys() end
-    end
-
-    local truncBindCB = createCheckbox(displayPanel, "Truncate keybind text (Numpad+ → NP+, Ctrl-K → CK)", 400)
-    truncBindCB:SetPoint("TOPLEFT", showBindCB, "BOTTOMLEFT", 20, -6)
-    truncBindCB.OnChange = function(_, checked)
-        local d = getTData(); if d then d.truncateBindings = checked end
-        if addon.Trinkets then addon.Trinkets.updateHotkeys() end
-    end
-
     local keyUpCB = createCheckbox(displayPanel,
         "Trigger keybind on key up (default: key down)", 340)
-    keyUpCB:SetPoint("TOPLEFT", truncBindCB, "BOTTOMLEFT", -20, -6)
+    keyUpCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
     keyUpCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.triggerOnKeyUp = checked end
         if addon.Trinkets then addon.Trinkets.applyClickTrigger() end
@@ -2870,57 +2933,6 @@ local function buildTrinketsPanel(parent)
         local d = getTData(); if d then d.blockModShift = checked end
         if addon.Trinkets then addon.Trinkets.applyModifierBlockers() end
     end
-
-    -- ── Swap delay ─────────────────────────────────────────────────────────────
-    local swapLabel = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    swapLabel:SetPoint("TOPLEFT", shiftCB, "BOTTOMLEFT", 0, -12)
-    swapLabel:SetText("Menu rebuild delay after swap:")
-    swapLabel:SetTextColor(unpack(C.textGrey))
-
-    local swapMinus = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
-    swapMinus:SetSize(22, 22)
-    swapMinus:SetPoint("LEFT", swapLabel, "RIGHT", 8, 0)
-    applyBackdrop(swapMinus, 1, C.panelDark, C.tabBorder)
-    local swapMinusLbl = swapMinus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    swapMinusLbl:SetPoint("CENTER"); swapMinusLbl:SetText("-"); swapMinusLbl:SetTextColor(unpack(C.textWhite))
-
-    local swapNum = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    swapNum:SetPoint("LEFT", swapMinus, "RIGHT", 6, 0)
-    swapNum:SetWidth(30); swapNum:SetJustifyH("CENTER")
-    swapNum:SetTextColor(unpack(C.textWhite))
-
-    local swapPlus = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
-    swapPlus:SetSize(22, 22)
-    swapPlus:SetPoint("LEFT", swapNum, "RIGHT", 6, 0)
-    applyBackdrop(swapPlus, 1, C.panelDark, C.tabBorder)
-    local swapPlusLbl = swapPlus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    swapPlusLbl:SetPoint("CENTER"); swapPlusLbl:SetText("+"); swapPlusLbl:SetTextColor(unpack(C.textWhite))
-
-    local swapSec = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    swapSec:SetPoint("LEFT", swapPlus, "RIGHT", 4, 0)
-    swapSec:SetText("s"); swapSec:SetTextColor(unpack(C.textDim))
-
-    local refreshSwapDelay
-    refreshSwapDelay = function()
-        local d = getTData()
-        swapNum:SetText(string.format("%.1f", (d and d.swapDelay) or 1.0))
-    end
-
-    swapMinus:SetScript("OnClick", function()
-        local d = getTData(); if not d then return end
-        d.swapDelay = math.max(0.1, math.floor(((d.swapDelay or 1.0) - 0.1) * 10 + 0.5) / 10)
-        refreshSwapDelay()
-    end)
-    swapMinus:SetScript("OnEnter", function() swapMinus:SetBackdropBorderColor(unpack(C.red)) end)
-    swapMinus:SetScript("OnLeave", function() swapMinus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
-    swapPlus:SetScript("OnClick", function()
-        local d = getTData(); if not d then return end
-        d.swapDelay = math.min(5.0, math.floor(((d.swapDelay or 1.0) + 0.1) * 10 + 0.5) / 10)
-        refreshSwapDelay()
-    end)
-    swapPlus:SetScript("OnEnter", function() swapPlus:SetBackdropBorderColor(unpack(C.red)) end)
-    swapPlus:SetScript("OnLeave", function() swapPlus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
 
     -- ── Keybind assignment ─────────────────────────────────────────────────────
     -- Lazy capture popup — a small floating dialog (no full-screen overlay).
@@ -3027,7 +3039,7 @@ local function buildTrinketsPanel(parent)
     end
 
     local kbHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    kbHeader:SetPoint("TOPLEFT", swapMinus, "BOTTOMLEFT", 0, -20)
+    kbHeader:SetPoint("TOPLEFT", shiftCB, "BOTTOMLEFT", 0, -20)
     kbHeader:SetText("Keybinds")
     kbHeader:SetTextColor(unpack(C.red))
 
@@ -3152,10 +3164,43 @@ local function buildTrinketsPanel(parent)
         function() local d = getTData(); return (d and d.menuEdgePad) or 0 end,
         function(v) local d = getTData(); if d then d.menuEdgePad = v end end)
 
-    local _, refreshDispEdgePad = makePadRow(edgePadLbl, "Display — edge padding (frame border):",
+    local dispEdgePadLbl, refreshDispEdgePad = makePadRow(edgePadLbl, "Display — edge padding (frame border):",
         function() local d = getTData(); return (d and d.displayEdgePad) or 0 end,
         function(v) local d = getTData(); if d then d.displayEdgePad = v end end,
         applyDisplayLayout)
+
+    -- ── Misc section ──────────────────────────────────────────────────────────
+    local miscHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    miscHeader:SetPoint("TOPLEFT", dispEdgePadLbl, "BOTTOMLEFT", 0, -20)
+    miscHeader:SetText("Misc")
+    miscHeader:SetTextColor(unpack(C.red))
+
+    local ttCB = createCheckbox(displayPanel, "Show tooltips in bag menu", 300)
+    ttCB:SetPoint("TOPLEFT", miscHeader, "BOTTOMLEFT", 0, -10)
+    ttCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.showTooltips = checked end
+    end
+
+    local tinyTipCB = createCheckbox(displayPanel,
+        "Tiny tooltips (name, charges and cooldown only)", 340)
+    tinyTipCB:SetPoint("TOPLEFT", ttCB, "BOTTOMLEFT", 20, -6)
+    tinyTipCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.tinyTooltips = checked end
+    end
+
+    local showBindCB = createCheckbox(displayPanel, "Show keybind text on trinket buttons", 340)
+    showBindCB:SetPoint("TOPLEFT", tinyTipCB, "BOTTOMLEFT", -20, -6)
+    showBindCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.showBindings = checked end
+        if addon.Trinkets then addon.Trinkets.updateHotkeys() end
+    end
+
+    local truncBindCB = createCheckbox(displayPanel, "Truncate keybind text (Numpad+ -> NP+, Ctrl-K -> CK)", 400)
+    truncBindCB:SetPoint("TOPLEFT", showBindCB, "BOTTOMLEFT", 20, -6)
+    truncBindCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.truncateBindings = checked end
+        if addon.Trinkets then addon.Trinkets.updateHotkeys() end
+    end
 
     -- ── Two-column layout ──────────────────────────────────────────────────────
     -- The sections above are built in one chained sequence for readability; here
@@ -3167,14 +3212,18 @@ local function buildTrinketsPanel(parent)
     local RIGHT_X = 460
 
     -- Left column. dispHeader keeps its original (14, -14). prevKbAnchor is the
-    -- Keybinds section's last row (the Bottom Slot label). dockHint sits +20
-    -- indented, so Behavior counter-offsets by -20 to line its header up at 14.
+    -- Keybinds section's last row (the Bottom Slot label). Bag Menu's last row
+    -- is now the swap-delay control — anchor off swapLabel (its fontstring sits
+    -- at the correct unindented left margin; swapMinus/swapPlus are anchored
+    -- via LEFT/RIGHT off swapLabel so their X is offset well to the right of
+    -- the margin and is the wrong reference for X here). No x counter-offset
+    -- needed since swapLabel is already unindented.
     kbHeader:ClearAllPoints()
     kbHeader:SetPoint("TOPLEFT", moveBtn, "BOTTOMLEFT", 0, -20)
     menuHeader:ClearAllPoints()
     menuHeader:SetPoint("TOPLEFT", prevKbAnchor, "BOTTOMLEFT", 0, -20)
     behHeader:ClearAllPoints()
-    behHeader:SetPoint("TOPLEFT", dockHint, "BOTTOMLEFT", -20, -18)
+    behHeader:SetPoint("TOPLEFT", swapLabel, "BOTTOMLEFT", 0, -18)
 
     -- Right column. dispScaleHeader (→perLineRow) and scaleHeader (→dispScaleRow)
     -- already chain correctly beneath Layout, so only the column head (Layout)
@@ -3933,13 +3982,8 @@ function UI.GetFrame()
     raidTab:SetScript("OnClick", function() selectTab(f, "raid") end)
     f.tabs.raid = raidTab
 
-    local raidFramesTab = createTab(f.tabBar, "Raid Frames")
-    raidFramesTab:SetPoint("LEFT", raidTab, "RIGHT", 4, 0)
-    raidFramesTab:SetScript("OnClick", function() selectTab(f, "raidframes") end)
-    f.tabs.raidframes = raidFramesTab
-
     local trinketsTab = createTab(f.tabBar, "Trinkets")
-    trinketsTab:SetPoint("LEFT", raidFramesTab, "RIGHT", 4, 0)
+    trinketsTab:SetPoint("LEFT", raidTab, "RIGHT", 4, 0)
     trinketsTab:SetScript("OnClick", function() selectTab(f, "trinkets") end)
     f.tabs.trinkets = trinketsTab
 
@@ -3950,8 +3994,7 @@ function UI.GetFrame()
 
     f.panels.general    = buildGeneralTabPanel(f.content)
     f.panels.particles  = buildParticlesPanel(f.content)
-    f.panels.raid       = buildRaidSettingsPanel(f.content)
-    f.panels.raidframes = buildRaidFramesPanel(f.content)
+    f.panels.raid       = buildRaidTabPanel(f.content)
     f.panels.trinkets   = buildTrinketsPanel(f.content)
     f.panels.profiles   = buildProfilesPanel(f.content)
 
