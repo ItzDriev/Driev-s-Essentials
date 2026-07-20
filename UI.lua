@@ -21,16 +21,22 @@ local C = {
     textWhite     = { 1.0, 1.0, 1.0 },
     textGrey      = { 0.75, 0.75, 0.80 },
     textDim       = { 0.50, 0.50, 0.55 },
+    statusOn      = { 0.30, 0.85, 0.35, 1 },  -- enabled/on indicator dots
+    statusOff     = { 0.45, 0.45, 0.50, 1 },  -- disabled/off indicator dots
 }
 
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 
+-- Insets matching edgeSize pull the background in from the frame's edge so
+-- the border strip frames it cleanly instead of the border texture drawing
+-- flush against (and slightly overlapping) a full-bleed background.
 local function applyBackdrop(frame, edgeSize, bg, border)
+    edgeSize = edgeSize or 1
     frame:SetBackdrop({
         bgFile   = WHITE,
         edgeFile = WHITE,
-        edgeSize = edgeSize or 1,
-        insets   = { left = 0, right = 0, top = 0, bottom = 0 },
+        edgeSize = edgeSize,
+        insets   = { left = edgeSize, right = edgeSize, top = edgeSize, bottom = edgeSize },
     })
     frame:SetBackdropColor(unpack(bg))
     frame:SetBackdropBorderColor(unpack(border or { 0, 0, 0, 0 }))
@@ -56,6 +62,100 @@ local function createTab(parent, label, width)
         if not self.active then self:SetBackdropColor(unpack(C.tabIdle)) end
     end)
     return tab
+end
+
+-- Tall, full-width, left-aligned tab button for a vertical sidebar (the main
+-- nav column, and the per-raid selector inside Particles → Raids). Caller
+-- anchors LEFT/RIGHT to the containing column and TOP to the previous button;
+-- OnClick is attached by the caller. Shares tab.text + backdrop so the same
+-- activateTab() drives its active/idle look.
+local function createSideTab(parent, label, height)
+    local tab = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    tab:SetHeight(height or 28)
+    applyBackdrop(tab, 1, C.tabIdle, C.tabBorder)
+
+    local text = tab:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    text:SetPoint("LEFT", 14, 0)
+    text:SetText(label)
+    text:SetTextColor(unpack(C.textGrey))
+    tab.text = text
+
+    tab:SetScript("OnEnter", function(self)
+        if not self.active then self:SetBackdropColor(unpack(C.tabHover)) end
+    end)
+    tab:SetScript("OnLeave", function(self)
+        if not self.active then self:SetBackdropColor(unpack(C.tabIdle)) end
+    end)
+    return tab
+end
+
+-- Standard flat action button: dark backdrop, centred white label, red hover
+-- border. The caller anchors it (SetPoint) and wires OnClick; `.label` is
+-- exposed for buttons that recolour or relabel it. `font` defaults to
+-- GameFontNormal.
+local function flatButton(parent, text, w, h, font)
+    local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    btn:SetSize(w or 80, h or 22)
+    applyBackdrop(btn, 1, C.panelDark, C.tabBorder)
+    local label = btn:CreateFontString(nil, "OVERLAY", font or "GameFontNormal")
+    label:SetPoint("CENTER")
+    label:SetText(text or "")
+    label:SetTextColor(unpack(C.textWhite))
+    btn.label = label
+    btn:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(C.red)) end)
+    btn:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    return btn
+end
+
+-- A themed [-] [value] [+] stepper. Creates the two square buttons (with the
+-- standard red hover border) and a centred value label between them, wired so
+-- clicking adjusts opts.get()/opts.set() by opts.step (default 1), clamped to
+-- [opts.min, opts.max], re-rendered through opts.format (default tostring), then
+-- runs opts.onChange(v). Returns the minus button as the layout handle (the
+-- caller SetPoints it), with `.value`/`.plus` exposed for anchoring a trailing
+-- suffix and `.Refresh()` to re-read the stored value. opts.get must always
+-- return a number (fall back to a default when the store isn't ready yet).
+local function buildStepper(parent, opts)
+    local step = opts.step or 1
+    local fmt  = opts.format or tostring
+    local gap  = opts.gap or 6
+
+    local minus = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    minus:SetSize(22, 22)
+    applyBackdrop(minus, 1, C.panelDark, C.tabBorder)
+    local ml = minus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    ml:SetPoint("CENTER"); ml:SetText("-"); ml:SetTextColor(unpack(C.textWhite))
+
+    local value = parent:CreateFontString(nil, "OVERLAY", opts.valueFont or "GameFontNormal")
+    value:SetPoint("LEFT", minus, "RIGHT", gap, 0)
+    value:SetWidth(opts.valueWidth or 24); value:SetJustifyH("CENTER")
+    value:SetTextColor(unpack(opts.valueColor or C.textWhite))
+
+    local plus = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    plus:SetSize(22, 22)
+    plus:SetPoint("LEFT", value, "RIGHT", gap, 0)
+    applyBackdrop(plus, 1, C.panelDark, C.tabBorder)
+    local pl = plus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    pl:SetPoint("CENTER"); pl:SetText("+"); pl:SetTextColor(unpack(C.textWhite))
+
+    local function refresh() value:SetText(fmt(opts.get())) end
+    local function adjust(delta)
+        local v = math.min(opts.max, math.max(opts.min, opts.get() + delta))
+        v = math.floor(v * 1000 + 0.5) / 1000   -- kill float drift on fractional steps
+        opts.set(v)
+        refresh()
+        if opts.onChange then opts.onChange(v) end
+    end
+    minus:SetScript("OnClick", function() adjust(-step) end)
+    plus:SetScript("OnClick",  function() adjust(step) end)
+    minus:SetScript("OnEnter", function() minus:SetBackdropBorderColor(unpack(C.red)) end)
+    minus:SetScript("OnLeave", function() minus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    plus:SetScript("OnEnter",  function() plus:SetBackdropBorderColor(unpack(C.red)) end)
+    plus:SetScript("OnLeave",  function() plus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
+    minus.plus, minus.value, minus.Refresh = plus, value, refresh
+    refresh()
+    return minus
 end
 
 -- Generic tab/panel switcher; usable for both the top-level tabs and the
@@ -99,12 +199,17 @@ end
 -- changes (resizing rows, showing/hiding optional widgets, etc.) to keep the
 -- thumb's size/position in sync.
 local SCROLLBAR_W = 10
+-- Clearance to keep a scrollbar track clear of the main window's bottom-right
+-- resize grip (see createMainFrame's `sizer`). Only the outer panels that
+-- actually reach that corner opt in via attachScrollTrack's `bottomInset`;
+-- nested scrollbars pass nothing and run the full height of their box.
+local SCROLLBAR_BOTTOM_CLEARANCE = 16
 
-local function attachScrollTrack(scroll, trackParent)
+local function attachScrollTrack(scroll, trackParent, bottomInset)
     local track = CreateFrame("Frame", nil, trackParent, "BackdropTemplate")
     track:SetWidth(SCROLLBAR_W)
     track:SetPoint("TOPRIGHT",    trackParent, "TOPRIGHT",    -1, -1)
-    track:SetPoint("BOTTOMRIGHT", trackParent, "BOTTOMRIGHT", -1,  1)
+    track:SetPoint("BOTTOMRIGHT", trackParent, "BOTTOMRIGHT", -1,  bottomInset or 1)
     applyBackdrop(track, 1, C.panelDeep, C.tabBorder)
 
     local thumb = CreateFrame("Button", nil, track, "BackdropTemplate")
@@ -193,7 +298,14 @@ local function findLowestBottom(frame, bottom)
     for _, child in ipairs({ frame:GetChildren() }) do
         local cb = child:GetBottom()
         if cb and (not bottom or cb < bottom) then bottom = cb end
-        bottom = findLowestBottom(child, bottom)
+        -- Don't descend into a nested ScrollFrame: it clips and scrolls its own
+        -- (possibly much taller) child, so only its own visible bottom edge
+        -- should count toward the enclosing panel's height — otherwise the
+        -- outer panel grows to fit the inner scroll's full content and you can
+        -- scroll the outer panel down into empty space below it.
+        if child:GetObjectType() ~= "ScrollFrame" then
+            bottom = findLowestBottom(child, bottom)
+        end
     end
     for _, region in ipairs({ frame:GetRegions() }) do
         if region.GetBottom then
@@ -237,7 +349,7 @@ local function makeScrollPanel(parent, innerHeight)
     inner:SetHeight(innerHeight or 1600)
     scroll:SetScrollChild(inner)
 
-    local _, update = attachScrollTrack(scroll, shell)
+    local _, update = attachScrollTrack(scroll, shell, SCROLLBAR_BOTTOM_CLEARANCE)
 
     -- fitInnerHeight resizes `inner`, which re-triggers inner's own
     -- OnSizeChanged below — that handler only calls update() (never
@@ -402,16 +514,33 @@ local function particlesData(raid)
     return d
 end
 
-local function buildRaidPanel(parent, raid)
+-- Boss-name colours per raid "wing" (Naxx). Bosses with no wing use the default
+-- white checkbox text. Hex only (no |cff prefix) so it can be inlined.
+local WING_COLORS = {
+    spider    = "33ccff",   -- cyan
+    plague    = "ff9933",   -- orange
+    military  = "33cc66",   -- green
+    construct = "ff66cc",   -- magenta
+    frostwyrm = "ffcc33",   -- gold
+}
+
+-- onEnableChanged(checked) is an optional callback fired whenever the "Enable
+-- particle system" checkbox changes, so a caller showing a status indicator
+-- elsewhere (e.g. the raid-selector dot in buildParticlesRaidsPanel) can update
+-- it immediately rather than waiting for its own next OnShow.
+local function buildRaidPanel(parent, raid, onEnableChanged)
     local shell, panel = makeScrollPanel(parent)
 
     -- Read particlesData(raid) live inside each handler (never captured once at
     -- build time) so a profile switch/import — which repoints addon.db — is
     -- reflected on the next OnShow instead of writing to / showing the old
     -- profile's table.
-    local enable = createCheckbox(panel, "Enable for " .. raid.label, 260)
+    local enable = createCheckbox(panel, "Enable particle system for " .. raid.label, 300)
     enable:SetPoint("TOPLEFT", 14, -14)
-    enable.OnChange = function(_, checked) particlesData(raid).enabled = checked end
+    enable.OnChange = function(_, checked)
+        particlesData(raid).enabled = checked
+        if onEnableChanged then onEnableChanged(checked) end
+    end
 
     local headline = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     headline:SetPoint("TOPLEFT", enable, "BOTTOMLEFT", 0, -18)
@@ -423,20 +552,26 @@ local function buildRaidPanel(parent, raid)
     desc:SetText("Selected bosses keep particle effects enabled during their encounter (raid baseline is off).")
     desc:SetTextColor(unpack(C.textGrey))
 
-    -- Grid: cap of 4 checkboxes per column; columns grow as needed.
+    -- Grid: cap of ROWS_PER_COL checkboxes per column; columns grow as needed.
+    -- Kept to 5 rows / ~225px columns so it fits the narrower detail area beside
+    -- the raid-selector column in Particles → Raids.
     local gridAnchor = CreateFrame("Frame", nil, panel)
     gridAnchor:SetSize(1, 1)
     gridAnchor:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -14)
 
-    local colWidth, rowHeight = 200, 22
+    local ROWS_PER_COL = 5
+    local colWidth, rowHeight = 225, 22
     local bossCBs = {}
     for i, boss in ipairs(raid.bosses) do
-        local col = math.floor((i - 1) / 4)
-        local row = (i - 1) % 4
+        local col = math.floor((i - 1) / ROWS_PER_COL)
+        local row = (i - 1) % ROWS_PER_COL
 
+        -- Colour the name by wing (Naxx); the "(!)" default/note marker stays red.
+        local wingHex = boss.wing and WING_COLORS[boss.wing]
+        local nameStr = wingHex and ("|cff" .. wingHex .. boss.name .. "|r") or boss.name
         local bossLabel = ((boss.default or boss.note) and raid.key ~= "debug")
-            and (boss.name .. " |cfffb2c36(!)|r")
-            or boss.name
+            and (nameStr .. " |cfffb2c36(!)|r")
+            or nameStr
         local cb = createCheckbox(panel, bossLabel, colWidth - 10)
         cb:SetPoint("TOPLEFT", gridAnchor, "TOPLEFT", col * colWidth, -row * rowHeight)
         cb.OnChange = function(_, checked)
@@ -475,7 +610,7 @@ local function buildGeneralPanel(parent)
 
     local classDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     classDesc:SetPoint("TOPLEFT", classHeader, "BOTTOMLEFT", 0, -4)
-    classDesc:SetText("Particle functionality only runs while playing a checked class.")
+    classDesc:SetText("Particle system only runs while playing a selected class")
     classDesc:SetTextColor(unpack(C.textGrey))
 
     local classGridAnchor = CreateFrame("Frame", nil, panel)
@@ -495,14 +630,8 @@ local function buildGeneralPanel(parent)
         classCBs[class.token] = cb
     end
 
-    local enableAllBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    enableAllBtn:SetSize(175, 24)
+    local enableAllBtn = flatButton(panel, "Enable For All Raids", 175, 24)
     enableAllBtn:SetPoint("TOPLEFT", classGridAnchor, "TOPLEFT", 0, -(CLASS_PER_COL * CLASS_ROW_H) - 14)
-    applyBackdrop(enableAllBtn, 1, C.panelDark, C.tabBorder)
-    local enableAllLabel = enableAllBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    enableAllLabel:SetPoint("CENTER")
-    enableAllLabel:SetText("Enable For All Raids")
-    enableAllLabel:SetTextColor(unpack(C.textWhite))
     enableAllBtn:SetScript("OnClick", function()
         for _, raid in ipairs(addon.RAIDS) do
             if raid.key ~= "debug" then
@@ -510,17 +639,9 @@ local function buildGeneralPanel(parent)
             end
         end
     end)
-    enableAllBtn:SetScript("OnEnter", function() enableAllBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    enableAllBtn:SetScript("OnLeave", function() enableAllBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
 
-    local disableAllBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    disableAllBtn:SetSize(175, 24)
+    local disableAllBtn = flatButton(panel, "Disable For All Raids", 175, 24)
     disableAllBtn:SetPoint("LEFT", enableAllBtn, "RIGHT", 8, 0)
-    applyBackdrop(disableAllBtn, 1, C.panelDark, C.tabBorder)
-    local disableAllLabel = disableAllBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    disableAllLabel:SetPoint("CENTER")
-    disableAllLabel:SetText("Disable For All Raids")
-    disableAllLabel:SetTextColor(unpack(C.textWhite))
     disableAllBtn:SetScript("OnClick", function()
         for _, raid in ipairs(addon.RAIDS) do
             if raid.key ~= "debug" then
@@ -528,8 +649,6 @@ local function buildGeneralPanel(parent)
             end
         end
     end)
-    disableAllBtn:SetScript("OnEnter", function() disableAllBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    disableAllBtn:SetScript("OnLeave", function() disableAllBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
 
     -- ── Encounter particle level ────────────────────────────────────────────
     local headline = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -539,12 +658,12 @@ local function buildGeneralPanel(parent)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", headline, "BOTTOMLEFT", 0, -4)
-    desc:SetText("Particle density used when particles are enabled for a boss encounter.\nRaids always use 0 between encounters; outside raids keeps your system default.")
+    desc:SetWidth(560); desc:SetJustifyH("LEFT")
+    desc:SetText("Select the particle density used when particles are enabled for a boss encounter. Raids always use 0 between encounters, aka particles are disabled on trash. Outside of raids it will use the same particle density as selected here")
     desc:SetTextColor(unpack(C.textGrey))
-    desc:SetJustifyH("LEFT")
 
     local rowLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    rowLabel:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -22)
+    rowLabel:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -34)
     rowLabel:SetText("Encounter density:")
     rowLabel:SetTextColor(unpack(C.textWhite))
 
@@ -554,57 +673,100 @@ local function buildGeneralPanel(parent)
         return addon.db.settings.particles.general
     end
 
-    local btnMinus = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    btnMinus:SetSize(22, 22)
-    btnMinus:SetPoint("LEFT", rowLabel, "RIGHT", 12, 0)
-    applyBackdrop(btnMinus, 1, C.panelDark, C.tabBorder)
-    local minusLabel = btnMinus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    minusLabel:SetPoint("CENTER")
-    minusLabel:SetText("-")
-    minusLabel:SetTextColor(unpack(C.textWhite))
-
-    local valDisplay = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    valDisplay:SetPoint("CENTER", btnMinus, "RIGHT", 18, 0)
-    valDisplay:SetTextColor(unpack(C.red))
-
-    local btnPlus = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    btnPlus:SetSize(22, 22)
-    btnPlus:SetPoint("LEFT", btnMinus, "RIGHT", 36, 0)
-    applyBackdrop(btnPlus, 1, C.panelDark, C.tabBorder)
-    local plusLabel = btnPlus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    plusLabel:SetPoint("CENTER")
-    plusLabel:SetText("+")
-    plusLabel:SetTextColor(unpack(C.textWhite))
+    local densityStepper = buildStepper(panel, {
+        min = 1, max = 5, valueFont = "GameFontNormalLarge", valueColor = C.red,
+        get = function() return getData().encounterDensity end,
+        set = function(v) getData().encounterDensity = v end,
+    })
+    densityStepper:SetPoint("LEFT", rowLabel, "RIGHT", 12, 0)
 
     local rangeNote = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    rangeNote:SetPoint("LEFT", btnPlus, "RIGHT", 10, 0)
+    rangeNote:SetPoint("LEFT", densityStepper.plus, "RIGHT", 10, 0)
     rangeNote:SetText("(1 - 5)")
     rangeNote:SetTextColor(unpack(C.textDim))
 
     local function refreshDisplay()
-        valDisplay:SetText(tostring(getData().encounterDensity))
+        densityStepper.Refresh()
         local classData = getClassData()
         for token, cb in pairs(classCBs) do
             cb:SetChecked(classData[token] == true)
         end
     end
 
-    local function adjustValue(delta)
-        local d = getData()
-        d.encounterDensity = math.max(1, math.min(5, d.encounterDensity + delta))
-        refreshDisplay()
-    end
-
-    btnMinus:SetScript("OnClick", function() adjustValue(-1) end)
-    btnMinus:SetScript("OnEnter", function() btnMinus:SetBackdropBorderColor(unpack(C.red)) end)
-    btnMinus:SetScript("OnLeave", function() btnMinus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
-    btnPlus:SetScript("OnClick", function() adjustValue(1) end)
-    btnPlus:SetScript("OnEnter", function() btnPlus:SetBackdropBorderColor(unpack(C.red)) end)
-    btnPlus:SetScript("OnLeave", function() btnPlus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
     shell:SetScript("OnShow", refreshDisplay)
 
+    return shell
+end
+
+-- Particles → Raids: a left column of raid-selector buttons and, to its right,
+-- the selected raid's enable checkbox + boss grid (buildRaidPanel). Excludes the
+-- Stockades "debug" raid, which lives on the separate Debug sub-tab.
+local function buildParticlesRaidsPanel(parent)
+    local shell = CreateFrame("Frame", nil, parent)
+    shell:SetAllPoints()
+    shell:Hide()
+
+    local raidCol = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+    raidCol:SetWidth(120)
+    -- Flush with the content box's left edge (x = 0) so the sidebar's left lines
+    -- up with the tab bar / content backdrop above it, rather than sitting 4px
+    -- inside it.
+    raidCol:SetPoint("TOPLEFT", 0, -4)
+    raidCol:SetPoint("BOTTOMLEFT", 0, 4)
+    applyBackdrop(raidCol, 1, C.panelDark)
+
+    local detail = CreateFrame("Frame", nil, shell)
+    detail:SetPoint("TOPLEFT", raidCol, "TOPRIGHT", 4, 0)
+    detail:SetPoint("BOTTOMRIGHT", -4, 4)
+
+    shell.raidTabs   = {}
+    shell.raidPanels = {}
+    local raidDots = {}
+
+    local function setDot(raid, checked)
+        local dot = raidDots[raid.key]
+        if dot then dot:SetVertexColor(unpack(checked and C.statusOn or C.statusOff)) end
+    end
+
+    local prev, firstKey
+    for _, raid in ipairs(addon.RAIDS) do
+        if raid.key ~= "debug" then
+            local btn = createSideTab(raidCol, raid.label, 24)
+            if prev then
+                btn:SetPoint("TOPLEFT",  prev, "BOTTOMLEFT",  0, -2)
+                btn:SetPoint("TOPRIGHT", prev, "BOTTOMRIGHT", 0, -2)
+            else
+                btn:SetPoint("TOPLEFT",  raidCol, "TOPLEFT",   3, -3)
+                btn:SetPoint("TOPRIGHT", raidCol, "TOPRIGHT", -3, -3)
+                firstKey = raid.key
+            end
+            btn:SetScript("OnClick", function()
+                activateTab(shell.raidTabs, shell.raidPanels, raid.key)
+            end)
+
+            -- Enabled/disabled status dot, right-aligned in the tab.
+            local dot = btn:CreateTexture(nil, "OVERLAY")
+            dot:SetTexture(WHITE)
+            dot:SetSize(8, 8)
+            dot:SetPoint("RIGHT", -10, 0)
+            raidDots[raid.key] = dot
+
+            shell.raidTabs[raid.key]   = btn
+            shell.raidPanels[raid.key] = buildRaidPanel(detail, raid,
+                function(checked) setDot(raid, checked) end)
+            prev = btn
+        end
+    end
+
+    -- Sync all dots from saved data whenever this sub-tab is shown (e.g. after
+    -- a profile switch, or the first time it's opened).
+    shell:SetScript("OnShow", function()
+        for _, raid in ipairs(addon.RAIDS) do
+            if raid.key ~= "debug" then setDot(raid, particlesData(raid).enabled) end
+        end
+    end)
+
+    if firstKey then activateTab(shell.raidTabs, shell.raidPanels, firstKey) end
     return shell
 end
 
@@ -626,23 +788,32 @@ local function buildParticlesPanel(parent)
     panel.subTabs   = {}
     panel.subPanels = {}
 
-    local generalTab = createTab(subBar, "General", 70)
+    local debugRaid
+    for _, raid in ipairs(addon.RAIDS) do
+        if raid.key == "debug" then debugRaid = raid end
+    end
+
+    local generalTab = createTab(subBar, "General", 80)
     generalTab:SetHeight(22)
     generalTab:SetPoint("LEFT", 4, 0)
     generalTab:SetScript("OnClick", function() selectSubTab(panel, "general") end)
     panel.subTabs["general"]   = generalTab
     panel.subPanels["general"] = buildGeneralPanel(subContent)
 
-    local prev = generalTab
-    for _, raid in ipairs(addon.RAIDS) do
-        local tab = createTab(subBar, raid.label, 70)
-        tab:SetHeight(22)
-        tab:SetPoint("LEFT", prev, "RIGHT", 4, 0)
-        tab:SetScript("OnClick", function() selectSubTab(panel, raid.key) end)
-        panel.subTabs[raid.key]   = tab
-        panel.subPanels[raid.key] = buildRaidPanel(subContent, raid)
-        prev = tab
-    end
+    local raidsTab = createTab(subBar, "Raids", 80)
+    raidsTab:SetHeight(22)
+    raidsTab:SetPoint("LEFT", generalTab, "RIGHT", 4, 0)
+    raidsTab:SetScript("OnClick", function() selectSubTab(panel, "raids") end)
+    panel.subTabs["raids"]   = raidsTab
+    panel.subPanels["raids"] = buildParticlesRaidsPanel(subContent)
+
+    local debugTab = createTab(subBar, "Debug", 80)
+    debugTab:SetHeight(22)
+    debugTab:SetPoint("LEFT", raidsTab, "RIGHT", 4, 0)
+    debugTab:SetScript("OnClick", function() selectSubTab(panel, "debug") end)
+    panel.subTabs["debug"]   = debugTab
+    panel.subPanels["debug"] = debugRaid and buildRaidPanel(subContent, debugRaid)
+        or CreateFrame("Frame", nil, subContent)
 
     selectSubTab(panel, "general")
     return panel
@@ -741,16 +912,8 @@ local function buildRaidFramesPanel(parent)
         if addon.RaidFrames then addon.RaidFrames.applyAll() end
     end
 
-    local moveBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    moveBtn:SetSize(140, 22)
+    local moveBtn = flatButton(panel, "Move / Resize", 140, 22)
     moveBtn:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -14)
-    applyBackdrop(moveBtn, 1, C.panelDark, C.tabBorder)
-    local moveBtnLabel = moveBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    moveBtnLabel:SetPoint("CENTER")
-    moveBtnLabel:SetText("Move / Resize")
-    moveBtnLabel:SetTextColor(unpack(C.textWhite))
-    moveBtn:SetScript("OnEnter", function() moveBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    moveBtn:SetScript("OnLeave", function() moveBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
     moveBtn:SetScript("OnClick", function() UI.EnterMoveMode({ addon.RaidFrames }) end)
 
     local scaleText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -889,7 +1052,7 @@ local function createScrollDropdown(parent, width, getItems, onChange)
 
     btn._value = nil
     btn._rows  = {}
-    btn._built = false
+    btn._count = 0
 
     -- Popup parented to UIParent so it is never clipped by the settings frame.
     local popup = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
@@ -922,7 +1085,7 @@ local function createScrollDropdown(parent, width, getItems, onChange)
     thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)  -- placeholder; overwritten by updateThumb
 
     local function updateThumb()
-        local n = #btn._rows
+        local n = btn._count
         if n <= MAX_VIS then track:Hide(); return end
         track:Show()
         local trackH = track:GetHeight()
@@ -958,7 +1121,7 @@ local function createScrollDropdown(parent, width, getItems, onChange)
         local delta     = dragStartY - curY
         local trackH    = track:GetHeight()
         local thumbH    = thumb:GetHeight()
-        local maxScroll = math.max(0, (#btn._rows - MAX_VIS) * ITEM_H)
+        local maxScroll = math.max(0, (btn._count - MAX_VIS) * ITEM_H)
         if trackH > thumbH then
             sf:SetVerticalScroll(math.max(0, math.min(
                 dragStartScroll + delta * maxScroll / (trackH - thumbH),
@@ -996,52 +1159,59 @@ local function createScrollDropdown(parent, width, getItems, onChange)
         end
     end
 
-    local function build()
-        if btn._built then return end
-        btn._built = true
+    -- (Re)populates the row pool from getItems() every time the popup opens, so
+    -- the list stays current when its source changes (e.g. profiles being added
+    -- or removed). Rows are pooled and reused; any surplus is hidden. btn._count
+    -- is the number of live items (the pool may be larger).
+    local function populate()
         local items = getItems()
         for i, name in ipairs(items) do
-            local row = CreateFrame("Button", nil, sc)
-            row:SetSize(CONTENT_W, ITEM_H)
-            row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -(i - 1) * ITEM_H)
+            local row = btn._rows[i]
+            if not row then
+                row = CreateFrame("Button", nil, sc)
+                row:SetSize(CONTENT_W, ITEM_H)
+                row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -(i - 1) * ITEM_H)
+
+                local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                lbl:SetPoint("LEFT", 4, 0)
+                lbl:SetPoint("RIGHT", -4, 0)
+                lbl:SetJustifyH("LEFT")
+                row.lbl = lbl
+
+                row:SetScript("OnEnter", function(self)
+                    self.lbl:SetTextColor(unpack(C.textWhite))
+                end)
+                row:SetScript("OnLeave", function(self)
+                    self.lbl:SetTextColor(unpack(
+                        self._name == btn._value and C.red or C.textGrey
+                    ))
+                end)
+                row:SetScript("OnClick", function(self)
+                    btn._value = self._name
+                    btnText:SetText(self._name)
+                    refreshColors()
+                    close()
+                    if onChange then onChange(self._name) end
+                end)
+
+                btn._rows[i] = row
+            end
             row._name = name
-
-            local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            lbl:SetPoint("LEFT", 4, 0)
-            lbl:SetPoint("RIGHT", -4, 0)
-            lbl:SetJustifyH("LEFT")
-            lbl:SetText(name)
-            lbl:SetTextColor(unpack(C.textGrey))
-            row.lbl = lbl
-
-            row:SetScript("OnEnter", function(self)
-                self.lbl:SetTextColor(unpack(C.textWhite))
-            end)
-            row:SetScript("OnLeave", function(self)
-                self.lbl:SetTextColor(unpack(
-                    self._name == btn._value and C.red or C.textGrey
-                ))
-            end)
-            row:SetScript("OnClick", function(self)
-                btn._value = self._name
-                btnText:SetText(self._name)
-                refreshColors()
-                close()
-                if onChange then onChange(self._name) end
-            end)
-
-            tinsert(btn._rows, row)
+            row.lbl:SetText(name)
+            row.lbl:SetTextColor(unpack(name == btn._value and C.red or C.textGrey))
+            row:Show()
         end
+        for i = #items + 1, #btn._rows do btn._rows[i]:Hide() end
+        btn._count = #items
         sc:SetHeight(math.max(#items * ITEM_H, 1))
     end
 
     btn:SetScript("OnClick", function()
         if popup:IsShown() then close(); return end
 
-        build()
-        refreshColors()
+        populate()
 
-        local visH = math.min(#btn._rows, MAX_VIS) * ITEM_H
+        local visH = math.min(btn._count, MAX_VIS) * ITEM_H
         popup:SetHeight(visH + 2)
         sf:SetHeight(visH)
 
@@ -1061,9 +1231,9 @@ local function createScrollDropdown(parent, width, getItems, onChange)
 
         -- Scroll so the selected item is centred in the visible window.
         if btn._value then
-            for i, row in ipairs(btn._rows) do
-                if row._name == btn._value then
-                    local maxScroll = math.max(0, (#btn._rows - MAX_VIS) * ITEM_H)
+            for i = 1, btn._count do
+                if btn._rows[i]._name == btn._value then
+                    local maxScroll = math.max(0, (btn._count - MAX_VIS) * ITEM_H)
                     local target    = math.max(0, (i - 1) * ITEM_H - math.floor(MAX_VIS / 2) * ITEM_H)
                     sf:SetVerticalScroll(math.min(target, maxScroll))
                     updateThumb()
@@ -1156,16 +1326,8 @@ local function buildGeneralTabPanel(parent)
     end
 
     -- Move button
-    local moveBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    moveBtn:SetSize(80, 22)
+    local moveBtn = flatButton(panel, "Move", 80, 22)
     moveBtn:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -10)
-    applyBackdrop(moveBtn, 1, C.panelDark, C.tabBorder)
-    local moveBtnLabel = moveBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    moveBtnLabel:SetPoint("CENTER")
-    moveBtnLabel:SetText("Move")
-    moveBtnLabel:SetTextColor(unpack(C.textWhite))
-    moveBtn:SetScript("OnEnter", function() moveBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    moveBtn:SetScript("OnLeave", function() moveBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
     moveBtn:SetScript("OnClick", function() UI.EnterMoveMode({ addon.TTK }) end)
 
     -- Boss-only checkbox
@@ -1193,27 +1355,13 @@ local function buildGeneralTabPanel(parent)
     sizeLabel:SetText("Size:")
     sizeLabel:SetTextColor(unpack(C.textWhite))
 
-    local sizeMinus = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    sizeMinus:SetSize(22, 22)
-    sizeMinus:SetPoint("LEFT", sizeLabel, "RIGHT", 10, 0)
-    applyBackdrop(sizeMinus, 1, C.panelDark, C.tabBorder)
-    local sizeMinusLbl = sizeMinus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sizeMinusLbl:SetPoint("CENTER")
-    sizeMinusLbl:SetText("-")
-    sizeMinusLbl:SetTextColor(unpack(C.textWhite))
-
-    local sizeDisplay = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    sizeDisplay:SetPoint("CENTER", sizeMinus, "RIGHT", 18, 0)
-    sizeDisplay:SetTextColor(unpack(C.red))
-
-    local sizePlus = CreateFrame("Button", nil, panel, "BackdropTemplate")
-    sizePlus:SetSize(22, 22)
-    sizePlus:SetPoint("LEFT", sizeMinus, "RIGHT", 36, 0)
-    applyBackdrop(sizePlus, 1, C.panelDark, C.tabBorder)
-    local sizePlusLbl = sizePlus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sizePlusLbl:SetPoint("CENTER")
-    sizePlusLbl:SetText("+")
-    sizePlusLbl:SetTextColor(unpack(C.textWhite))
+    local sizeStepper = buildStepper(panel, {
+        min = 10, max = 60, valueFont = "GameFontNormalLarge", valueColor = C.red,
+        get = function() return (getTTKData().fontSize) or 24 end,
+        set = function(v) getTTKData().fontSize = v end,
+        onChange = function() if addon.TTK then addon.TTK.applyFont() end end,
+    })
+    sizeStepper:SetPoint("LEFT", sizeLabel, "RIGHT", 10, 0)
 
     local function refreshPanel()
         local d  = getTTKData()
@@ -1222,27 +1370,9 @@ local function buildGeneralTabPanel(parent)
         minimapHideCB:SetChecked(addon.db.minimap.hide or false)
         enableCB:SetChecked(d.enabled or false)
         bossOnlyCB:SetChecked(d.bossOnly or false)
-        sizeDisplay:SetText(tostring(d.fontSize or 24))
+        sizeStepper.Refresh()
         fontDropdown:setValue(fn)
     end
-
-    sizeMinus:SetScript("OnClick", function()
-        local d = getTTKData()
-        d.fontSize = math.max(10, (d.fontSize or 24) - 1)
-        sizeDisplay:SetText(tostring(d.fontSize))
-        if addon.TTK then addon.TTK.applyFont() end
-    end)
-    sizeMinus:SetScript("OnEnter", function() sizeMinus:SetBackdropBorderColor(unpack(C.red)) end)
-    sizeMinus:SetScript("OnLeave", function() sizeMinus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
-    sizePlus:SetScript("OnClick", function()
-        local d = getTTKData()
-        d.fontSize = math.min(60, (d.fontSize or 24) + 1)
-        sizeDisplay:SetText(tostring(d.fontSize))
-        if addon.TTK then addon.TTK.applyFont() end
-    end)
-    sizePlus:SetScript("OnEnter", function() sizePlus:SetBackdropBorderColor(unpack(C.red)) end)
-    sizePlus:SetScript("OnLeave", function() sizePlus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
 
     shell:SetScript("OnShow", refreshPanel)
 
@@ -2116,30 +2246,18 @@ local function createTrinketDropdown(parent, width, getVal, setVal, listProvider
     return dd
 end
 
--- "Specific Auto Queue" trinkets sub-tab: a nested tab bar (currently just
--- "Encounters") over a scrollable 2×2 grid of the four main raids. Each boss is
--- a checkbox + name plus a 2×2 grid of trinket pickers — rows are the Top/Bottom
--- equipment slots, columns are the Main queue and the Soft queue — so ticking a
--- boss can preset two full sets of trinkets to auto-queue when you engage it.
+-- "Specific Auto Queue" trinkets sub-tab, laid out like the General sub-tab: a
+-- fixed header (the global safeguard-delay control) over a left sidebar of raids
+-- and, to its right, a scrollable panel showing the selected raid's per-boss
+-- trinket config. Each boss is a checkbox + name plus a 2×2 grid of trinket
+-- pickers — rows are the Top/Bottom equipment slots, columns are the Main queue
+-- and the Soft queue — so ticking a boss can preset two full sets of trinkets
+-- to auto-queue when you engage it. The Stockades ("Debug") is the last sidebar
+-- entry, gated behind its own module-enable checkbox for testing.
 local function buildSpecificAutoQueuePanel(parent, getTData)
     local shell = CreateFrame("Frame", nil, parent)
     shell:SetAllPoints()
     shell:Hide()
-
-    local bar = CreateFrame("Frame", nil, shell, "BackdropTemplate")
-    bar:SetHeight(24)
-    bar:SetPoint("TOPLEFT", 4, -4)
-    bar:SetPoint("TOPRIGHT", -4, -4)
-    applyBackdrop(bar, 1, C.panelDark)
-
-    local content = CreateFrame("Frame", nil, shell)
-    content:SetPoint("TOPLEFT", bar, "BOTTOMLEFT", 0, -2)
-    content:SetPoint("BOTTOMRIGHT", 0, 0)
-
-    local encShell, encInner = makeScrollPanel(content, 1)
-
-    local raidByKey = {}
-    for _, r in ipairs(addon.RAIDS or {}) do raidByKey[r.key] = r end
 
     local refreshers = {}
 
@@ -2156,6 +2274,104 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
            and not e.softTop and not e.softBottom then
             d.encounters[id] = nil
         end
+    end
+
+    -- ── Safeguard delay (fixed header) ────────────────────────────────────────
+    -- Both trigger conditions (ENCOUNTER_START + in combat — see
+    -- maybeQueueEncounter in Trinkets.lua) can line up the instant a pull
+    -- starts. This optional delay instead requires them to hold TRUE
+    -- CONTINUOUSLY for the configured duration before anything queues — any
+    -- combat drop or encounter end/change during that window cancels the
+    -- attempt and the full delay must restart.
+    local delayCB = createCheckbox(shell,
+        "Safeguard delay: require encounter + combat simultaneously before queuing", 520)
+    delayCB:SetPoint("TOPLEFT", shell, "TOPLEFT", 14, -12)
+    delayCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.encQueueDelayEnabled = checked end
+    end
+
+    local delayRow = CreateFrame("Frame", nil, shell)
+    delayRow:SetSize(300, 22)
+    delayRow:SetPoint("TOPLEFT", delayCB, "BOTTOMLEFT", 20, -6)
+
+    local delayLbl = delayRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    delayLbl:SetPoint("LEFT", 0, 0)
+    delayLbl:SetText("Delay:")
+    delayLbl:SetTextColor(unpack(C.textGrey))
+
+    local delayStepper = buildStepper(delayRow, {
+        min = 0.1, max = 30, step = 0.5, valueWidth = 34,
+        format = function(v) return string.format("%.1f", v) end,
+        get = function() local d = getTData(); return (d and d.encQueueDelaySeconds) or 5.0 end,
+        set = function(v) local d = getTData(); if d then d.encQueueDelaySeconds = v end end,
+    })
+    delayStepper:SetPoint("LEFT", delayLbl, "RIGHT", 8, 0)
+
+    local delaySec = delayRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    delaySec:SetPoint("LEFT", delayStepper.plus, "RIGHT", 4, 0)
+    delaySec:SetText("s"); delaySec:SetTextColor(unpack(C.textDim))
+
+    refreshers[#refreshers + 1] = function()
+        local d = getTData()
+        delayCB:SetChecked(d and d.encQueueDelayEnabled or false)
+        delayStepper.Refresh()
+    end
+
+    local hint = shell:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hint:SetPoint("TOPLEFT", delayRow, "BOTTOMLEFT", -20, -12)
+    hint:SetWidth(820); hint:SetJustifyH("LEFT")
+    hint:SetText("On engaging a ticked boss (once you're in combat), the Main trinkets queue to swap in first; the Soft trinkets then swap in afterwards, once the Main trinket has been used and its effect has expired.")
+    hint:SetTextColor(unpack(C.textDim))
+
+    -- ── Raids heading + sidebar / scrollable content ─────────────────────────
+    local raidsHdr = shell:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    raidsHdr:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -12)
+    raidsHdr:SetText("Raids")
+    raidsHdr:SetTextColor(unpack(C.red))
+
+    -- The sidebar column and content box both stretch to the bottom of the
+    -- (non-scrolling) sub-panel, so the content box fills whatever vertical
+    -- space the window offers and its per-raid panel scrolls inside it. Its
+    -- left edge sits flush with the content box (shell) so it lines up with the
+    -- tab bar backdrop above; the TOPLEFT hangs off the Raids header for its
+    -- vertical position, so its x is pulled back 14px to reach that left edge.
+    local sideCol = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+    sideCol:SetPoint("TOPLEFT", raidsHdr, "BOTTOMLEFT", -14, -8)
+    sideCol:SetPoint("BOTTOMLEFT", shell, "BOTTOMLEFT", 0, 10)
+    sideCol:SetWidth(120)
+    applyBackdrop(sideCol, 1, C.panelDark)
+
+    local sideContent = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+    sideContent:SetPoint("TOPLEFT", sideCol, "TOPRIGHT", 6, 0)
+    sideContent:SetPoint("BOTTOMRIGHT", shell, "BOTTOMRIGHT", -4, 10)
+    applyBackdrop(sideContent, 4, C.panelDeep, C.panelDark)
+
+    -- A scroll viewport filling sideContent for one raid's config. Full-height
+    -- scrollbar (no bottom inset — this isn't near the window's resize grip),
+    -- auto-sized to its content via fitInnerHeight. Returns (rshell, inner);
+    -- rshell is the toggled unit, inner is the scroll child widgets stack into.
+    local function raidScrollPanel()
+        local rshell = CreateFrame("Frame", nil, sideContent)
+        rshell:SetAllPoints()
+        rshell:Hide()
+
+        local scroll = CreateFrame("ScrollFrame", nil, rshell)
+        scroll:SetPoint("TOPLEFT", 4, -4)
+        scroll:SetPoint("BOTTOMRIGHT", -(SCROLLBAR_W + 6), 4)
+
+        local inner = CreateFrame("Frame", nil, scroll)
+        inner:SetSize(1, 1)
+        scroll:SetScrollChild(inner)
+
+        local _, update = attachScrollTrack(scroll, rshell)
+        local function refresh()
+            fitInnerHeight(inner, scroll)
+            update()
+        end
+        scroll:SetScript("OnSizeChanged", function(_, w) inner:SetWidth(w); refresh() end)
+        inner:SetScript("OnSizeChanged", update)
+        rshell:HookScript("OnShow", function() refresh(); C_Timer.After(0, refresh) end)
+        return rshell, inner
     end
 
     -- Per-boss block is two dropdown rows (Top slot / Bottom slot) × two columns
@@ -2219,95 +2435,79 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
         end
     end
 
-    local function buildRaidBlock(inner, raid, xOff, yTop)
-        if not raid then return yTop end
-        local _, _, mainX, softX = cols(xOff)
+    -- Builds one raid's config into its own scroll panel; returns the rshell for
+    -- the sidebar's activateTab. The Stockades ("debug") raid gets an extra
+    -- module-enable checkbox + hint above its boss list.
+    local function buildRaidSection(raid)
+        local rshell, inner = raidScrollPanel()
+        local y = 10
 
-        local title = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-        title:SetPoint("TOPLEFT", inner, "TOPLEFT", xOff, -yTop)
-        title:SetText(raid.label)
-        title:SetTextColor(unpack(C.red))
+        if raid.key == "debug" then
+            local dbgEnableCB = createCheckbox(inner,
+                "Enable Debug module (The Stockades encounters)", 380)
+            dbgEnableCB:SetPoint("TOPLEFT", inner, "TOPLEFT", 8, -y)
+            dbgEnableCB.OnChange = function(_, checked)
+                local d = getTData(); if d then d.debugEncounters = checked or nil end
+            end
+            refreshers[#refreshers + 1] = function()
+                local d = getTData()
+                dbgEnableCB:SetChecked(d and d.debugEncounters or false)
+            end
+            y = y + 26
 
+            local dbgHint = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            dbgHint:SetPoint("TOPLEFT", inner, "TOPLEFT", 8, -y)
+            dbgHint:SetWidth(560); dbgHint:SetJustifyH("LEFT")
+            dbgHint:SetText("For testing: configure trinkets for The Stockades bosses, then run the dungeon. These only auto-queue while the Debug module above is enabled.")
+            dbgHint:SetTextColor(unpack(C.textDim))
+            y = y + 44
+        end
+
+        local _, _, mainX, softX = cols(8)
         local hMain = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        hMain:SetPoint("TOPLEFT", inner, "TOPLEFT", mainX, -(yTop + 24))
+        hMain:SetPoint("TOPLEFT", inner, "TOPLEFT", mainX, -y)
         hMain:SetText("Main"); hMain:SetTextColor(unpack(C.red))
         local hSoft = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        hSoft:SetPoint("TOPLEFT", inner, "TOPLEFT", softX, -(yTop + 24))
+        hSoft:SetPoint("TOPLEFT", inner, "TOPLEFT", softX, -y)
         hSoft:SetText("Soft"); hSoft:SetTextColor(unpack(C.red))
+        y = y + 22
 
-        local y = yTop + 44
         for _, boss in ipairs(raid.bosses) do
-            buildBossRow(inner, boss, xOff, y)
+            buildBossRow(inner, boss, 8, y)
             y = y + BLOCK_H
         end
-        return y
+
+        return rshell
     end
 
-    local hint = encInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    hint:SetPoint("TOPLEFT", encInner, "TOPLEFT", 16, -8)
-    hint:SetWidth(780); hint:SetJustifyH("LEFT")
-    hint:SetText("On engaging a ticked boss (once you're in combat), the Main trinkets queue to swap in first; the Soft trinkets then swap in afterwards, once the Main trinket has been used and its effect has expired.")
-    hint:SetTextColor(unpack(C.textDim))
+    -- ── Raid sidebar + panels ────────────────────────────────────────────────
+    local raidTabs, raidPanels = {}, {}
+    local prevSb, firstKey
+    for _, raid in ipairs(addon.RAIDS or {}) do
+        local key = raid.key
+        raidPanels[key] = buildRaidSection(raid)
 
-    -- Two columns. 4-across won't fit: each boss block (checkbox + name + a 2×2
-    -- grid of ~96px dropdowns) is ~360px, and four (~1440px) blow past the
-    -- ~830px content width — so the four raids stack 2×2 with the second row
-    -- (BWL / MC) below the first (Naxx / AQ40), reached by scrolling.
-    local COL_L_X, COL_R_X = 16, 420
-    local leftY = buildRaidBlock(encInner, raidByKey["naxx"], COL_L_X, 40)
-    buildRaidBlock(encInner, raidByKey["bwl"], COL_L_X, leftY + 24)
-    local rightY = buildRaidBlock(encInner, raidByKey["aq40"], COL_R_X, 40)
-    buildRaidBlock(encInner, raidByKey["mc"], COL_R_X, rightY + 24)
-
-    -- ── Debug nested panel: The Stockades ────────────────────────────────────
-    -- Stockades is a real low-level 5-man whose ENCOUNTER_START ids are confirmed
-    -- (same list the Particles tab uses), so it's a convenient way to test the
-    -- auto-queue without a raid. Gated behind its own module-enable checkbox.
-    local debugShell, debugInner = makeScrollPanel(content, 1)
-
-    local dbgEnableCB = createCheckbox(debugInner,
-        "Enable Debug module (The Stockades encounters)", 380)
-    dbgEnableCB:SetPoint("TOPLEFT", debugInner, "TOPLEFT", 16, -10)
-    dbgEnableCB.OnChange = function(_, checked)
-        local d = getTData(); if d then d.debugEncounters = checked or nil end
+        local b = createSideTab(sideCol, raid.label, 24)
+        if prevSb then
+            b:SetPoint("TOPLEFT",  prevSb, "BOTTOMLEFT",  0, -2)
+            b:SetPoint("TOPRIGHT", prevSb, "BOTTOMRIGHT", 0, -2)
+        else
+            b:SetPoint("TOPLEFT",  sideCol, "TOPLEFT",   3, -3)
+            b:SetPoint("TOPRIGHT", sideCol, "TOPRIGHT", -3, -3)
+            firstKey = key
+        end
+        b:SetScript("OnClick", function() activateTab(raidTabs, raidPanels, key) end)
+        raidTabs[key] = b
+        prevSb = b
     end
-    refreshers[#refreshers + 1] = function()
-        local d = getTData()
-        dbgEnableCB:SetChecked(d and d.debugEncounters or false)
-    end
-
-    local dbgHint = debugInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    dbgHint:SetPoint("TOPLEFT", debugInner, "TOPLEFT", 16, -34)
-    dbgHint:SetWidth(780); dbgHint:SetJustifyH("LEFT")
-    dbgHint:SetText("For testing: configure trinkets for The Stockades bosses, then run the dungeon. These only auto-queue while the Debug module above is enabled.")
-    dbgHint:SetTextColor(unpack(C.textDim))
-
-    buildRaidBlock(debugInner, raidByKey["debug"], 16, 66)
+    if firstKey then activateTab(raidTabs, raidPanels, firstKey) end
 
     -- Refresh on every open of the sub-tab. Hook `shell` (what selectSubTab
-    -- actually toggles), not the nested shells — those are shown at build time
-    -- and don't re-fire their own OnShow when the parent re-opens.
+    -- actually toggles), not the raid panels — those are shown at build time and
+    -- don't re-fire their own OnShow when the parent re-opens.
     shell:HookScript("OnShow", function()
         for _, fn in ipairs(refreshers) do fn() end
     end)
-
-    -- Nested tabs: Encounters (the four main raids) and Debug (Stockades).
-    shell.nestedTabs   = {
-        encounters = createTab(bar, "Encounters", 110),
-        debug      = createTab(bar, "Debug", 80),
-    }
-    shell.nestedPanels = { encounters = encShell, debug = debugShell }
-    shell.nestedTabs.encounters:SetHeight(20)
-    shell.nestedTabs.encounters:SetPoint("LEFT", 4, 0)
-    shell.nestedTabs.encounters:SetScript("OnClick", function()
-        activateTab(shell.nestedTabs, shell.nestedPanels, "encounters")
-    end)
-    shell.nestedTabs.debug:SetHeight(20)
-    shell.nestedTabs.debug:SetPoint("LEFT", shell.nestedTabs.encounters, "RIGHT", 4, 0)
-    shell.nestedTabs.debug:SetScript("OnClick", function()
-        activateTab(shell.nestedTabs, shell.nestedPanels, "debug")
-    end)
-    activateTab(shell.nestedTabs, shell.nestedPanels, "encounters")
 
     return shell
 end
@@ -2331,38 +2531,16 @@ local function buildTrinketsPanel(parent)
     panel.subTabs   = {}
     panel.subPanels = {}
 
-    -- ── Display sub-panel (scrollable, themed scrollbar) ─────────────────────
+    -- ── Display sub-panel ────────────────────────────────────────────────────
+    -- Not scrollable at this level: the fixed header sits at the top and the
+    -- Settings box below stretches to fill the rest, with all scrolling handled
+    -- inside each section's own scroll area (see scrollArea below).
     local displayShell = CreateFrame("Frame", nil, subContent)
     displayShell:SetAllPoints()
     displayShell:Hide()
 
-    local displayScroll = CreateFrame("ScrollFrame", nil, displayShell)
-    displayScroll:SetPoint("TOPLEFT", 0, 0)
-    displayScroll:SetPoint("BOTTOMRIGHT", -(SCROLLBAR_W + 6), 0)
-
-    local displayPanel = CreateFrame("Frame", nil, displayScroll)
-    displayPanel:SetHeight(700)
-    displayScroll:SetScrollChild(displayPanel)
-
-    local _, updateDisplayThumb = attachScrollTrack(displayScroll, displayShell)
-    -- See makeScrollPanel's identical refreshScroll/HookScript for why this is
-    -- needed: a fixed height taller than the real content always reports room
-    -- to scroll, and GetVerticalScrollRange() isn't reliable until actually
-    -- shown — so fit to real content and force a recompute on every show
-    -- instead of waiting for the next scroll/resize.
-    local function refreshDisplayScroll()
-        fitInnerHeight(displayPanel, displayScroll)
-        updateDisplayThumb()
-    end
-    displayScroll:SetScript("OnSizeChanged", function(self, w)
-        displayPanel:SetWidth(w)
-        refreshDisplayScroll()
-    end)
-    displayPanel:SetScript("OnSizeChanged", updateDisplayThumb)
-    displayShell:HookScript("OnShow", function()
-        refreshDisplayScroll()
-        C_Timer.After(0, refreshDisplayScroll)
-    end)
+    local displayPanel = CreateFrame("Frame", nil, displayShell)
+    displayPanel:SetAllPoints()
 
     local function getTData()
         return addon.db and addon.db.settings and addon.db.settings.trinkets
@@ -2371,7 +2549,7 @@ local function buildTrinketsPanel(parent)
     -- ── Header ────────────────────────────────────────────────────────────────
     local dispHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     dispHeader:SetPoint("TOPLEFT", 14, -14)
-    dispHeader:SetText("Trinket Display")
+    dispHeader:SetText("Trinket Menu")
     dispHeader:SetTextColor(unpack(C.red))
 
     local dispDesc = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -2379,22 +2557,17 @@ local function buildTrinketsPanel(parent)
     dispDesc:SetText("Shows your two equipped trinket slots as clickable buttons.\nLeft-click uses the trinket. Hover to open the bag menu for swapping.")
     dispDesc:SetTextColor(unpack(C.textGrey))
     dispDesc:SetJustifyH("LEFT")
+    dispDesc:SetWidth(380)
 
-    local enableCB = createCheckbox(displayPanel, "Enable Trinket Display", 260)
+    local enableCB = createCheckbox(displayPanel, "Enable Trinket Menu", 260)
     enableCB:SetPoint("TOPLEFT", dispDesc, "BOTTOMLEFT", 0, -14)
     enableCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.enabled = checked end
         if addon.Trinkets then addon.Trinkets.applyVisibility() end
     end
 
-    local moveBtn = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
-    moveBtn:SetSize(80, 22)
+    local moveBtn = flatButton(displayPanel, "Move", 80, 22)
     moveBtn:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -10)
-    applyBackdrop(moveBtn, 1, C.panelDark, C.tabBorder)
-    local moveLbl = moveBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    moveLbl:SetPoint("CENTER"); moveLbl:SetText("Move"); moveLbl:SetTextColor(unpack(C.textWhite))
-    moveBtn:SetScript("OnEnter", function() moveBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    moveBtn:SetScript("OnLeave", function() moveBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
     moveBtn:SetScript("OnClick", function() UI.EnterMoveMode({ addon.Trinkets }) end)
 
     -- ── Bag Menu section ──────────────────────────────────────────────────────
@@ -2432,50 +2605,19 @@ local function buildTrinketsPanel(parent)
     swapLabel:SetText("Menu rebuild delay after swap:")
     swapLabel:SetTextColor(unpack(C.textGrey))
 
-    local swapMinus = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
-    swapMinus:SetSize(22, 22)
-    swapMinus:SetPoint("LEFT", swapLabel, "RIGHT", 8, 0)
-    applyBackdrop(swapMinus, 1, C.panelDark, C.tabBorder)
-    local swapMinusLbl = swapMinus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    swapMinusLbl:SetPoint("CENTER"); swapMinusLbl:SetText("-"); swapMinusLbl:SetTextColor(unpack(C.textWhite))
-
-    local swapNum = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    swapNum:SetPoint("LEFT", swapMinus, "RIGHT", 6, 0)
-    swapNum:SetWidth(30); swapNum:SetJustifyH("CENTER")
-    swapNum:SetTextColor(unpack(C.textWhite))
-
-    local swapPlus = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
-    swapPlus:SetSize(22, 22)
-    swapPlus:SetPoint("LEFT", swapNum, "RIGHT", 6, 0)
-    applyBackdrop(swapPlus, 1, C.panelDark, C.tabBorder)
-    local swapPlusLbl = swapPlus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    swapPlusLbl:SetPoint("CENTER"); swapPlusLbl:SetText("+"); swapPlusLbl:SetTextColor(unpack(C.textWhite))
+    local swapStepper = buildStepper(displayPanel, {
+        min = 0.1, max = 5.0, step = 0.1, valueWidth = 30,
+        format = function(v) return string.format("%.1f", v) end,
+        get = function() local d = getTData(); return (d and d.swapDelay) or 1.0 end,
+        set = function(v) local d = getTData(); if d then d.swapDelay = v end end,
+    })
+    swapStepper:SetPoint("LEFT", swapLabel, "RIGHT", 8, 0)
 
     local swapSec = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    swapSec:SetPoint("LEFT", swapPlus, "RIGHT", 4, 0)
+    swapSec:SetPoint("LEFT", swapStepper.plus, "RIGHT", 4, 0)
     swapSec:SetText("s"); swapSec:SetTextColor(unpack(C.textDim))
 
-    local refreshSwapDelay
-    refreshSwapDelay = function()
-        local d = getTData()
-        swapNum:SetText(string.format("%.1f", (d and d.swapDelay) or 1.0))
-    end
-
-    swapMinus:SetScript("OnClick", function()
-        local d = getTData(); if not d then return end
-        d.swapDelay = math.max(0.1, math.floor(((d.swapDelay or 1.0) - 0.1) * 10 + 0.5) / 10)
-        refreshSwapDelay()
-    end)
-    swapMinus:SetScript("OnEnter", function() swapMinus:SetBackdropBorderColor(unpack(C.red)) end)
-    swapMinus:SetScript("OnLeave", function() swapMinus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
-    swapPlus:SetScript("OnClick", function()
-        local d = getTData(); if not d then return end
-        d.swapDelay = math.min(5.0, math.floor(((d.swapDelay or 1.0) + 0.1) * 10 + 0.5) / 10)
-        refreshSwapDelay()
-    end)
-    swapPlus:SetScript("OnEnter", function() swapPlus:SetBackdropBorderColor(unpack(C.red)) end)
-    swapPlus:SetScript("OnLeave", function() swapPlus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    local refreshSwapDelay = swapStepper.Refresh
 
     -- ── Layout section ────────────────────────────────────────────────────────
     local layoutHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -2544,49 +2686,22 @@ local function buildTrinketsPanel(parent)
     perLineLbl:SetPoint("LEFT", 0, 0)
     perLineLbl:SetTextColor(unpack(C.textGrey))
 
-    local perLineMinus = CreateFrame("Button", nil, perLineRow, "BackdropTemplate")
-    perLineMinus:SetSize(22, 22)
-    perLineMinus:SetPoint("LEFT", 130, 0)
-    applyBackdrop(perLineMinus, 1, C.panelDark, C.tabBorder)
-    local pml = perLineMinus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    pml:SetPoint("CENTER"); pml:SetText("-"); pml:SetTextColor(unpack(C.textWhite))
-    perLineMinus:SetScript("OnEnter", function() perLineMinus:SetBackdropBorderColor(unpack(C.red)) end)
-    perLineMinus:SetScript("OnLeave", function() perLineMinus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    local perLineStepper = buildStepper(perLineRow, {
+        min = 1, max = 10, valueWidth = 16,
+        get = function() local d = getTData(); return (d and d.menuPerLine) or 4 end,
+        set = function(v) local d = getTData(); if d then d.menuPerLine = v end end,
+        onChange = function() if addon.Trinkets then addon.Trinkets.buildMenu() end end,
+    })
+    perLineStepper:SetPoint("LEFT", 130, 0)
 
-    local perLineNum = perLineRow:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    perLineNum:SetPoint("LEFT", perLineMinus, "RIGHT", 6, 0)
-    perLineNum:SetWidth(16); perLineNum:SetJustifyH("CENTER")
-    perLineNum:SetTextColor(unpack(C.textWhite))
-
-    local perLinePlus = CreateFrame("Button", nil, perLineRow, "BackdropTemplate")
-    perLinePlus:SetSize(22, 22)
-    perLinePlus:SetPoint("LEFT", perLineNum, "RIGHT", 6, 0)
-    applyBackdrop(perLinePlus, 1, C.panelDark, C.tabBorder)
-    local ppl = perLinePlus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    ppl:SetPoint("CENTER"); ppl:SetText("+"); ppl:SetTextColor(unpack(C.textWhite))
-    perLinePlus:SetScript("OnEnter", function() perLinePlus:SetBackdropBorderColor(unpack(C.red)) end)
-    perLinePlus:SetScript("OnLeave", function() perLinePlus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
+    -- The value number is driven by the stepper; refreshPerLine additionally
+    -- swaps the label between "per row" / "per column" with the orientation.
     refreshPerLine = function()
         local d = getTData()
-        local n = (d and d.menuPerLine) or 4
-        perLineNum:SetText(tostring(n))
         local vert = d and d.menuOrientation == "vertical"
         perLineLbl:SetText(vert and "Trinkets per column:" or "Trinkets per row:")
+        perLineStepper.Refresh()
     end
-
-    perLineMinus:SetScript("OnClick", function()
-        local d = getTData(); if not d then return end
-        d.menuPerLine = math.max(1, (d.menuPerLine or 4) - 1)
-        refreshPerLine()
-        if addon.Trinkets then addon.Trinkets.buildMenu() end
-    end)
-    perLinePlus:SetScript("OnClick", function()
-        local d = getTData(); if not d then return end
-        d.menuPerLine = math.min(10, (d.menuPerLine or 4) + 1)
-        refreshPerLine()
-        if addon.Trinkets then addon.Trinkets.buildMenu() end
-    end)
 
     -- Alignment dropdown (left / right). Right builds the menu from the right
     -- edge so the 1st trinket in menu order sits at the far right.
@@ -2876,7 +2991,55 @@ local function buildTrinketsPanel(parent)
     watchdogHint:SetTextColor(unpack(C.textDim))
     watchdogHint:SetWidth(340); watchdogHint:SetJustifyH("LEFT")
 
-    -- ── Preemptive (soft) queue modifier ───────────────────────────────────────
+    -- ── Modifier-click settings (soft queue + slot swap) ────────────────────────
+    -- Two dropdowns choosing Shift / Ctrl / None. "None" only disables the
+    -- MANUAL modifier+click action — it does not disable the soft-queue system
+    -- itself (Specific Auto Queue still soft-queues). If you pick the modifier
+    -- the other setting already uses, a popup offers to swap the two so they
+    -- never collide.
+    local MOD_OPTS = {
+        { value = "shift", label = "Shift" },
+        { value = "ctrl",  label = "Ctrl"  },
+        { value = "none",  label = "None"  },
+    }
+    local MOD_LABELS = { shift = "Shift", ctrl = "Ctrl", none = "None" }
+
+    local softQDD, swapDD  -- forward-declared for the conflict-swap logic below
+
+    local function applyMods()
+        if addon.Trinkets and addon.Trinkets.applySoftQueueMod then
+            addon.Trinkets.applySoftQueueMod()
+        end
+    end
+    local function refreshMods()
+        if softQDD then softQDD.Refresh() end
+        if swapDD  then swapDD.Refresh()  end
+    end
+
+    -- Assigns modifier `v` to setting `key`. If the other setting (`otherKey`,
+    -- named `otherName` in the prompt) already uses `v` (and v isn't "none"),
+    -- offers to swap the two modifiers so they can't both be the same key.
+    local function setModifier(key, otherKey, otherName, v)
+        local d = getTData(); if not d then return end
+        if v ~= "none" and d[otherKey] == v then
+            UI.showConfirmPopup({
+                title       = "Modifier already in use",
+                message     = string.format('"%s" is already the %s. Swap the two modifiers?',
+                                            MOD_LABELS[v], otherName),
+                confirmText = "Swap",
+                onConfirm   = function()
+                    d[key], d[otherKey] = v, d[key]
+                    refreshMods(); applyMods()
+                end,
+            })
+            -- Leave both unchanged unless confirmed; createDropdown re-reads the
+            -- (unchanged) value right after this returns, reverting its display.
+            return
+        end
+        d[key] = v
+        applyMods()
+    end
+
     local softQRow = CreateFrame("Frame", nil, displayPanel)
     softQRow:SetSize(360, 22)
     softQRow:SetPoint("TOPLEFT", watchdogHint, "BOTTOMLEFT", -20, -14)
@@ -2886,14 +3049,9 @@ local function buildTrinketsPanel(parent)
     softQLbl:SetText("Soft queue modifier:")
     softQLbl:SetTextColor(unpack(C.textGrey))
 
-    local softQDD = createDropdown(softQRow, 90,
-        { { value = "shift", label = "Shift" }, { value = "ctrl", label = "Ctrl" } },
+    softQDD = createDropdown(softQRow, 90, MOD_OPTS,
         function() local d = getTData(); return (d and d.softQueueMod) or "shift" end,
-        function(v) local d = getTData(); if d then d.softQueueMod = v end
-            if addon.Trinkets and addon.Trinkets.applySoftQueueMod then
-                addon.Trinkets.applySoftQueueMod()
-            end
-        end)
+        function(v) setModifier("softQueueMod", "swapMod", "Swap slots modifier", v) end)
     softQDD:SetPoint("LEFT", softQLbl, "RIGHT", 8, 0)
 
     local softQHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -2901,6 +3059,27 @@ local function buildTrinketsPanel(parent)
     softQHint:SetText("Hold this modifier and click a trinket in the bag menu to Soft queue it. It swaps in only once your current trinket has been used and its effect has run out. Shown as a yellow-bordered icon in the bottom-right corner.")
     softQHint:SetTextColor(unpack(C.textDim))
     softQHint:SetWidth(340); softQHint:SetJustifyH("LEFT")
+
+    -- ── Swap slots modifier ─────────────────────────────────────────────────────
+    local swapRow = CreateFrame("Frame", nil, displayPanel)
+    swapRow:SetSize(360, 22)
+    swapRow:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
+
+    local swapLbl = swapRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    swapLbl:SetPoint("LEFT", 0, 0)
+    swapLbl:SetText("Swap slots modifier:")
+    swapLbl:SetTextColor(unpack(C.textGrey))
+
+    swapDD = createDropdown(swapRow, 90, MOD_OPTS,
+        function() local d = getTData(); return (d and d.swapMod) or "ctrl" end,
+        function(v) setModifier("swapMod", "softQueueMod", "Soft queue modifier", v) end)
+    swapDD:SetPoint("LEFT", swapLbl, "RIGHT", 8, 0)
+
+    local swapHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    swapHint:SetPoint("TOPLEFT", swapRow, "BOTTOMLEFT", 0, -8)
+    swapHint:SetText("Hold this modifier and click a worn trinket to swap your Top and Bottom slot trinkets around.")
+    swapHint:SetTextColor(unpack(C.textDim))
+    swapHint:SetWidth(340); swapHint:SetJustifyH("LEFT")
 
     local keyUpCB = createCheckbox(displayPanel,
         "Trigger keybind on key up (default: key down)", 340)
@@ -2934,6 +3113,19 @@ local function buildTrinketsPanel(parent)
     shiftCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.blockModShift = checked end
         if addon.Trinkets then addon.Trinkets.applyModifierBlockers() end
+    end
+
+    local reverseClickCB = createCheckbox(displayPanel, "Reverse bag menu click slots (left = bottom, right = top)", 340)
+    reverseClickCB:SetPoint("TOPLEFT", shiftCB, "BOTTOMLEFT", 0, -6)
+    reverseClickCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.reverseClickSlots = checked end
+    end
+
+    local elvuiSkinCB = createCheckbox(displayPanel, "Skin with ElvUI (if installed)", 340)
+    elvuiSkinCB:SetPoint("TOPLEFT", reverseClickCB, "BOTTOMLEFT", 0, -6)
+    elvuiSkinCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.elvuiSkinEnabled = checked end
+        if addon.Trinkets and addon.Trinkets.refreshElvUISkin then addon.Trinkets.refreshElvUISkin() end
     end
 
     -- ── Keybind assignment ─────────────────────────────────────────────────────
@@ -3052,12 +3244,14 @@ local function buildTrinketsPanel(parent)
     kbDesc:SetJustifyH("LEFT")
 
     local kbBindBtns = {}
+    local kbSlotLbls = {}
     local prevKbAnchor = kbDesc
     for which = 0, 1 do
         local action   = "CLICK DrievTrinketBtn"..which..":LeftButton"
         local slotName = (which == 0) and "Use Top Slot" or "Use Bottom Slot"
 
         local slotLbl = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        slotLbl:SetWidth(80); slotLbl:SetJustifyH("LEFT")
         slotLbl:SetPoint("TOPLEFT", prevKbAnchor, "BOTTOMLEFT", 0, -18)
         slotLbl:SetText(slotName .. ":")
         slotLbl:SetTextColor(unpack(C.textGrey))
@@ -3092,6 +3286,7 @@ local function buildTrinketsPanel(parent)
         kbBtn:SetScript("OnLeave", function() kbBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
 
         kbBindBtns[which] = kbBtn
+        kbSlotLbls[which] = slotLbl
         prevKbAnchor = slotLbl
     end
 
@@ -3103,31 +3298,37 @@ local function buildTrinketsPanel(parent)
 
     local function makePadRow(anchorAbove, label, getVal, setVal, apply)
         apply = apply or function() if addon.Trinkets then addon.Trinkets.buildMenu() end end
-        local rowLbl = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        rowLbl:SetPoint("TOPLEFT", anchorAbove, "BOTTOMLEFT", 0, -18)
+        -- Everything lives on a container frame so the whole row can be
+        -- re-parented as one unit into the new tabbed layout below.
+        local row = CreateFrame("Frame", nil, displayPanel)
+        row:SetSize(420, 22)
+        row:SetPoint("TOPLEFT", anchorAbove, "BOTTOMLEFT", 0, -18)
+
+        local rowLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        rowLbl:SetPoint("LEFT", 0, 0)
         rowLbl:SetText(label)
         rowLbl:SetTextColor(unpack(C.textGrey))
 
-        local btnM = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
+        local btnM = CreateFrame("Button", nil, row, "BackdropTemplate")
         btnM:SetSize(22, 22)
         btnM:SetPoint("LEFT", rowLbl, "RIGHT", 8, 0)
         applyBackdrop(btnM, 1, C.panelDark, C.tabBorder)
         local mLbl = btnM:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         mLbl:SetPoint("CENTER"); mLbl:SetText("-"); mLbl:SetTextColor(unpack(C.textWhite))
 
-        local numLbl = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        local numLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         numLbl:SetPoint("LEFT", btnM, "RIGHT", 6, 0)
         numLbl:SetWidth(20); numLbl:SetJustifyH("CENTER")
         numLbl:SetTextColor(unpack(C.textWhite))
 
-        local btnP = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
+        local btnP = CreateFrame("Button", nil, row, "BackdropTemplate")
         btnP:SetSize(22, 22)
         btnP:SetPoint("LEFT", numLbl, "RIGHT", 6, 0)
         applyBackdrop(btnP, 1, C.panelDark, C.tabBorder)
         local pLbl = btnP:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         pLbl:SetPoint("CENTER"); pLbl:SetText("+"); pLbl:SetTextColor(unpack(C.textWhite))
 
-        local pxLbl = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        local pxLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         pxLbl:SetPoint("LEFT", btnP, "RIGHT", 4, 0)
         pxLbl:SetText("px"); pxLbl:SetTextColor(unpack(C.textDim))
 
@@ -3148,32 +3349,32 @@ local function buildTrinketsPanel(parent)
         btnP:SetScript("OnEnter", function() btnP:SetBackdropBorderColor(unpack(C.red)) end)
         btnP:SetScript("OnLeave", function() btnP:SetBackdropBorderColor(unpack(C.tabBorder)) end)
 
-        return rowLbl, refresh
+        return row, refresh
     end
 
-    local btnGapLbl, refreshButtonGap = makePadRow(padHeader, "Bag menu — button gap (space between icons):",
+    local btnGapRow, refreshButtonGap = makePadRow(padHeader, "Button gap (space between icons):",
         function() local d = getTData(); return (d and d.menuButtonGap) or 6 end,
         function(v) local d = getTData(); if d then d.menuButtonGap = v end end)
 
     local applyDisplayLayout = function() if addon.Trinkets then addon.Trinkets.layoutDisplay() end end
 
-    local dispGapLbl, refreshDispButtonGap = makePadRow(btnGapLbl, "Display — gap between the two trinkets:",
+    local dispGapRow, refreshDispButtonGap = makePadRow(btnGapRow, "Gap between the two trinkets:",
         function() local d = getTData(); return (d and d.displayButtonGap) or 2 end,
         function(v) local d = getTData(); if d then d.displayButtonGap = v end end,
         applyDisplayLayout)
 
-    local edgePadLbl, refreshEdgePad = makePadRow(dispGapLbl, "Bag menu — edge padding (frame border):",
+    local edgePadRow, refreshEdgePad = makePadRow(dispGapRow, "Edge padding (frame border):",
         function() local d = getTData(); return (d and d.menuEdgePad) or 0 end,
         function(v) local d = getTData(); if d then d.menuEdgePad = v end end)
 
-    local dispEdgePadLbl, refreshDispEdgePad = makePadRow(edgePadLbl, "Display — edge padding (frame border):",
+    local dispEdgePadRow, refreshDispEdgePad = makePadRow(edgePadRow, "Edge padding (frame border):",
         function() local d = getTData(); return (d and d.displayEdgePad) or 0 end,
         function(v) local d = getTData(); if d then d.displayEdgePad = v end end,
         applyDisplayLayout)
 
     -- ── Misc section ──────────────────────────────────────────────────────────
     local miscHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    miscHeader:SetPoint("TOPLEFT", dispEdgePadLbl, "BOTTOMLEFT", 0, -20)
+    miscHeader:SetPoint("TOPLEFT", dispEdgePadRow, "BOTTOMLEFT", 0, -20)
     miscHeader:SetText("Misc")
     miscHeader:SetTextColor(unpack(C.red))
 
@@ -3204,36 +3405,205 @@ local function buildTrinketsPanel(parent)
         if addon.Trinkets then addon.Trinkets.updateHotkeys() end
     end
 
-    -- ── Two-column layout ──────────────────────────────────────────────────────
-    -- The sections above are built in one chained sequence for readability; here
-    -- we override only the section-header anchors to lay them out in two columns.
-    -- Each section's contents stay anchored to their own header, so re-anchoring
-    -- a header moves the whole section as a unit.
-    --   Left  column (top→bottom): Trinket Display, Keybinds, Bag Menu, Behavior
-    --   Right column (top→bottom): Layout, Display Scale, Menu Scale, Padding
-    local RIGHT_X = 460
+    -- ── Redesigned layout ──────────────────────────────────────────────────────
+    -- Header row: the "Trinket Menu" block (dispHeader/dispDesc/enableCB/moveBtn)
+    -- stays top-left; the Keybinds block moves top-right. Below, a "Settings"
+    -- heading over a left sub-sidebar (Display Menu / Bag Menu / Behavior / Misc),
+    -- each section's content shown to the right with its own General/Layout tabs
+    -- where applicable. All widgets above are reused — just re-parented here.
 
-    -- Left column. dispHeader keeps its original (14, -14). prevKbAnchor is the
-    -- Keybinds section's last row (the Bottom Slot label). Bag Menu's last row
-    -- is now the swap-delay control — anchor off swapLabel (its fontstring sits
-    -- at the correct unindented left margin; swapMinus/swapPlus are anchored
-    -- via LEFT/RIGHT off swapLabel so their X is offset well to the right of
-    -- the margin and is the wrong reference for X here). No x counter-offset
-    -- needed since swapLabel is already unindented.
+    -- Keybinds block → top-right of the header area.
     kbHeader:ClearAllPoints()
-    kbHeader:SetPoint("TOPLEFT", moveBtn, "BOTTOMLEFT", 0, -20)
-    menuHeader:ClearAllPoints()
-    menuHeader:SetPoint("TOPLEFT", prevKbAnchor, "BOTTOMLEFT", 0, -20)
-    behHeader:ClearAllPoints()
-    behHeader:SetPoint("TOPLEFT", swapLabel, "BOTTOMLEFT", 0, -18)
+    kbHeader:SetPoint("TOPLEFT", displayPanel, "TOPLEFT", 440, -14)
 
-    -- Right column. dispScaleHeader (→perLineRow) and scaleHeader (→dispScaleRow)
-    -- already chain correctly beneath Layout, so only the column head (Layout)
-    -- and Padding need re-anchoring.
-    layoutHeader:ClearAllPoints()
-    layoutHeader:SetPoint("TOPLEFT", displayPanel, "TOPLEFT", RIGHT_X, -14)
-    padHeader:ClearAllPoints()
-    padHeader:SetPoint("TOPLEFT", scaleRow, "BOTTOMLEFT", 0, -20)
+    -- Anchor the Settings heading directly beneath the header block (Trinket
+    -- Menu column on the left / Keybinds on the right) instead of a fixed
+    -- offset, so the gap hugs the content. moveBtn is the lowest element of
+    -- the left column; the keybind block on the right is shorter, so this
+    -- clears both.
+    local settingsHdr = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    settingsHdr:SetPoint("TOPLEFT", moveBtn, "BOTTOMLEFT", 0, -12)
+    settingsHdr:SetText("Settings")
+    settingsHdr:SetTextColor(unpack(C.red))
+
+    -- The Settings box stretches from just under its heading down to the bottom
+    -- of the (non-scrolling) sub-panel, filling whatever vertical space the
+    -- window offers. Each section's content is its own scroll area (see
+    -- scrollArea below), so a section taller than the box scrolls inside it.
+    local sideCol = CreateFrame("Frame", nil, displayPanel, "BackdropTemplate")
+    -- Left edge flush with the content box (displayPanel = subContent), so the
+    -- sidebar lines up with the tab bar backdrop above it. The header content
+    -- (Settings, etc.) keeps its 14px indent; only the sidebar goes fully left.
+    -- The TOPLEFT still hangs off the Settings header for its vertical position,
+    -- so its x is pulled back 14px to reach the content's left edge.
+    sideCol:SetPoint("TOPLEFT", settingsHdr, "BOTTOMLEFT", -14, -8)
+    sideCol:SetPoint("BOTTOMLEFT", displayPanel, "BOTTOMLEFT", 0, 12)
+    sideCol:SetWidth(130)
+    applyBackdrop(sideCol, 1, C.panelDark)
+
+    local sideContent = CreateFrame("Frame", nil, displayPanel, "BackdropTemplate")
+    sideContent:SetPoint("TOPLEFT", sideCol, "TOPRIGHT", 6, 0)
+    sideContent:SetPoint("BOTTOMRIGHT", displayPanel, "BOTTOMRIGHT", -14, 12)
+    applyBackdrop(sideContent, 1, C.panelDeep)
+
+    local sectionBtns, sectionShells = {}, {}
+
+    local function newSectionShell()
+        local s = CreateFrame("Frame", nil, sideContent)
+        s:SetAllPoints()
+        s:Hide()
+        return s
+    end
+
+    -- A scroll viewport filling `parent` (a section's backdrop box): a
+    -- ScrollFrame leaving room for the themed track on the right, plus a
+    -- scroll-child `inner` that stackIn() fills and sizes. Returns
+    -- (wrap, inner): `wrap` is the toggled unit (its track hides with it, so
+    -- General/Layout tabs don't leave a stray scrollbar behind); `inner` is
+    -- what widgets get stacked into. `inner._update` refreshes the thumb.
+    local function scrollArea(parent)
+        local wrap = CreateFrame("Frame", nil, parent)
+        wrap:SetAllPoints(parent)
+
+        local scroll = CreateFrame("ScrollFrame", nil, wrap)
+        scroll:SetPoint("TOPLEFT", 4, -4)
+        scroll:SetPoint("BOTTOMRIGHT", -(SCROLLBAR_W + 4), 4)
+
+        local inner = CreateFrame("Frame", nil, scroll)
+        inner:SetSize(1, 1)
+        scroll:SetScrollChild(inner)
+
+        local _, update = attachScrollTrack(scroll, wrap)
+        inner._update = update
+        scroll:SetScript("OnSizeChanged", function(_, w) inner:SetWidth(w); update() end)
+        -- GetVerticalScrollRange isn't reliable until shown (see makeScrollPanel);
+        -- refresh the thumb on show and one frame later.
+        wrap:HookScript("OnShow", function() update(); C_Timer.After(0, update) end)
+        return wrap, inner
+    end
+
+    -- Section with its own General / Layout tab bar; returns (genInner, layInner).
+    local function tabbedShell(shell)
+        -- Height and the tabs' 3px top/left inset mirror the left sidebar
+        -- (sideCol + its buttons at TOPLEFT 3,-3), so the tabs' tops line up
+        -- with the "Display Menu" button's top rather than sitting slightly
+        -- higher.
+        local tbar = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+        tbar:SetHeight(26)
+        tbar:SetPoint("TOPLEFT", 0, 0)
+        tbar:SetPoint("TOPRIGHT", 0, 0)
+        applyBackdrop(tbar, 1, C.panelDark)
+
+        local body = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+        body:SetPoint("TOPLEFT", tbar, "BOTTOMLEFT", 0, -6)
+        body:SetPoint("BOTTOMRIGHT", 0, 0)
+        applyBackdrop(body, 4, C.panelDeep, C.panelDark)
+
+        local genWrap, genInner = scrollArea(body)
+        local layWrap, layInner = scrollArea(body)
+        layWrap:Hide()
+
+        local tabs = {}
+        local panels = { general = genWrap, layout = layWrap }
+        local gtab = createTab(tbar, "General", 80); gtab:SetHeight(20); gtab:SetPoint("TOPLEFT", 3, -3)
+        gtab:SetScript("OnClick", function() activateTab(tabs, panels, "general") end)
+        local ltab = createTab(tbar, "Layout", 80); ltab:SetHeight(20); ltab:SetPoint("LEFT", gtab, "RIGHT", 4, 0)
+        ltab:SetScript("OnClick", function() activateTab(tabs, panels, "layout") end)
+        tabs.general, tabs.layout = gtab, ltab
+        activateTab(tabs, panels, "general")
+        return genInner, layInner
+    end
+
+    -- Section with a single plain (but still scrollable) content area, no tabs.
+    local function plainShell(shell)
+        local bg = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+        bg:SetAllPoints()
+        applyBackdrop(bg, 4, C.panelDeep, C.panelDark)
+
+        local _, inner = scrollArea(bg)
+        return inner
+    end
+
+    local dmShell = newSectionShell()
+    local dmGen, dmLay = tabbedShell(dmShell)
+    local bmShell = newSectionShell()
+    local bmGen, bmLay = tabbedShell(bmShell)
+    local behShell = newSectionShell()
+    local behInner = plainShell(behShell)
+
+    sectionShells.display  = dmShell
+    sectionShells.bag      = bmShell
+    sectionShells.behavior = behShell
+
+    local sideDefs = {
+        { key = "display",  label = "Display Menu" },
+        { key = "bag",      label = "Bag Menu"     },
+        { key = "behavior", label = "Behavior"     },
+    }
+    local prevSb
+    for _, def in ipairs(sideDefs) do
+        local b = createSideTab(sideCol, def.label, 26)
+        if prevSb then
+            b:SetPoint("TOPLEFT",  prevSb, "BOTTOMLEFT",  0, -2)
+            b:SetPoint("TOPRIGHT", prevSb, "BOTTOMRIGHT", 0, -2)
+        else
+            b:SetPoint("TOPLEFT",  sideCol, "TOPLEFT",   3, -3)
+            b:SetPoint("TOPRIGHT", sideCol, "TOPRIGHT", -3, -3)
+        end
+        b:SetScript("OnClick", function() activateTab(sectionBtns, sectionShells, def.key) end)
+        sectionBtns[def.key] = b
+        prevSb = b
+    end
+    activateTab(sectionBtns, sectionShells, "display")
+
+    -- Re-parent + vertically re-stack the existing widgets into their section's
+    -- scroll child, then size the child to its content so the scroll range (and
+    -- thumb) reflect it.
+    local function stackIn(inner, rows)
+        local y = 10
+        for _, r in ipairs(rows) do
+            y = y + (r.gap or 8)
+            r[1]:SetParent(inner)
+            r[1]:ClearAllPoints()
+            r[1]:SetPoint("TOPLEFT", inner, "TOPLEFT", 8 + (r.indent or 0), -y)
+            y = y + (r.h or 22)
+        end
+        inner:SetHeight(y + 10)
+        if inner._update then inner._update() end
+    end
+
+    stackIn(dmGen, {
+        { cdCB }, { showBindCB }, { truncBindCB, indent = 20 }, { notifyCB },
+    })
+    stackIn(dmLay, {
+        { dispScaleHeader, h = 18 }, { dispScaleRow, gap = 4 },
+        { dispGapRow, gap = 16 }, { dispEdgePadRow, gap = 6 },
+    })
+
+    stackIn(bmGen, {
+        { alwaysShowCB }, { dockedCB }, { dockHint, indent = 20, h = 38 },
+        { keepCB, gap = 12 }, { ttCB }, { tinyTipCB, indent = 20 },
+        { swapLabel, gap = 14 },
+    })
+    swapStepper:SetParent(bmGen); swapStepper.value:SetParent(bmGen)
+    swapStepper.plus:SetParent(bmGen);  swapSec:SetParent(bmGen)
+
+    stackIn(bmLay, {
+        { orientRow }, { perLineRow, gap = 10 }, { alignRow, gap = 12 },
+        { scaleHeader, gap = 16, h = 18 }, { scaleRow, gap = 4 },
+        { btnGapRow, gap = 16 }, { edgePadRow, gap = 6 },
+    })
+
+    stackIn(behInner, {
+        { watchdogCB }, { watchdogHint, indent = 20, h = 48 },
+        { softQRow, gap = 12 }, { softQHint, h = 48 },
+        { swapRow, gap = 12 }, { swapHint, h = 34 },
+        { keyUpCB, gap = 12 }, { ctrlCB, gap = 12 }, { altCB }, { shiftCB },
+        { reverseClickCB, gap = 12 }, { elvuiSkinCB, gap = 12 },
+    })
+
+    -- The old section headers are redundant now (the sidebar/tabs label them).
+    menuHeader:Hide(); behHeader:Hide(); layoutHeader:Hide(); miscHeader:Hide(); padHeader:Hide()
 
     -- OnShow fires when the Display sub-tab is selected
     local function refreshDisplay()
@@ -3253,12 +3623,15 @@ local function buildTrinketsPanel(parent)
         tinyTipCB:SetChecked(d.tinyTooltips or false)
         watchdogCB:SetChecked(d.swapWatchdog ~= false)
         softQDD.Refresh()
+        swapDD.Refresh()
         showBindCB:SetChecked(d.showBindings ~= false)
         truncBindCB:SetChecked(d.truncateBindings ~= false)
         keyUpCB:SetChecked(d.triggerOnKeyUp or false)
         ctrlCB:SetChecked(d.blockModCtrl or false)
         altCB:SetChecked(d.blockModAlt or false)
         shiftCB:SetChecked(d.blockModShift or false)
+        reverseClickCB:SetChecked(d.reverseClickSlots or false)
+        elvuiSkinCB:SetChecked(d.elvuiSkinEnabled ~= false)
         refreshSwapDelay()
         for which = 0, 1 do
             local action = "CLICK DrievTrinketBtn"..which..":LeftButton"
@@ -3339,7 +3712,7 @@ local function buildTrinketsPanel(parent)
     end)
 
     -- ── Sub-tabs ──────────────────────────────────────────────────────────────
-    panel.subTabs["display"]   = createTab(subBar, "Display", 80)
+    panel.subTabs["display"]   = createTab(subBar, "General", 80)
     panel.subTabs["order"]     = createTab(subBar, "Menu Order", 100)
     panel.subTabs["specific"]  = createTab(subBar, "Specific Auto Queue (beta)", 205)
     panel.subTabs["autoqueue"] = createTab(subBar, "Auto Queue", 100)
@@ -3369,35 +3742,284 @@ local function buildTrinketsPanel(parent)
     return panel
 end
 
+-- Themed horizontal slider used in the Move UI bar (and the settings window's
+-- own UI Scale slider, next to Edit Mode): [label] [track] [box]. The
+-- typeable value box sits to the RIGHT of the track. opts = { label, min,
+-- max, get, set, suffix }. Returns a row frame exposing :Refresh() to re-read
+-- the current value from opts.get(). Defined ahead of createMainFrame()
+-- (rather than left where it's mainly used, near the Move UI bar further
+-- down) since createMainFrame's own UI Scale slider needs it as a local
+-- upvalue, and Lua locals aren't visible to code written before them.
+local EDIT_SLIDER_TRACK_W = 110
+
+local function buildEditSlider(parent, opts)
+    local mn, mx = opts.min, opts.max
+    local row = CreateFrame("Frame", nil, parent)
+    row:SetSize(244, 22)
+
+    local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("LEFT", row, "LEFT", 0, 0)
+    label:SetWidth(opts.labelWidth or 58); label:SetJustifyH("LEFT")
+    label:SetText(opts.label)
+    label:SetTextColor(unpack(C.textWhite))
+
+    local track = CreateFrame("Frame", nil, row, "BackdropTemplate")
+    track:SetSize(EDIT_SLIDER_TRACK_W, 8)
+    track:SetPoint("LEFT", label, "RIGHT", 6, 0)
+    applyBackdrop(track, 1, C.panelDark, C.tabBorder)
+    track:EnableMouse(true)
+
+    local fill = track:CreateTexture(nil, "ARTWORK")
+    fill:SetTexture(WHITE)
+    fill:SetVertexColor(unpack(C.red))
+    fill:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -1)
+    fill:SetPoint("BOTTOMLEFT", track, "BOTTOMLEFT", 1, 1)
+    fill:SetWidth(1)
+
+    local thumb = CreateFrame("Button", nil, track, "BackdropTemplate")
+    thumb:SetSize(14, 14)
+    applyBackdrop(thumb, 1, C.tabIdle, C.tabBorder)
+    thumb:SetPoint("CENTER", track, "LEFT", 0, 0)
+
+    local boxWrap = CreateFrame("Frame", nil, row, "BackdropTemplate")
+    boxWrap:SetSize(40, 20)
+    boxWrap:SetPoint("LEFT", track, "RIGHT", 10, 0)
+    applyBackdrop(boxWrap, 1, C.panelDark, C.tabBorder)
+
+    local box = CreateFrame("EditBox", nil, boxWrap)
+    box:SetSize(32, 16); box:SetPoint("CENTER")
+    box:SetAutoFocus(false); box:SetMaxLetters(3)
+    box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormal")
+    box:SetTextColor(unpack(C.textWhite))
+
+    if opts.suffix then
+        local suf = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        suf:SetPoint("LEFT", boxWrap, "RIGHT", 3, 0)
+        suf:SetText(opts.suffix); suf:SetTextColor(unpack(C.textGrey))
+    end
+
+    local value    = mn
+    local dragging  = false
+
+    local function setVisual(v)
+        local frac = (v - mn) / (mx - mn)
+        frac = math.max(0, math.min(1, frac))
+        fill:SetWidth(math.max(frac * (EDIT_SLIDER_TRACK_W - 2), 1))
+        thumb:ClearAllPoints()
+        thumb:SetPoint("CENTER", track, "LEFT", frac * EDIT_SLIDER_TRACK_W, 0)
+    end
+
+    local function setValue(v, skipSet)
+        v = math.floor(math.max(mn, math.min(mx, v)) + 0.5)
+        value = v
+        setVisual(v)
+        if not box:HasFocus() then box:SetText(tostring(v)) end
+        if not skipSet and opts.set then opts.set(v) end
+    end
+
+    local function valFromCursor()
+        local left = track:GetLeft()
+        if not left then return value end
+        -- track:GetLeft() is reported in the track's OWN effective-scale
+        -- coordinate space, so the raw cursor position must be divided by that
+        -- same scale — NOT UIParent's. They're equal for sliders on an
+        -- unscaled parent (the Move UI bar), which is why this was fine there;
+        -- but the settings window's Scale slider lives inside a frame we
+        -- SetScale() ourselves, so using UIParent's scale here left the cursor
+        -- math off by a factor of the window's scale (unusable at 150%, jumpy
+        -- elsewhere). track:GetEffectiveScale() is correct in every case.
+        local x = GetCursorPosition() / track:GetEffectiveScale()
+        local frac = math.max(0, math.min(1, (x - left) / EDIT_SLIDER_TRACK_W))
+        return mn + frac * (mx - mn)
+    end
+
+    -- opts.deferSet: for a slider whose opts.set() rescales one of the
+    -- slider's own ancestors (e.g. the UI Scale slider, which SetScale()s the
+    -- whole settings window it lives in), calling opts.set on every OnUpdate
+    -- tick during a drag is self-referential — rescaling the window mid-drag
+    -- shifts track:GetLeft()/width under the cursor, which throws off the
+    -- very next valFromCursor() call and spirals (observed as the thumb
+    -- jumping to max on a single click, or refusing to move at all once
+    -- already scaled up). Deferring the real opts.set() until the drag ends
+    -- keeps the track's geometry stable for the whole drag.
+    thumb:SetScript("OnMouseDown", function(_, b)
+        if b ~= "LeftButton" then return end
+        dragging = true
+        thumb:SetScript("OnUpdate", function() setValue(valFromCursor(), opts.deferSet) end)
+    end)
+    thumb:SetScript("OnMouseUp", function(_, b)
+        if b ~= "LeftButton" then return end
+        dragging = false
+        thumb:SetScript("OnUpdate", nil)
+        thumb:SetBackdropBorderColor(unpack(C.tabBorder))
+        if opts.deferSet and opts.set then opts.set(value) end
+    end)
+    thumb:SetScript("OnEnter", function() thumb:SetBackdropBorderColor(unpack(C.red)) end)
+    thumb:SetScript("OnLeave", function() if not dragging then thumb:SetBackdropBorderColor(unpack(C.tabBorder)) end end)
+
+    track:SetScript("OnMouseDown", function(_, b) if b == "LeftButton" then setValue(valFromCursor()) end end)
+    track:EnableMouseWheel(true)
+    track:SetScript("OnMouseWheel", function(_, delta) setValue(value + delta) end)
+
+    local function commit()
+        local n = tonumber(box:GetText())
+        if n then setValue(n) else box:SetText(tostring(value)) end
+        box:ClearFocus()
+    end
+    box:SetScript("OnEnterPressed", commit)
+    box:SetScript("OnEditFocusLost", commit)
+    box:SetScript("OnEscapePressed", function() box:SetText(tostring(value)); box:ClearFocus() end)
+    boxWrap:SetScript("OnEnter", function() boxWrap:SetBackdropBorderColor(unpack(C.red)) end)
+    boxWrap:SetScript("OnLeave", function() boxWrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
+    function row:Refresh() setValue((opts.get and opts.get()) or mn, true) end
+
+    row:Refresh()
+    return row
+end
+
+-- Compact [label] [-] [box] [+] [px] stepper used in the top bar for the window
+-- width/height (moved there from the General tab). opts = { label, min, max,
+-- step, get, set }. Returns a row frame exposing :Refresh() to re-read the
+-- current value (e.g. after a corner-drag resize).
+local function buildSizeStepper(parent, opts)
+    local mn, mx, step = opts.min, opts.max, opts.step or 10
+    local function cur() return (opts.get and opts.get()) or mn end
+
+    local row = CreateFrame("Frame", nil, parent)
+    row:SetSize(130, 22)
+
+    local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("LEFT", 0, 0)
+    label:SetWidth(12); label:SetJustifyH("LEFT")
+    label:SetText(opts.label)
+    label:SetTextColor(unpack(C.textWhite))
+
+    local minus = CreateFrame("Button", nil, row, "BackdropTemplate")
+    minus:SetSize(20, 20)
+    minus:SetPoint("LEFT", label, "RIGHT", 6, 0)
+    applyBackdrop(minus, 1, C.panelDark, C.tabBorder)
+    local minusLbl = minus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    minusLbl:SetPoint("CENTER"); minusLbl:SetText("-"); minusLbl:SetTextColor(unpack(C.textWhite))
+
+    local boxWrap = CreateFrame("Frame", nil, row, "BackdropTemplate")
+    boxWrap:SetSize(46, 20)
+    boxWrap:SetPoint("LEFT", minus, "RIGHT", 4, 0)
+    applyBackdrop(boxWrap, 1, C.panelDark, C.tabBorder)
+
+    local box = CreateFrame("EditBox", nil, boxWrap)
+    box:SetSize(38, 16); box:SetPoint("CENTER")
+    box:SetAutoFocus(false); box:SetMaxLetters(4); box:SetNumeric(true)
+    box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormalSmall")
+    box:SetTextColor(unpack(C.textWhite))
+
+    local plus = CreateFrame("Button", nil, row, "BackdropTemplate")
+    plus:SetSize(20, 20)
+    plus:SetPoint("LEFT", boxWrap, "RIGHT", 4, 0)
+    applyBackdrop(plus, 1, C.panelDark, C.tabBorder)
+    local plusLbl = plus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    plusLbl:SetPoint("CENTER"); plusLbl:SetText("+"); plusLbl:SetTextColor(unpack(C.textWhite))
+
+    local suffix = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    suffix:SetPoint("LEFT", plus, "RIGHT", 4, 0)
+    suffix:SetText("px"); suffix:SetTextColor(unpack(C.textGrey))
+
+    local function refresh()
+        if not box:HasFocus() then box:SetText(tostring(math.floor(cur() + 0.5))) end
+    end
+    local function commit(v)
+        v = math.max(mn, math.min(mx, math.floor(v + 0.5)))
+        if opts.set then opts.set(v) end
+        refresh()
+    end
+
+    minus:SetScript("OnClick", function() commit(cur() - step) end)
+    plus:SetScript("OnClick",  function() commit(cur() + step) end)
+    minus:SetScript("OnEnter", function() minus:SetBackdropBorderColor(unpack(C.red)) end)
+    minus:SetScript("OnLeave", function() minus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    plus:SetScript("OnEnter",  function() plus:SetBackdropBorderColor(unpack(C.red)) end)
+    plus:SetScript("OnLeave",  function() plus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
+    box:SetScript("OnEnterPressed", function()
+        local n = tonumber(box:GetText())
+        if n then commit(n) else refresh() end
+        box:ClearFocus()
+    end)
+    box:SetScript("OnEditFocusLost", refresh)
+    box:SetScript("OnEscapePressed", function() refresh(); box:ClearFocus() end)
+    boxWrap:SetScript("OnEnter", function() boxWrap:SetBackdropBorderColor(unpack(C.red)) end)
+    boxWrap:SetScript("OnLeave", function() boxWrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
+    row.Refresh = refresh
+    refresh()
+    return row
+end
+
+local SIDEBAR_W = 150
+local MIN_WIN_W, MIN_WIN_H = 760, 420
+local MAX_WIN_W, MAX_WIN_H = 1800, 1200
+
 local function createMainFrame()
     local f = CreateFrame("Frame", "DrievSettingsFrame", UIParent, "BackdropTemplate")
-    f:SetSize(860, 500)
+    -- Wider than before to make room for the left nav sidebar while keeping the
+    -- content area roughly the same width the panels were designed against.
+    -- Falls back to that default size until the user drags the resize grip
+    -- (see `sizer` below), which persists whatever size they land on.
+    local savedW = addon.db and addon.db.settings and addon.db.settings.settingsWinW
+    local savedH = addon.db and addon.db.settings and addon.db.settings.settingsWinH
+    f:SetSize(savedW or 1000, savedH or 560)
     f:SetPoint("CENTER")
     f:SetFrameStrata("HIGH")
     f:SetToplevel(true)
     f:SetMovable(true)
+    f:SetResizable(true)
+    if f.SetResizeBounds then
+        f:SetResizeBounds(MIN_WIN_W, MIN_WIN_H, MAX_WIN_W, MAX_WIN_H)
+    elseif f.SetMinResize then
+        f:SetMinResize(MIN_WIN_W, MIN_WIN_H)
+        if f.SetMaxResize then f:SetMaxResize(MAX_WIN_W, MAX_WIN_H) end
+    end
     f:SetClampedToScreen(true)
     f:EnableMouse(true)
+    f:SetScale(addon.GetUIScale())
     applyBackdrop(f, 2, C.panelBG, C.red)
     f:Hide()
 
+    -- Full-height left sidebar: brand header at the top, vertical nav below.
+    -- Draggable (grabbing anywhere not on a nav button moves the window).
+    local sidebar = CreateFrame("Frame", nil, f, "BackdropTemplate")
+    sidebar:SetWidth(SIDEBAR_W)
+    sidebar:SetPoint("TOPLEFT", 2, -2)
+    sidebar:SetPoint("BOTTOMLEFT", 2, 2)
+    applyBackdrop(sidebar, 1, C.panelDark)
+    sidebar:EnableMouse(true)
+    sidebar:RegisterForDrag("LeftButton")
+    sidebar:SetScript("OnMouseDown", function() f:StartMoving() end)
+    sidebar:SetScript("OnMouseUp",   function() f:StopMovingOrSizing() end)
+
+    local title = sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 12, -12)
+    title:SetText("|cfffb2c36Driev's|r |cffffffffEssentials|r")
+
+    local version = sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    version:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+    version:SetText("|cffaaaaaav" .. addon.version .. "|r")
+
+    -- Top bar spanning only the content area (right of the sidebar). Holds the
+    -- Edit Mode + close buttons; also draggable.
     local topBar = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    topBar:SetHeight(34)
-    topBar:SetPoint("TOPLEFT", 2, -2)
+    -- 40 (rather than 34): the extra height lets the content box sit just 2px
+    -- below the top bar — matching the 2px sidebar↔content gap — while still
+    -- dropping each panel's tab bar down far enough to line up with the first
+    -- sidebar nav button (see the content anchor below).
+    topBar:SetHeight(40)
+    topBar:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 2, 0)
     topBar:SetPoint("TOPRIGHT", -2, -2)
     applyBackdrop(topBar, 1, C.panelDark)
     topBar:EnableMouse(true)
     topBar:RegisterForDrag("LeftButton")
     topBar:SetScript("OnMouseDown", function() f:StartMoving() end)
     topBar:SetScript("OnMouseUp",   function() f:StopMovingOrSizing() end)
-
-    local title = topBar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("LEFT", 12, 0)
-    title:SetText("|cfffb2c36Driev's|r |cffffffffEssentials|r")
-
-    local version = topBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    version:SetPoint("LEFT", title, "RIGHT", 8, -1)
-    version:SetText("|cffaaaaaav" .. addon.version .. "|r")
 
     local close = CreateFrame("Button", nil, topBar)
     close:SetSize(26, 26)
@@ -3410,31 +4032,75 @@ local function createMainFrame()
     close:SetScript("OnLeave", function() closeLabel:SetTextColor(unpack(C.red)) end)
     close:SetScript("OnClick", function() f:Hide() end)
 
-    local moveUIBtn = CreateFrame("Button", nil, topBar, "BackdropTemplate")
-    moveUIBtn:SetSize(84, 22)
+    local moveUIBtn = flatButton(topBar, "Edit Mode", 90, 22)
     moveUIBtn:SetPoint("RIGHT", close, "LEFT", -6, 0)
-    applyBackdrop(moveUIBtn, 1, C.panelDark, C.tabBorder)
-    local moveUILabel = moveUIBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    moveUILabel:SetPoint("CENTER")
-    moveUILabel:SetText("Move UI")
-    moveUILabel:SetTextColor(unpack(C.textWhite))
-    moveUIBtn:SetScript("OnEnter", function() moveUIBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    moveUIBtn:SetScript("OnLeave", function() moveUIBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
     moveUIBtn:SetScript("OnClick", function() UI.EnterMoveMode() end)
 
-    local tabBar = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    tabBar:SetHeight(30)
-    tabBar:SetPoint("TOPLEFT", topBar, "BOTTOMLEFT", 0, -2)
-    tabBar:SetPoint("TOPRIGHT", topBar, "BOTTOMRIGHT", 0, -2)
-    applyBackdrop(tabBar, 1, C.panelDark)
+    local scaleSlider = buildEditSlider(topBar, {
+        label = "Scale", labelWidth = 36, min = 50, max = 150, suffix = "%", deferSet = true,
+        get = function() return math.floor(addon.GetUIScale() * 100 + 0.5) end,
+        set = function(v) addon.SetUIScale(v / 100) end,
+    })
+    scaleSlider:SetPoint("RIGHT", moveUIBtn, "LEFT", -14, 0)
+
+    -- Window width/height steppers, left of the Scale slider. They write the
+    -- same saved settingsWinW/H the resize grip persists (and are refreshed from
+    -- it — see sizer below), so typed size and corner-drag stay in sync.
+    local heightStepper = buildSizeStepper(topBar, {
+        label = "H", min = MIN_WIN_H, max = MAX_WIN_H, step = 10,
+        get = function() return math.floor(f:GetHeight() + 0.5) end,
+        set = function(v)
+            f:SetHeight(v)
+            if addon.db and addon.db.settings then addon.db.settings.settingsWinH = v end
+        end,
+    })
+    heightStepper:SetPoint("RIGHT", scaleSlider, "LEFT", -16, 0)
+
+    local widthStepper = buildSizeStepper(topBar, {
+        label = "W", min = MIN_WIN_W, max = MAX_WIN_W, step = 10,
+        get = function() return math.floor(f:GetWidth() + 0.5) end,
+        set = function(v)
+            f:SetWidth(v)
+            if addon.db and addon.db.settings then addon.db.settings.settingsWinW = v end
+        end,
+    })
+    widthStepper:SetPoint("RIGHT", heightStepper, "LEFT", -10, 0)
 
     local content = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    content:SetPoint("TOPLEFT", tabBar, "BOTTOMLEFT", 0, -2)
+    -- 2px gap below the top bar, matching the 2px sidebar↔content gap. The tab
+    -- bars still line up with the sidebar nav because the top bar is 6px taller
+    -- than its contents need (see topBar:SetHeight above).
+    content:SetPoint("TOPLEFT", topBar, "BOTTOMLEFT", 0, -2)
     content:SetPoint("BOTTOMRIGHT", -2, 2)
     applyBackdrop(content, 1, C.panelDeep)
 
+    -- Resize grip, bottom-right corner. Leaves the window's own edges alone
+    -- (no visible frame of its own) and just starts/stops a native resize;
+    -- every panel already re-anchors off `content`'s edges, and
+    -- attachScrollTrack's SCROLLBAR_BOTTOM_CLEARANCE keeps this from
+    -- overlapping a tab's scrollbar.
+    local sizer = CreateFrame("Button", nil, f)
+    sizer:SetSize(16, 16)
+    sizer:SetPoint("BOTTOMRIGHT", -3, 3)
+    sizer:SetFrameLevel(f:GetFrameLevel() + 10)
+    local grip = sizer:CreateTexture(nil, "OVERLAY")
+    grip:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    grip:SetAllPoints()
+    sizer:SetScript("OnMouseDown", function(_, button)
+        if button == "LeftButton" then f:StartSizing("BOTTOMRIGHT") end
+    end)
+    sizer:SetScript("OnMouseUp", function()
+        f:StopMovingOrSizing()
+        if addon.db and addon.db.settings then
+            addon.db.settings.settingsWinW = f:GetWidth()
+            addon.db.settings.settingsWinH = f:GetHeight()
+        end
+        widthStepper:Refresh()
+        heightStepper:Refresh()
+    end)
+
     f.topBar  = topBar
-    f.tabBar  = tabBar
+    f.sidebar = sidebar
     f.content = content
     f.tabs    = {}
     f.panels  = {}
@@ -3761,11 +4427,18 @@ local function showConfirmPopup(opts)
     end)
     panel:Show()
 end
+-- Exposed so panels defined earlier in this file (e.g. buildTrinketsPanel) can
+-- reach it — a plain local isn't visible to code written above its definition.
+UI.showConfirmPopup = showConfirmPopup
 
 -- ── Profiles tab ─────────────────────────────────────────────────────────────
 
 local function buildProfilesPanel(parent)
     local shell, panel = makeScrollPanel(parent)
+
+    -- Forward-declared so the Copy Profile section's button (built before the
+    -- Existing Profiles list) can re-run it after a copy.
+    local refreshProfiles
 
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
@@ -3821,15 +4494,79 @@ local function buildProfilesPanel(parent)
     errText:SetTextColor(unpack(C.red))
     errText:SetText("")
 
+    -- ── Copy profile ──────────────────────────────────────────────────────
+    -- Pick a source and a destination profile, then Copy (with a confirm
+    -- prompt) to overwrite the destination with the source's settings.
+    local copyHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    copyHeader:SetPoint("TOPLEFT", errText, "BOTTOMLEFT", 0, -20)
+    copyHeader:SetText("Copy Profile")
+    copyHeader:SetTextColor(unpack(C.red))
+
+    local copyDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    copyDesc:SetPoint("TOPLEFT", copyHeader, "BOTTOMLEFT", 0, -4)
+    copyDesc:SetWidth(560); copyDesc:SetJustifyH("LEFT")
+    copyDesc:SetText("Overwrite one profile's settings with a copy of another's.")
+    copyDesc:SetTextColor(unpack(C.textGrey))
+
+    local copyFrom, copyTo
+
+    local fromLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fromLbl:SetPoint("TOPLEFT", copyDesc, "BOTTOMLEFT", 0, -12)
+    fromLbl:SetText("From:")
+    fromLbl:SetTextColor(unpack(C.textGrey))
+
+    local fromDD = createScrollDropdown(panel, 150,
+        function() return addon.GetProfileList() end,
+        function(v) copyFrom = v end)
+    fromDD:SetPoint("LEFT", fromLbl, "RIGHT", 6, 0)
+
+    local toLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    toLbl:SetPoint("LEFT", fromDD, "RIGHT", 14, 0)
+    toLbl:SetText("To:")
+    toLbl:SetTextColor(unpack(C.textGrey))
+
+    local toDD = createScrollDropdown(panel, 150,
+        function() return addon.GetProfileList() end,
+        function(v) copyTo = v end)
+    toDD:SetPoint("LEFT", toLbl, "RIGHT", 6, 0)
+
+    local copyErr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    copyErr:SetPoint("TOPLEFT", fromLbl, "BOTTOMLEFT", 0, -12)
+    copyErr:SetTextColor(unpack(C.red))
+    copyErr:SetText("")
+
+    local copyBtn = flatButton(panel, "Copy", 80, 22)
+    copyBtn:SetPoint("LEFT", toDD, "RIGHT", 14, 0)
+    copyBtn:SetScript("OnClick", function()
+        copyErr:SetText("")
+        if not (copyFrom and copyTo) then
+            copyErr:SetText("Select a profile in both dropdowns.")
+            return
+        end
+        if copyFrom == copyTo then
+            copyErr:SetText("Pick two different profiles.")
+            return
+        end
+        showConfirmPopup({
+            title       = "Copy Profile",
+            message     = string.format('Overwrite "%s" with a copy of "%s"? This replaces all of "%s"\'s settings.', copyTo, copyFrom, copyTo),
+            confirmText = "Copy",
+            onConfirm   = function()
+                local ok, err = addon.CopyProfile(copyFrom, copyTo)
+                if not ok then copyErr:SetText(err or "Could not copy profile.") end
+                refreshProfiles()
+            end,
+        })
+    end)
+
     -- ── List of existing profiles ─────────────────────────────────────────
     local listHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    listHeader:SetPoint("TOPLEFT", errText, "BOTTOMLEFT", 0, -20)
+    listHeader:SetPoint("TOPLEFT", copyErr, "BOTTOMLEFT", 0, -20)
     listHeader:SetText("Existing Profiles")
     listHeader:SetTextColor(unpack(C.red))
 
     local rows = {}
     local ROW_W, ROW_H = 540, 26
-    local refreshProfiles
 
     local function makeRow()
         local row = CreateFrame("Frame", nil, panel, "BackdropTemplate")
@@ -3882,9 +4619,19 @@ local function buildProfilesPanel(parent)
 
     refreshProfiles = function()
         errText:SetText("")
+        copyErr:SetText("")
         nameBox:SetText("")
         local list   = addon.GetProfileList and addon.GetProfileList() or {}
         local active = addon.GetActiveProfileName and addon.GetActiveProfileName() or "Default"
+
+        -- Drop any copy selection whose profile no longer exists, and re-sync
+        -- the dropdown labels (their lists repopulate live when opened).
+        local exists = {}
+        for _, n in ipairs(list) do exists[n] = true end
+        if copyFrom and not exists[copyFrom] then copyFrom = nil end
+        if copyTo   and not exists[copyTo]   then copyTo   = nil end
+        fromDD:setValue(copyFrom)
+        toDD:setValue(copyTo)
 
         while #rows < #list do
             rows[#rows + 1] = makeRow()
@@ -3969,30 +4716,30 @@ function UI.GetFrame()
 
     local f = createMainFrame()
 
-    local generalTab = createTab(f.tabBar, "General")
-    generalTab:SetPoint("LEFT", 6, 0)
-    generalTab:SetScript("OnClick", function() selectTab(f, "general") end)
-    f.tabs.general = generalTab
-
-    local partTab = createTab(f.tabBar, "Particles")
-    partTab:SetPoint("LEFT", generalTab, "RIGHT", 4, 0)
-    partTab:SetScript("OnClick", function() selectTab(f, "particles") end)
-    f.tabs.particles = partTab
-
-    local raidTab = createTab(f.tabBar, "Raid")
-    raidTab:SetPoint("LEFT", partTab, "RIGHT", 4, 0)
-    raidTab:SetScript("OnClick", function() selectTab(f, "raid") end)
-    f.tabs.raid = raidTab
-
-    local trinketsTab = createTab(f.tabBar, "Trinkets")
-    trinketsTab:SetPoint("LEFT", raidTab, "RIGHT", 4, 0)
-    trinketsTab:SetScript("OnClick", function() selectTab(f, "trinkets") end)
-    f.tabs.trinkets = trinketsTab
-
-    local profilesTab = createTab(f.tabBar, "Profiles")
-    profilesTab:SetPoint("LEFT", trinketsTab, "RIGHT", 4, 0)
-    profilesTab:SetScript("OnClick", function() selectTab(f, "profiles") end)
-    f.tabs.profiles = profilesTab
+    -- Vertical sidebar nav. Each entry: { key, label }. Buttons stack top→down,
+    -- full sidebar width.
+    local navItems = {
+        { key = "general",   label = "General"   },
+        { key = "particles", label = "Particles" },
+        { key = "raid",      label = "Raid"      },
+        { key = "trinkets",  label = "Trinkets"  },
+        { key = "profiles",  label = "Profiles"  },
+    }
+    local prevNav
+    for _, item in ipairs(navItems) do
+        local tab = createSideTab(f.sidebar, item.label)
+        if prevNav then
+            tab:SetPoint("TOPLEFT",  prevNav, "BOTTOMLEFT",  0, -2)
+            tab:SetPoint("TOPRIGHT", prevNav, "BOTTOMRIGHT", 0, -2)
+        else
+            -- Start below the sidebar brand header (title + version).
+            tab:SetPoint("TOPLEFT",  f.sidebar, "TOPLEFT",   3, -48)
+            tab:SetPoint("TOPRIGHT", f.sidebar, "TOPRIGHT", -3, -48)
+        end
+        tab:SetScript("OnClick", function() selectTab(f, item.key) end)
+        f.tabs[item.key] = tab
+        prevNav = tab
+    end
 
     f.panels.general    = buildGeneralTabPanel(f.content)
     f.panels.particles  = buildParticlesPanel(f.content)
@@ -4009,120 +4756,6 @@ end
 function addon.ToggleUI()
     local f = UI.GetFrame()
     if f:IsShown() then f:Hide() else f:Show() end
-end
-
--- Themed horizontal slider used in the Move UI bar: [label] [track] [box].
--- The typeable value box sits to the RIGHT of the track. opts = { label, min,
--- max, get, set, suffix }. Returns a row frame exposing :Refresh() to re-read
--- the current value from opts.get().
-local EDIT_SLIDER_TRACK_W = 110
-
-local function buildEditSlider(parent, opts)
-    local mn, mx = opts.min, opts.max
-    local row = CreateFrame("Frame", nil, parent)
-    row:SetSize(244, 22)
-
-    local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    label:SetPoint("LEFT", row, "LEFT", 0, 0)
-    label:SetWidth(58); label:SetJustifyH("LEFT")
-    label:SetText(opts.label)
-    label:SetTextColor(unpack(C.textWhite))
-
-    local track = CreateFrame("Frame", nil, row, "BackdropTemplate")
-    track:SetSize(EDIT_SLIDER_TRACK_W, 8)
-    track:SetPoint("LEFT", label, "RIGHT", 6, 0)
-    applyBackdrop(track, 1, C.panelDark, C.tabBorder)
-    track:EnableMouse(true)
-
-    local fill = track:CreateTexture(nil, "ARTWORK")
-    fill:SetTexture(WHITE)
-    fill:SetVertexColor(unpack(C.red))
-    fill:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -1)
-    fill:SetPoint("BOTTOMLEFT", track, "BOTTOMLEFT", 1, 1)
-    fill:SetWidth(1)
-
-    local thumb = CreateFrame("Button", nil, track, "BackdropTemplate")
-    thumb:SetSize(14, 14)
-    applyBackdrop(thumb, 1, C.tabIdle, C.tabBorder)
-    thumb:SetPoint("CENTER", track, "LEFT", 0, 0)
-
-    local boxWrap = CreateFrame("Frame", nil, row, "BackdropTemplate")
-    boxWrap:SetSize(40, 20)
-    boxWrap:SetPoint("LEFT", track, "RIGHT", 10, 0)
-    applyBackdrop(boxWrap, 1, C.panelDark, C.tabBorder)
-
-    local box = CreateFrame("EditBox", nil, boxWrap)
-    box:SetSize(32, 16); box:SetPoint("CENTER")
-    box:SetAutoFocus(false); box:SetMaxLetters(3)
-    box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormal")
-    box:SetTextColor(unpack(C.textWhite))
-
-    if opts.suffix then
-        local suf = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        suf:SetPoint("LEFT", boxWrap, "RIGHT", 3, 0)
-        suf:SetText(opts.suffix); suf:SetTextColor(unpack(C.textGrey))
-    end
-
-    local value    = mn
-    local dragging  = false
-
-    local function setVisual(v)
-        local frac = (v - mn) / (mx - mn)
-        frac = math.max(0, math.min(1, frac))
-        fill:SetWidth(math.max(frac * (EDIT_SLIDER_TRACK_W - 2), 1))
-        thumb:ClearAllPoints()
-        thumb:SetPoint("CENTER", track, "LEFT", frac * EDIT_SLIDER_TRACK_W, 0)
-    end
-
-    local function setValue(v, skipSet)
-        v = math.floor(math.max(mn, math.min(mx, v)) + 0.5)
-        value = v
-        setVisual(v)
-        if not box:HasFocus() then box:SetText(tostring(v)) end
-        if not skipSet and opts.set then opts.set(v) end
-    end
-
-    local function valFromCursor()
-        local left = track:GetLeft()
-        if not left then return value end
-        local x = GetCursorPosition() / UIParent:GetEffectiveScale()
-        local frac = math.max(0, math.min(1, (x - left) / EDIT_SLIDER_TRACK_W))
-        return mn + frac * (mx - mn)
-    end
-
-    thumb:SetScript("OnMouseDown", function(_, b)
-        if b ~= "LeftButton" then return end
-        dragging = true
-        thumb:SetScript("OnUpdate", function() setValue(valFromCursor()) end)
-    end)
-    thumb:SetScript("OnMouseUp", function(_, b)
-        if b ~= "LeftButton" then return end
-        dragging = false
-        thumb:SetScript("OnUpdate", nil)
-        thumb:SetBackdropBorderColor(unpack(C.tabBorder))
-    end)
-    thumb:SetScript("OnEnter", function() thumb:SetBackdropBorderColor(unpack(C.red)) end)
-    thumb:SetScript("OnLeave", function() if not dragging then thumb:SetBackdropBorderColor(unpack(C.tabBorder)) end end)
-
-    track:SetScript("OnMouseDown", function(_, b) if b == "LeftButton" then setValue(valFromCursor()) end end)
-    track:EnableMouseWheel(true)
-    track:SetScript("OnMouseWheel", function(_, delta) setValue(value + delta) end)
-
-    local function commit()
-        local n = tonumber(box:GetText())
-        if n then setValue(n) else box:SetText(tostring(value)) end
-        box:ClearFocus()
-    end
-    box:SetScript("OnEnterPressed", commit)
-    box:SetScript("OnEditFocusLost", commit)
-    box:SetScript("OnEscapePressed", function() box:SetText(tostring(value)); box:ClearFocus() end)
-    boxWrap:SetScript("OnEnter", function() boxWrap:SetBackdropBorderColor(unpack(C.red)) end)
-    boxWrap:SetScript("OnLeave", function() boxWrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
-    function row:Refresh() setValue((opts.get and opts.get()) or mn, true) end
-
-    row:Refresh()
-    return row
 end
 
 -- Small floating popup opened by clicking (not dragging) a movable element

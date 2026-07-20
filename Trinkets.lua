@@ -18,6 +18,12 @@ local WHITE     = "Interface\\Buttons\\WHITE8x8"
 local getOrCreateMenu, buildMenu, showMenu, menuFrame, displayFrame
 local cancelMenuClose, scheduleMenuClose, positionMenu, scheduleMenuRebuild
 
+-- Set to ElvUI's engine table once the PLAYER_LOGIN handler below confirms
+-- ElvUI (or ShadowElvUI) is loaded — see setElvUIEngine(). Left nil otherwise,
+-- so elvuiSkinButton() below is a no-op and every worn/menu button keeps its
+-- baked Blizzard Classic look.
+local elvE
+
 -- Bakes Masque's "Blizzard Classic" skin (Masque/Skins/Blizzard_Classic.lua)
 -- directly onto the button, so the default look matches the classic action
 -- button style with no Masque required. Masque, if installed and enabled for
@@ -59,6 +65,9 @@ local function styleSlotButton(btn, size)
 end
 
 -- ── Saved data ────────────────────────────────────────────────────────────────
+-- Moved ahead of the ElvUI skin block below (which needs it to read the
+-- elvuiSkinEnabled toggle) — Lua locals aren't visible to code written before
+-- them.
 
 local function getData()
     addon.db.settings.trinkets = addon.db.settings.trinkets or {}
@@ -84,6 +93,85 @@ local function getData()
         d.encMigrated = true
     end
     return d
+end
+
+-- Reskins one worn/menu trinket button to match ElvUI's action-button look
+-- (used by TrinketMenu.lua's own native ElvUI skin, which this mirrors):
+-- swap the baked Blizzard Classic Normal/Pushed/Highlight textures for
+-- ElvUI's flat bordered button template, then crop+inset the icon the way
+-- ElvUI crops every actionbar icon. No-ops until setElvUIEngine() has run, or
+-- if the user has unchecked "Skin with ElvUI" (elvuiSkinEnabled, default on).
+-- Idempotent (guarded by _elvuiSkinned) since it's called both at button
+-- creation and again from refreshElvUISkin() to catch buttons already built
+-- before ElvUI was detected.
+local function elvuiSkinButton(btn)
+    if not (elvE and btn) or btn._elvuiSkinned then return end
+    if getData().elvuiSkinEnabled == false then return end
+    if not btn.StripTextures or not btn.SetTemplate then return end
+    btn._elvuiSkinned = true
+    -- StripTextures() clears EVERY texture region on the button, the trinket
+    -- icon included, so remember its texture and put it straight back. Without
+    -- this the icon only reappeared when something else happened to refresh it
+    -- (which is why a toggle off→on left the icon blank while the cooldown
+    -- swipe — a separate Cooldown frame — stayed visible).
+    local icon = btn.icon
+    local savedTexture = icon and icon:GetTexture()
+    btn:StripTextures()
+    btn:SetTemplate()
+    if btn.StyleButton then btn:StyleButton() end
+    btn:SetBackdropColor(0, 0, 0, 0)
+    if icon then
+        if savedTexture then icon:SetTexture(savedTexture) end
+        icon:SetTexCoord(unpack(elvE.TexCoords))
+        icon:SetInside()
+    end
+end
+
+-- Undoes elvuiSkinButton: restores the baked Blizzard Classic look (the same
+-- styleSlotButton() call used at button creation) and clears the backdrop
+-- SetTemplate() added, so toggling the checkbox off reverts live instead of
+-- needing a reload.
+local function revertElvUIButton(btn, size)
+    if not btn or not btn._elvuiSkinned then return end
+    btn._elvuiSkinned = nil
+    if btn.SetBackdrop then btn:SetBackdrop(nil) end
+    styleSlotButton(btn, size)
+    local icon = btn.icon
+    if icon then
+        icon:ClearAllPoints()
+        icon:SetAllPoints(btn)
+        icon:SetTexCoord(0, 1, 0, 1)
+    end
+end
+
+-- Applies or reverts the skin across every worn/menu button already built
+-- (both frames are created once and memoized — see getOrCreateDisplay/
+-- getOrCreateMenu), based on the current elvuiSkinEnabled setting. New
+-- buttons self-skin at creation time via elvuiSkinButton, which reads the
+-- same setting. Called once ElvUI is confirmed loaded, and again whenever the
+-- checkbox is toggled.
+local function refreshElvUISkin()
+    if not elvE then return end
+    local on = getData().elvuiSkinEnabled ~= false
+    if displayFrame then
+        for which = 0, 1 do
+            local btn = displayFrame["t"..which]
+            if on then elvuiSkinButton(btn) else revertElvUIButton(btn, BTN_SIZE) end
+        end
+    end
+    if menuFrame then
+        for i = 1, MAX_MENU do
+            local mb = menuFrame["mb"..i]
+            if on then elvuiSkinButton(mb) else revertElvUIButton(mb, MENU_SIZE) end
+        end
+    end
+end
+
+-- Called once the PLAYER_LOGIN handler below confirms ElvUI/ShadowElvUI is
+-- loaded.
+local function setElvUIEngine(E)
+    elvE = E
+    refreshElvUISkin()
 end
 
 -- ── Bag scanning ─────────────────────────────────────────────────────────────
@@ -943,16 +1031,41 @@ for _, raid in ipairs(addon.RAIDS or {}) do
     end
 end
 
+-- Safeguard delay: optionally require encounter-start + in-combat to hold
+-- simultaneously for a configured duration before queuing, rather than firing
+-- the instant both first line up. encGen is bumped on every ENCOUNTER_START/END
+-- so a delayed attempt started for an earlier encounter can recognise it's been
+-- superseded (encounter ended/changed) and quietly no-op instead of firing late.
+local encGen = 0
+
 local function maybeQueueEncounter()
     if encounterQueued then return end
     if not currentEncounterID then return end
     if not UnitAffectingCombat("player") then return end
     if debugEncounterIDs[currentEncounterID] and not getData().debugEncounters then return end
     local enc = getData().encounters[currentEncounterID]
-    if enc and enc.enabled then
-        queueEncounterTrinkets(enc)
-        encounterQueued = true
+    if not (enc and enc.enabled) then return end
+
+    local d = getData()
+    if d.encQueueDelayEnabled then
+        local myGen = encGen
+        local myEncounterID = currentEncounterID
+        C_Timer.After(math.max(0, d.encQueueDelaySeconds or 5.0), function()
+            -- Re-verify both conditions still hold at fire time (not just when
+            -- scheduled) — if the encounter ended/changed or combat dropped in
+            -- the meantime, this attempt is stale and must not fire late.
+            if encGen ~= myGen then return end
+            if encounterQueued then return end
+            if currentEncounterID ~= myEncounterID then return end
+            if not UnitAffectingCombat("player") then return end
+            queueEncounterTrinkets(enc)
+            encounterQueued = true
+        end)
+        return
     end
+
+    queueEncounterTrinkets(enc)
+    encounterQueued = true
 end
 
 -- ── Menu positioning ─────────────────────────────────────────────────────────
@@ -1393,7 +1506,13 @@ getOrCreateMenu = function()
                 buildMenu()   -- reflect the toggle using the current reveal latch
                 return
             end
-            local targetSlot = (btn == "RightButton") and SLOT_BOT or SLOT_TOP
+            local rightIsTop = getData().reverseClickSlots
+            local targetSlot
+            if btn == "RightButton" then
+                targetSlot = rightIsTop and SLOT_TOP or SLOT_BOT
+            else
+                targetSlot = rightIsTop and SLOT_BOT or SLOT_TOP
+            end
 
             -- Preemptive (soft) queue: hold the configured modifier and click to
             -- line this trinket up WITHOUT swapping now — it fires later, once the
@@ -1446,6 +1565,7 @@ getOrCreateMenu = function()
             end
         end)
 
+        elvuiSkinButton(mb)
         f["mb"..i] = mb
     end
 
@@ -1464,19 +1584,44 @@ end
 
 -- ── Display frame ─────────────────────────────────────────────────────────────
 
--- Suppress the secure "use item" action for the configured soft-queue modifier
--- on the two worn buttons, so <modifier>+click soft-queues the equipped trinket
--- (handled in the PreClick below) instead of firing its on-use. Secure
--- SetAttribute is combat-protected, so this only applies out of combat; a change
--- made during combat lands once combat ends.
+-- Swaps the two worn trinkets between the top and bottom slots (13 <-> 14),
+-- triggered by holding the configured swap modifier and clicking a worn trinket
+-- (see the PreClick in getOrCreateDisplay). Both slots must be filled. Uses the
+-- standard pick-up/place cursor dance: pick up top (13 empties), pick up bottom
+-- (drops top into 14, picks up bottom), drop bottom into 13. The cursor is
+-- cleared afterwards so a partial failure can't leave a trinket stuck on it.
+local function swapWornTrinkets()
+    -- PickupInventoryItem is protected in combat and errors if called from this
+    -- non-secure handler while locked down, so this manual swap is out-of-combat
+    -- only. (In-combat swapping goes through the secure auto-queue instead.)
+    if InCombatLockdown() then return end
+    if not (GetInventoryItemLink("player", SLOT_TOP) and GetInventoryItemLink("player", SLOT_BOT)) then
+        return
+    end
+    ClearCursor()
+    PickupInventoryItem(SLOT_TOP)
+    PickupInventoryItem(SLOT_BOT)
+    PickupInventoryItem(SLOT_TOP)
+    ClearCursor()
+end
+
+-- Suppress the secure "use item" action for the configured soft-queue and
+-- slot-swap modifiers on the two worn buttons, so <modifier>+click does the
+-- special action (handled in the PreClick below) instead of firing the
+-- trinket's on-use. A modifier set to "none" is left untouched, so holding it
+-- just fires the trinket normally. Secure SetAttribute is combat-protected, so
+-- this only applies out of combat; a change made during combat lands once
+-- combat ends.
 local function applySoftQueueMod()
     if not displayFrame or InCombatLockdown() then return end
-    local mod = getData().softQueueMod or "shift"
+    local d       = getData()
+    local softMod = d.softQueueMod or "shift"
+    local swapMod = d.swapMod or "ctrl"
     for which = 0, 1 do
         local btn = displayFrame["t"..which]
         if btn then
             for _, m in ipairs({ "shift", "ctrl", "alt" }) do
-                if m == mod then
+                if m == softMod or m == swapMod then
                     btn:SetAttribute(m .. "-type1", "macro")
                     btn:SetAttribute(m .. "-macrotext1", "")
                 else
@@ -1585,12 +1730,25 @@ local function getOrCreateDisplay()
             end)
         end)
 
-        -- <modifier>+click soft-queues the currently-worn trinket for this slot,
-        -- so it re-equips after a later swap. The secure use is suppressed for
-        -- that modifier by applySoftQueueMod, so it only queues. Clicking the
-        -- same worn trinket again toggles the soft entry off.
+        -- <modifier>+click does a special action instead of firing the trinket
+        -- (the secure use for these modifiers is suppressed by applySoftQueueMod):
+        --   • swap modifier   → swap the top/bottom slot trinkets
+        --   • soft-queue mod  → soft-queue the worn trinket in this slot (toggle)
+        -- A modifier set to "none" matches nothing here, so it just fires the
+        -- trinket. The swap modifier is checked first so it wins if somehow both
+        -- happen to be held.
         btn:SetScript("PreClick", function()
-            local mod  = getData().softQueueMod or "shift"
+            local d = getData()
+
+            local swapMod  = d.swapMod or "ctrl"
+            local swapHeld = (swapMod == "shift" and IsShiftKeyDown())
+                          or (swapMod == "ctrl"  and IsControlKeyDown())
+            if swapHeld then
+                swapWornTrinkets()
+                return
+            end
+
+            local mod  = d.softQueueMod or "shift"
             local held = (mod == "shift" and IsShiftKeyDown())
                       or (mod == "ctrl"  and IsControlKeyDown())
             if not held then return end
@@ -1623,6 +1781,7 @@ local function getOrCreateDisplay()
         end)
         btn:SetScript("OnLeave", scheduleMenuClose)
 
+        elvuiSkinButton(btn)
         f["t"..which] = btn
     end
 
@@ -1665,8 +1824,6 @@ local function initMasque()
 end
 
 -- ── Move-mode interface ───────────────────────────────────────────────────────
-
-local editing = false
 
 local function applyPosition()
     -- Must use getOrCreateDisplay(), not the bare displayFrame upvalue: on the
@@ -1744,7 +1901,6 @@ local menuMovable = { getPosition = getMenuPosition, setPosition = setMenuPositi
 local function enterMoveMode()
     local f = getOrCreateDisplay()
     if not f then return end
-    editing = true
     f:SetFrameStrata("TOOLTIP")
     addon.ShowEditBox(f)
     f:SetScript("OnMouseDown", function(self, button)
@@ -1826,7 +1982,6 @@ end
 local function leaveMoveMode()
     local f = displayFrame
     if not f then return end
-    editing = false
     f:SetFrameStrata("MEDIUM")
     addon.HideEditBox(f)
     f:SetScript("OnMouseDown", nil)
@@ -1871,16 +2026,12 @@ local function setPosition(x, y)
     end
 end
 
-local function refreshEditAlpha()
-    if not editing then return end
-    addon.RefreshEditBoxes()
-end
-
 -- ── Events + periodic tick ───────────────────────────────────────────────────
 
 local tickElapsed = 0
 
 local eventFrame = CreateFrame("Frame")
+eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 eventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
@@ -1893,7 +2044,20 @@ eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
 eventFrame:RegisterEvent("ENCOUNTER_START")
 eventFrame:RegisterEvent("ENCOUNTER_END")
 eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
-    if event == "PLAYER_ENTERING_WORLD" then
+    if event == "PLAYER_LOGIN" then
+        -- Native ElvUI skin support for the worn Display Menu buttons and the
+        -- pop-out Bag Menu grid (see elvuiSkinButton/refreshElvUISkin above).
+        -- ShadowElvUI is a fork that keeps ElvUI's engine API intact but
+        -- renames the global from ElvUI to ShadowElvUI, so both the load
+        -- check and the engine unpack need an explicit fallback or
+        -- ShadowElvUI users silently get no skin.
+        if IsAddOnLoaded("ElvUI") or IsAddOnLoaded("ShadowElvUI") then
+            local engine = ElvUI or ShadowElvUI
+            if engine then
+                setElvUIEngine((unpack(engine)))
+            end
+        end
+    elseif event == "PLAYER_ENTERING_WORLD" then
         applyVisibility()   -- creates the frame, applies scale + saved position
         populateQueueSorts()
         -- Only register Masque once the display actually exists — if init ran
@@ -1943,10 +2107,12 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         -- in combat (see maybeQueueEncounter) — not on encounter start alone.
         currentEncounterID = arg1
         encounterQueued    = false
+        encGen = encGen + 1
         maybeQueueEncounter()
     elseif event == "ENCOUNTER_END" then
         currentEncounterID = nil
         encounterQueued    = false
+        encGen = encGen + 1
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Entered combat: if we're mid-encounter with a config, queue now.
         maybeQueueEncounter()
@@ -1963,6 +2129,11 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
             end
         end)
     elseif event == "PLAYER_REGEN_ENABLED" then
+        -- Left combat: invalidate any in-flight Specific Auto Queue safeguard
+        -- delay (see maybeQueueEncounter) so a brief combat drop mid-delay
+        -- forces the full duration to restart on the next PLAYER_REGEN_DISABLED,
+        -- rather than letting a stale timer fire once combat merely resumes.
+        encGen = encGen + 1
         -- Soft-load: if init happened mid-combat (login/reload during a fight),
         -- the secure display couldn't be built then — build it now, out of combat.
         if not displayFrame then
@@ -2015,7 +2186,6 @@ addon.Trinkets = {
     leaveMoveMode      = leaveMoveMode,
     savePosition       = savePosition,
     applyVisibility    = applyVisibility,
-    refreshEditAlpha   = refreshEditAlpha,
     getPosition        = getPosition,
     setPosition        = setPosition,
     getData            = getData,
@@ -2032,4 +2202,5 @@ addon.Trinkets = {
     populateMenuOrder  = populateMenuOrder,
     updateHotkeys      = updateHotkeys,
     updateQueueIndicators = updateQueueIndicators,
+    refreshElvUISkin   = refreshElvUISkin,
 }

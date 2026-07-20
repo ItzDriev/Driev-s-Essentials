@@ -13,22 +13,23 @@ addon.RAIDS = {
         key   = "naxx",
         label = "Naxx",
         name  = "Naxxramas",
+        -- `wing` groups bosses for colour-coding in the Particles boss list.
         bosses = {
-            { name = "Anub'Rekhan",           id = 1107 },
-            { name = "Grand Widow Faerlina",  id = 1110, default = true }, -- ✓
-            { name = "Maexxna",               id = 1116 },
-            { name = "Noth the Plaguebringer",id = 1117 },
-            { name = "Heigan the Unclean",    id = 1112 },
-            { name = "Loatheb",               id = 1115 },
-            { name = "Instructor Razuvious",  id = 1113 },
-            { name = "Gothik the Harvester",  id = 1109 },
-            { name = "The Four Horsemen",     id = 1121, default = true }, -- ✓
-            { name = "Patchwerk",             id = 1118 },
-            { name = "Grobbulus",             id = 1111, default = true }, -- ✓
-            { name = "Gluth",                 id = 1108 },
-            { name = "Thaddius",              id = 1120 },
-            { name = "Sapphiron",             id = 1119, default = true }, -- ✓
-            { name = "Kel'Thuzad",            id = 1114, default = true }, -- ✓
+            { name = "Anub'Rekhan",           id = 1107, wing = "spider" },
+            { name = "Grand Widow Faerlina",  id = 1110, default = true, wing = "spider" }, -- ✓
+            { name = "Maexxna",               id = 1116, wing = "spider" },
+            { name = "Noth the Plaguebringer",id = 1117, wing = "plague" },
+            { name = "Heigan the Unclean",    id = 1112, wing = "plague" },
+            { name = "Loatheb",               id = 1115, wing = "plague" },
+            { name = "Instructor Razuvious",  id = 1113, wing = "military" },
+            { name = "Gothik the Harvester",  id = 1109, wing = "military" },
+            { name = "The Four Horsemen",     id = 1121, default = true, wing = "military" }, -- ✓
+            { name = "Patchwerk",             id = 1118, wing = "construct" },
+            { name = "Grobbulus",             id = 1111, default = true, wing = "construct" }, -- ✓
+            { name = "Gluth",                 id = 1108, wing = "construct" },
+            { name = "Thaddius",              id = 1120, wing = "construct" },
+            { name = "Sapphiron",             id = 1119, default = true, wing = "frostwyrm" }, -- ✓
+            { name = "Kel'Thuzad",            id = 1114, default = true, wing = "frostwyrm" }, -- ✓
         },
     },
     {

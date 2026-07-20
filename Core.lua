@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.0.9"
+addon.version = "1.1.0"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras. WeakAuras.ScanEvents
@@ -48,6 +48,10 @@ local defaults = {
         editBorder    = 1,    -- edit-mode box border thickness
         moveBgOpacity = 15,   -- % scaling the Move UI dimmed background + grid lines
         moveBgEnabled = true, -- whether the Move UI dimmed background + grid show at all
+        uiScale       = 1,    -- settings window scale (the slider next to Edit Mode)
+        -- settingsWinW/settingsWinH (last dragged window size) are absent
+        -- until the user resizes; createMainFrame() falls back to a built-in
+        -- default size when unset.
         trinkets = {
             enabled          = false,
             showCooldowns    = true,
@@ -74,13 +78,18 @@ local defaults = {
             displayScale     = 1.0,
             menuOrderEnabled = false,
             triggerOnKeyUp   = false,
+            reverseClickSlots = false, -- swap left/right click targets: left = bottom slot, right = top slot
+            elvuiSkinEnabled  = true,  -- auto-skin the Display/Bag Menu buttons when ElvUI/ShadowElvUI is loaded
             blockModCtrl     = false,
             blockModAlt      = false,
             blockModShift    = false,
             swapWatchdog     = true,
-            softQueueMod     = "shift",
+            softQueueMod     = "shift", -- "shift"/"ctrl"/"none": modifier+click a trinket to soft-queue
+            swapMod          = "ctrl",  -- "shift"/"ctrl"/"none": modifier+click a worn trinket to swap top/bottom slots
             encounters       = {},   -- [encounterID] = { enabled, mainTop, mainBottom, softTop, softBottom }
             debugEncounters  = false, -- gate for the Stockades (debug raid) test encounters
+            encQueueDelayEnabled = true, -- Specific Auto Queue safeguard delay toggle
+            encQueueDelaySeconds = 5.0,  -- required continuous encounter+combat duration before queuing
         },
     },
 }
@@ -132,6 +141,21 @@ function addon.SetMoveBgOpacity(value)
     value = math.max(0, math.min(100, math.floor(value + 0.5)))
     addon.db.settings.moveBgOpacity = value
     if addon.UI and addon.UI.RefreshMoveOverlay then addon.UI.RefreshMoveOverlay() end
+    return value
+end
+
+-- Scale of the whole Driev's Essentials settings window (the slider next to
+-- Edit Mode in the top bar). Separate from editAlpha/editPad/editBorder,
+-- which only affect the in-game edit-mode boxes, not the settings window
+-- itself.
+function addon.GetUIScale()
+    return (addon.db and addon.db.settings and addon.db.settings.uiScale) or 1
+end
+
+function addon.SetUIScale(value)
+    value = math.max(0.5, math.min(1.5, value))
+    addon.db.settings.uiScale = value
+    if addon.UI and addon.UI.frame then addon.UI.frame:SetScale(value) end
     return value
 end
 
@@ -341,6 +365,34 @@ function addon.DeleteProfile(name)
     -- Any other character assigned to the deleted profile falls back to Default.
     for charKey, assigned in pairs(DrievSettingsDB.profileAssignments) do
         if assigned == name then DrievSettingsDB.profileAssignments[charKey] = "Default" end
+    end
+    return true
+end
+
+local function deepCopy(v)
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, val in pairs(v) do out[k] = deepCopy(val) end
+    return out
+end
+
+-- Overwrites the `toName` profile with a deep copy of every setting in
+-- `fromName` (a fresh copy, so the two profiles don't share tables afterwards).
+-- If `toName` is the profile currently in use on THIS character, the live
+-- addon.db is re-pointed and every module re-applied so the change is visible
+-- immediately, mirroring SetActiveProfile.
+function addon.CopyProfile(fromName, toName)
+    if not (fromName and toName) then return false, "Pick both profiles." end
+    if fromName == toName then return false, "Pick two different profiles." end
+    local src = DrievSettingsDB.profiles[fromName]
+    if not src then return false, "Source profile not found." end
+    if not DrievSettingsDB.profiles[toName] then return false, "Destination profile not found." end
+
+    local copy = applyDefaults(defaults, deepCopy(src))
+    DrievSettingsDB.profiles[toName] = copy
+    if addon.GetActiveProfileName() == toName then
+        addon.db = copy
+        addon.RefreshAllModules()
     end
     return true
 end

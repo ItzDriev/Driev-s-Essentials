@@ -111,7 +111,6 @@ end
 
 -- ── move-mode proxy ──────────────────────────────────────────────────────
 local proxy
-local editing = false
 
 -- Resizes/repositions the proxy to match the real raid frames' current
 -- tight bounding box. Used both on first-ever entry and on demand via the
@@ -227,7 +226,6 @@ end
 local function enterMoveMode()
     local f = getOrCreateProxy()
     local s = getData()
-    editing = true
 
     if s.px and s.py then
         local bw, bh = baseSize()
@@ -279,7 +277,6 @@ local function enterMoveMode()
 end
 
 local function leaveMoveMode()
-    editing = false
     if not proxy then return end
     addon.HideEditBox(proxy)
     proxy:EnableMouse(false)
@@ -287,14 +284,6 @@ local function leaveMoveMode()
     proxy:SetScript("OnMouseUp",   nil)
     proxy:SetScript("OnUpdate",    nil)
     proxy:Hide()
-end
-
--- Re-applies the shared edit-mode box opacity (see addon.GetEditAlpha) to
--- the proxy if it's currently visible. Called both when entering move mode
--- and live from the opacity slider while editing.
-local function refreshEditAlpha()
-    if not editing or not proxy then return end
-    addon.RefreshEditBoxes()
 end
 
 -- For the position-editor popup: read/write the proxy directly (TOPLEFT
@@ -365,7 +354,6 @@ addon.RaidFrames = {
     setScale         = setScale,
     minScale         = MIN_SCALE,
     maxScale         = MAX_SCALE,
-    refreshEditAlpha = refreshEditAlpha,
     getPosition      = getPosition,
     setPosition      = setPosition,
 }

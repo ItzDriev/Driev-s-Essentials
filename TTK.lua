@@ -25,7 +25,6 @@ local function isWeakAurasLoaded()
 end
 
 local ttkFrame
-local editing = false
 
 local function getOrCreate()
     if ttkFrame then return ttkFrame end
@@ -79,14 +78,6 @@ local function applyFont()
     f:SetSize(math.max(w, 1) + 16, math.max(h, 1) + 10)
 end
 
--- Re-applies the shared edit-mode box opacity (see addon.GetEditAlpha) to
--- the box if it's currently visible. Called both when entering move mode
--- and live from the opacity slider while editing.
-local function refreshEditAlpha()
-    if not editing then return end
-    addon.RefreshEditBoxes()
-end
-
 local function applyPosition()
     local f = getOrCreate()
     local s = ttkSettings()
@@ -135,7 +126,6 @@ end
 
 local function enterMoveMode()
     local f = getOrCreate()
-    editing = true
     f.text:SetText("13:37")
 
     local w, h = f.text:GetStringWidth(), f.text:GetStringHeight()
@@ -167,7 +157,6 @@ end
 
 local function leaveMoveMode()
     local f = getOrCreate()
-    editing = false
     f.text:SetText("")
     f:StopMovingOrSizing()
     f:SetFrameStrata("HIGH")
@@ -273,7 +262,6 @@ addon.TTK = {
     savePosition     = savePosition,
     enterMoveMode    = enterMoveMode,
     leaveMoveMode    = leaveMoveMode,
-    refreshEditAlpha = refreshEditAlpha,
     getPosition      = getPosition,
     setPosition      = setPosition,
 }
