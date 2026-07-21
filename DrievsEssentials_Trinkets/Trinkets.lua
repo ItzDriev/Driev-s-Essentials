@@ -1,4 +1,8 @@
-local addonName, addon = ...
+-- Part of the Trinkets module addon. `...` would hand us this addon's OWN
+-- private table, so reach for core's shared namespace instead — the .toc's
+-- ## Dependencies guarantees core has already loaded and set this global.
+local addon = _G.DrievEssentials
+if not addon then return end
 
 -- Registers hotkey slots in Escape → Key Bindings → Driev's Essentials.
 BINDING_HEADER_DRIEVESSENTIALS = "Driev's Essentials"

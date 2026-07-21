@@ -1,4 +1,8 @@
-local addonName, addon = ...
+-- Part of the Particles module addon. `...` would hand us this addon's OWN
+-- private table, so reach for core's shared namespace instead — the .toc's
+-- ## Dependencies guarantees core has already loaded and set this global.
+local addon = _G.DrievEssentials
+if not addon then return end
 
 -- Backend port of the user's particle WeakAura.
 --

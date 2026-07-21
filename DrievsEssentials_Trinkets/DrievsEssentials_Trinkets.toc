@@ -1,0 +1,11 @@
+## Interface: 11507
+## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Trinkets
+## Notes: Trinket display/bag menu with combat swapping and auto-queue. Requires Driev's Essentials.
+## Version: 1.1.0
+## Author: Driev
+## Dependencies: DrievsEssentials
+## OptionalDeps: ElvUI, ShadowElvUI
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+
+Trinkets.lua
+TrinketsUI.lua

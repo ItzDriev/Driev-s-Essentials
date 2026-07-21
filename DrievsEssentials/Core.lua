@@ -40,9 +40,6 @@ local defaults = {
             fontSize = 24,
             fontName = "Friz Quadrata TT",
         },
-        particles = {
-            classes = { WARRIOR = true },
-        },
         editAlpha     = 0.4,
         editPad       = 4,    -- extra px the edit-mode box extends beyond each element
         editBorder    = 1,    -- edit-mode box border thickness
@@ -52,47 +49,17 @@ local defaults = {
         -- settingsWinW/settingsWinH (last dragged window size) are absent
         -- until the user resizes; createMainFrame() falls back to a built-in
         -- default size when unset.
-        trinkets = {
-            enabled          = false,
-            showCooldowns    = true,
-            showTooltips     = true,
-            tinyTooltips     = false,
-            keepOpen         = false,
-            notify           = false,
-            alwaysShow       = false,
-            menuDocked       = true,
-            menuDockCorner   = "below-left",
-            menuPerLine      = 4,
-            menuOrientation  = "horizontal",
-            menuAlign        = "left",
-            menuScale        = 1.0,
-            showBindings     = true,
-            truncateBindings = true,
-            swapDelay        = 1.0,
-            menuOrder        = {},
-            hidden           = {},
-            menuEdgePad      = 0,
-            menuButtonGap    = 6,
-            displayEdgePad   = 0,
-            displayButtonGap = 2,
-            displayScale     = 1.0,
-            menuOrderEnabled = false,
-            triggerOnKeyUp   = false,
-            reverseClickSlots = false, -- swap left/right click targets: left = bottom slot, right = top slot
-            elvuiSkinEnabled  = true,  -- auto-skin the Display/Bag Menu buttons when ElvUI/ShadowElvUI is loaded
-            blockModCtrl     = false,
-            blockModAlt      = false,
-            blockModShift    = false,
-            swapWatchdog     = true,
-            softQueueMod     = "shift", -- "shift"/"ctrl"/"none": modifier+click a trinket to soft-queue
-            swapMod          = "ctrl",  -- "shift"/"ctrl"/"none": modifier+click a worn trinket to swap top/bottom slots
-            encounters       = {},   -- [encounterID] = { enabled, mainTop, mainBottom, softTop, softBottom }
-            debugEncounters  = false, -- gate for the Stockades (debug raid) test encounters
-            encQueueDelayEnabled = true, -- Specific Auto Queue safeguard delay toggle
-            encQueueDelaySeconds = 5.0,  -- required continuous encounter+combat duration before queuing
-        },
     },
 }
+
+-- Module addons (Particles, Trinkets) own their own settings block and register
+-- it here at load time, so core doesn't need to know they exist. Every addon
+-- finishes loading before PLAYER_LOGIN, which is when defaults are merged into
+-- the active profile — so anything registered here is picked up. Settings for a
+-- module that's currently disabled simply stay in the profile, untouched.
+function addon.RegisterDefaults(key, tbl)
+    defaults.settings[key] = tbl
+end
 
 -- Shared opacity for the translucent boxes shown around movable elements
 -- while in edit/move mode (TTK display, raid frame anchor) — one value so
@@ -286,6 +253,30 @@ local function migrateToProfiles()
     if not DrievSettingsDB.profileAssignments then
         DrievSettingsDB.profileAssignments = {}
     end
+end
+
+-- 1.1.0 renamed this addon's folder, and WoW names each addon's SavedVariables
+-- file after its folder — so an updating user's settings are sitting in a file
+-- nothing loads any more. The "Driev's Essentials" bridge addon keeps that old
+-- filename alive and stashes its contents in DrievEssentialsLegacyDB; here we
+-- adopt them.
+--
+-- Deliberately conservative: this only fires when this install has no profiles
+-- of its own, so a bridge folder left behind can never overwrite newer settings.
+-- Runs before migrateToProfiles() so the adopted table goes through the same
+-- normalisation a pre-existing one would.
+local function migrateLegacyDB()
+    local legacy = _G.DrievEssentialsLegacyDB
+    if type(legacy) ~= "table" or type(legacy.profiles) ~= "table" then return end
+    if next(legacy.profiles) == nil then return end
+
+    local haveOwnData = type(DrievSettingsDB) == "table"
+        and type(DrievSettingsDB.profiles) == "table"
+        and next(DrievSettingsDB.profiles) ~= nil
+    if haveOwnData then return end
+
+    DrievSettingsDB = legacy
+    addon.migratedFromLegacy = true
 end
 
 function addon.GetActiveProfileName()
@@ -561,6 +552,7 @@ boot:RegisterEvent("PLAYER_LOGIN")
 boot:SetScript("OnEvent", function(self, event, name)
     if event == "ADDON_LOADED" then
         if name ~= addonName then return end
+        migrateLegacyDB()
         migrateToProfiles()
         self:UnregisterEvent("ADDON_LOADED")
     elseif event == "PLAYER_LOGIN" then
@@ -576,6 +568,12 @@ boot:SetScript("OnEvent", function(self, event, name)
 
         if addon.CreateMinimapButton then
             addon.CreateMinimapButton()
+        end
+        -- Tell the user their settings were rescued, otherwise a silent recovery
+        -- looks identical to "my profiles are gone" until they go and check.
+        if addon.migratedFromLegacy then
+            print("|cfffb2c36Driev's Essentials|r: recovered your settings from the pre-1.1.0 install. "
+                .. "The |cffdddddd\"Driev's Essentials (settings bridge)\"|r addon has done its job and can be deleted.")
         end
         self:UnregisterEvent("PLAYER_LOGIN")
         self:SetScript("OnEvent", nil)

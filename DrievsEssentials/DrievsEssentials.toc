@@ -5,7 +5,6 @@
 ## Author: Driev
 ## SavedVariables: DrievSettingsDB
 ## IconTexture: Interface\Icons\INV_Misc_Gear_01
-## OptionalDeps: ElvUI, ShadowElvUI
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
@@ -14,10 +13,8 @@ Libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 Core.lua
 State.lua
 Raids.lua
-Particles.lua
 Raid.lua
 RaidFrames.lua
 TTK.lua
-Trinkets.lua
 Minimap.lua
 UI.lua
