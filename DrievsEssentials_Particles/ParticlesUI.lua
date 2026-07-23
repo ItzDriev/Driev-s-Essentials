@@ -283,6 +283,7 @@ local function buildParticlesRaidsPanel(parent)
     for _, raid in ipairs(addon.RAIDS) do
         if raid.key ~= "debug" then
             local btn = createSideTab(raidCol, raid.label, 24)
+            btn.text:SetFontObject("GameFontNormalSmall")   -- matches every other inner sidebar list
             if prev then
                 btn:SetPoint("TOPLEFT",  prev, "BOTTOMLEFT",  0, -2)
                 btn:SetPoint("TOPRIGHT", prev, "BOTTOMRIGHT", 0, -2)

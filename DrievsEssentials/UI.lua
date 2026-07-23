@@ -233,6 +233,7 @@ local function attachScrollTrack(scroll, trackParent, bottomInset)
         if scroll.UpdateScrollChildRect then scroll:UpdateScrollChildRect() end
         local maxScroll = scroll:GetVerticalScrollRange()
         if maxScroll <= 0 then
+            if scroll:GetVerticalScroll() ~= 0 then scroll:SetVerticalScroll(0) end
             thumb:SetHeight(trackH)
             thumb:ClearAllPoints()
             thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)
@@ -241,7 +242,19 @@ local function attachScrollTrack(scroll, trackParent, bottomInset)
         local visibleH = scroll:GetHeight()
         local thumbH   = math.max(16, trackH * visibleH / (visibleH + maxScroll))
         local cur      = scroll:GetVerticalScroll()
-        local frac     = cur / maxScroll
+        -- Shrinking the window (or its content) while scrolled near the
+        -- bottom can leave the saved offset past the new, smaller range —
+        -- without reclamping, frac exceeds 1 and the thumb is pushed past the
+        -- end of the track (or off-screen entirely), flickering every time
+        -- update() re-fires during the resize.
+        if cur > maxScroll then
+            cur = maxScroll
+            scroll:SetVerticalScroll(cur)
+        elseif cur < 0 then
+            cur = 0
+            scroll:SetVerticalScroll(cur)
+        end
+        local frac = cur / maxScroll
         thumb:SetHeight(thumbH)
         thumb:ClearAllPoints()
         thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -(frac * (trackH - thumbH)))

@@ -42,7 +42,7 @@ if LSM then
 end
 
 addon.RegisterDefaults("alerts", {
-    whisperEnabled = false,
+    whisperEnabled = true,
     whisperSound   = DEFAULT_SOUND,
     -- Whispers can arrive in bursts; without a floor between plays a few
     -- arriving together stack into one long noise.
@@ -86,6 +86,10 @@ local function fireWhisperAlert()
     if not isReady() then return end
     local d = getData()
     if not d.whisperEnabled then return end
+    -- "Enable Chat System" (chat.enabled) is the parent switch for this whole
+    -- module — whisper alerts enabled on their own tab still shouldn't fire
+    -- while that's off.
+    if addon.Chat and not addon.Chat.isEnabled() then return end
 
     local now = GetTime()
     if now - lastPlayed < (d.throttle or 3) then return end

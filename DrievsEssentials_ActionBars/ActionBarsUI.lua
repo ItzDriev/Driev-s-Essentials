@@ -618,15 +618,25 @@ local function buildActionBarsTab(parent)
     dragHint:SetText("Hold to drag an ability without activating it.")
     dragHint:SetTextColor(unpack(C.textDim))
 
-    -- Sidebar: a "General" entry first, then each bar.
-    local sidebar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    sidebar:SetWidth(132)
-    sidebar:SetPoint("TOPLEFT", panel, "TOPLEFT", 4, -118)
-    sidebar:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 4, 4)
-    applyBackdrop(sidebar, 1, C.panelDark)
+    -- Sidebar: a "General" entry first, then each bar. With ten action bars
+    -- plus stance/pet/micro/bag, this list easily runs taller than the fixed
+    -- box (or the whole window, once resized smaller) — scrollable, and the
+    -- inner list is re-fit whenever the panel is shown or the window resizes
+    -- (see makeScrollPanel/attachScrollTrack in core's UI.lua).
+    local sidebarHost = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+    sidebarHost:SetWidth(132)
+    sidebarHost:SetPoint("TOPLEFT", panel, "TOPLEFT", 4, -118)
+    sidebarHost:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 4, 4)
+    applyBackdrop(sidebarHost, 1, C.panelDark)
+
+    -- makeScrollPanel's shell starts hidden (every other caller hands it to a
+    -- tab-switcher that explicitly shows it) — this sidebar isn't a switched
+    -- tab, it's a permanent fixture, so show it once here.
+    local sidebarShell, sidebar, refreshSidebarScroll = makeScrollPanel(sidebarHost)
+    sidebarShell:Show()
 
     local content = CreateFrame("Frame", nil, panel)
-    content:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 4, 0)
+    content:SetPoint("TOPLEFT", sidebarHost, "TOPRIGHT", 4, 0)
     content:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -4, 4)
 
     panel.barTabs   = {}
@@ -643,6 +653,10 @@ local function buildActionBarsTab(parent)
     local prevNav
     for _, ndef in ipairs(nav) do
         local tab = createSideTab(sidebar, ndef.label, 24)
+        -- Smaller than createSideTab's default (GameFontNormalLarge) — this
+        -- list runs to 15 entries in a narrow, now-scrollable column, and
+        -- names like "Action Bar 10" crowd the space at the larger size.
+        tab.text:SetFontObject("GameFontNormalSmall")
         if prevNav then
             tab:SetPoint("TOPLEFT",  prevNav, "BOTTOMLEFT",  0, -2)
             tab:SetPoint("TOPRIGHT", prevNav, "BOTTOMRIGHT", 0, -2)
@@ -659,12 +673,14 @@ local function buildActionBarsTab(parent)
         end
         prevNav = tab
     end
+    refreshSidebarScroll()
 
     selectBar("general")
     panel:SetScript("OnShow", function()
         enableCB:SetChecked(AB() and AB().getEnabled())
         refreshKeybindBtn()
         dragDD.Refresh()   -- re-read the saved modifier (e.g. after a profile switch)
+        refreshSidebarScroll()
     end)
 
     return panel

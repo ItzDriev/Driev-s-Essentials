@@ -217,11 +217,20 @@ local function buildChatSettingsPanel(parent)
     desc:SetText("Small tweaks to Blizzard's chat. Blizzard still handles chat layout, docking and tabs.")
     desc:SetTextColor(unpack(C.textGrey))
 
-    local enableCB = createCheckbox(panel, "Enable chat tweaks", 260)
+    -- The parent switch for the whole Chat module — Panels, DataTexts and
+    -- Alerts all check addon.Chat.isEnabled() too, so switching this off
+    -- overrides their own tabs' enable checkboxes rather than sitting
+    -- alongside them as an unrelated toggle.
+    local enableCB = createCheckbox(panel, "Enable Chat System", 260)
     enableCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -10)
     enableCB.OnChange = function(_, checked)
         getChatData().enabled = checked
         if addon.Chat then addon.Chat.refresh() end
+        if addon.ChatPanels then addon.ChatPanels.refresh() end
+        if addon.DataTexts then addon.DataTexts.refresh() end
+        -- Re-evaluates Blizzard Edit Mode suppression for the new state too
+        -- (see suppressBlizzardChatEditMode in ChatDock.lua).
+        if addon.ChatDock then addon.ChatDock.refresh() end
     end
 
     -- One font for chat text, tab names and the DataText bars.
@@ -967,11 +976,13 @@ local function buildDataTextsPanel(parent)
     end
 
     local barsBtn = createSideTab(sideCol, "DataText Bars", 26)
+    barsBtn.text:SetFontObject("GameFontNormalSmall")   -- matches every other inner sidebar list
     barsBtn:SetPoint("TOPLEFT",  sideCol, "TOPLEFT",   3, -3)
     barsBtn:SetPoint("TOPRIGHT", sideCol, "TOPRIGHT", -3, -3)
     barsBtn:SetScript("OnClick", function() showSide("bars") end)
 
     local labelsBtn = createSideTab(sideCol, "Labels", 26)
+    labelsBtn.text:SetFontObject("GameFontNormalSmall")   -- matches every other inner sidebar list
     labelsBtn:SetPoint("TOPLEFT",  barsBtn, "BOTTOMLEFT",  0, -2)
     labelsBtn:SetPoint("TOPRIGHT", barsBtn, "BOTTOMRIGHT", 0, -2)
     labelsBtn:SetScript("OnClick", function() showSide("labels") end)
@@ -1009,7 +1020,9 @@ local function buildDataTextsPanel(parent)
 
     local barRows = {}
     local function makeBarRow()
-        return createSideTab(listCol, "", 24)
+        local row = createSideTab(listCol, "", 24)
+        row.text:SetFontObject("GameFontNormalSmall")   -- matches every other inner sidebar list
+        return row
     end
 
     local cfgTitle = createInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")

@@ -18,13 +18,16 @@ local UI = addon.UI
 
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 
+-- Size/color mirror this addon author's own live setup (pulled from
+-- SavedVariables), so both panels start dialed-in instead of at generic
+-- placeholder values.
 local PANEL_DEFAULTS = {
     enabled         = false,
-    width           = 430,
-    height          = 190,
+    width           = 400,
+    height          = 198,
     borderThickness = 1,
-    bgColor         = { 0.090, 0.098, 0.165 },
-    bgOpacity       = 70,
+    bgColor         = { 0, 0, 0 },
+    bgOpacity       = 50,
     borderColor     = { 0.30, 0.31, 0.42 },
     borderOpacity   = 100,
     -- px/py (saved position) are absent until moved; each panel then falls back
@@ -37,9 +40,17 @@ local function copy(t)
     return out
 end
 
+-- Each panel's own live px/py — left panel sits near the bottom-left corner,
+-- right panel mirrors it near the bottom-right.
+local PANEL_1 = copy(PANEL_DEFAULTS)
+PANEL_1.px, PANEL_1.py = 4, 27
+
+local PANEL_2 = copy(PANEL_DEFAULTS)
+PANEL_2.px, PANEL_2.py = 1203, 27
+
 addon.RegisterDefaults("chatPanels", {
-    [1] = copy(PANEL_DEFAULTS),
-    [2] = copy(PANEL_DEFAULTS),
+    [1] = PANEL_1,
+    [2] = PANEL_2,
 })
 
 -- addon.db only exists once Core has applied the active profile at
@@ -82,11 +93,18 @@ local function applyPosition(i)
     end
 end
 
+-- "Enable Chat System" (chat.enabled) is the parent switch for this whole
+-- module — a panel enabled on its own tab still shouldn't show while that's
+-- off.
+local function chatSystemEnabled()
+    return not addon.Chat or addon.Chat.isEnabled()
+end
+
 local function applyPanel(i)
     local d = getPanel(i)
     local f = getOrCreateFrame(i)
 
-    if not d.enabled then
+    if not (d.enabled and chatSystemEnabled()) then
         f:Hide()
         return
     end

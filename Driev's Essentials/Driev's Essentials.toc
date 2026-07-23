@@ -1,7 +1,7 @@
 ## Interface: 11507
 ## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r |cff999999(settings bridge)|r
 ## Notes: One-time helper that hands your pre-1.1.0 settings to the renamed addon. Safe to delete once your profiles are back.
-## Version: 1.1.0
+## Version: 1.1.2
 ## Author: Driev
 ## SavedVariables: DrievSettingsDB
 

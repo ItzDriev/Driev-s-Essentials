@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.1.0"
+addon.version = "1.1.2"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras. WeakAuras.ScanEvents
@@ -315,6 +315,43 @@ local function migrateLegacyDB()
     addon.migratedFromLegacy = true
 end
 
+-- Chat and Action Bars both make one-way changes to Blizzard's own frames on
+-- login (killed native buttons, hidden bars, Edit Mode selection suppression
+-- — see HideBlizzard.lua and Chat.lua) that RefreshAllModules() can't fully
+-- undo or redo live. Switching to a profile with different chat/actionBars
+-- settings needs a /reload to actually take effect cleanly, so this compares
+-- old vs. new before/after a switch to decide whether to ask for one.
+local function deepEquals(a, b)
+    if a == b then return true end
+    if type(a) ~= "table" or type(b) ~= "table" then return false end
+    for k, v in pairs(a) do
+        if not deepEquals(v, b[k]) then return false end
+    end
+    for k in pairs(b) do
+        if a[k] == nil then return false end
+    end
+    return true
+end
+
+StaticPopupDialogs["DRIEV_PROFILE_RELOAD"] = {
+    text = "Switching profiles changed your Chat and/or Action Bars settings.\n\nThese need a UI reload to fully take effect.",
+    button1 = "Reload Now",
+    button2 = "Later",
+    OnAccept = function() ReloadUI() end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
+local function promptReloadIfNeeded(oldSettings, newSettings)
+    if not (oldSettings and newSettings) then return end
+    if deepEquals(oldSettings.chat, newSettings.chat)
+        and deepEquals(oldSettings.actionBars, newSettings.actionBars) then
+        return
+    end
+    StaticPopup_Show("DRIEV_PROFILE_RELOAD")
+end
+
 function addon.GetActiveProfileName()
     return addon.activeProfileName or "Default"
 end
@@ -366,11 +403,14 @@ end
 -- used (e.g. after an addon update) the same way login does.
 function addon.SetActiveProfile(name)
     if not DrievSettingsDB.profiles[name] then return false, "Profile not found." end
+    local oldSettings = addon.db and addon.db.settings
+
     DrievSettingsDB.profiles[name] = applyDefaults(defaults, DrievSettingsDB.profiles[name])
     addon.db = DrievSettingsDB.profiles[name]
     addon.activeProfileName = name
     DrievSettingsDB.profileAssignments[getCharKey()] = name
     addon.RefreshAllModules()
+    promptReloadIfNeeded(oldSettings, addon.db.settings)
     return true
 end
 

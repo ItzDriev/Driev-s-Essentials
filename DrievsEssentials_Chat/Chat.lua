@@ -10,14 +10,18 @@ if not addon then return end
 --   1. Hide the button clutter down the left of the chat.
 --   2. Let the chat be dragged anywhere on screen, including right to the edges.
 
+-- Values below mirror this addon author's own long-running chat setup (pulled
+-- from live SavedVariables) so enabling the module for the first time starts
+-- from a fully-dialed-in look instead of bare defaults. `enabled` is the one
+-- exception, deliberately kept off — see RegisterDefaults call below.
 addon.RegisterDefaults("chat", {
-    enabled      = true,
+    enabled      = false, -- module stays off until the user opts in
     hideButtons  = true, -- scroll arrows, chat menu, voice/text-to-speech
     freeMovement = true, -- allow dragging the chat to the screen edges
     skinEditBox  = true, -- flat themed box with channel-coloured border
     editBox = {
-        bgColor         = { 0.090, 0.098, 0.165 },
-        bgOpacity       = 90,
+        bgColor         = { 0.039, 0.039, 0.039 },
+        bgOpacity       = 100,
         borderColor     = { 0.30, 0.31, 0.42 },
         borderOpacity   = 100,
         borderThickness = 1,
@@ -32,12 +36,12 @@ addon.RegisterDefaults("chat", {
     },
     copyArrow       = true,        -- clickable arrow at the start of each line
     copyButton      = true,        -- top-right button opening a copyable chat-log window
-    timestamps      = false,       -- [15:25:46] in front of each message
+    timestamps      = true,        -- [15:25:46] in front of each message
     timestampFormat = "%H:%M:%S",
     noHoverFade     = true,        -- kill the chat's fade-in-on-mouseover
     flatTabs        = true,        -- flat tabs, names always legible
     stickyChat      = true,        -- reopen the edit box on the last channel used
-    stickyWhispers  = false,       -- ...including whispers (off: they don't stick)
+    stickyWhispers  = true,        -- ...including whispers
     -- Tab name colours. Blizzard's default is NORMAL_FONT_COLOR yellow for both
     -- states, which makes the selected tab hard to pick out at a glance.
     tabColor         = { 0.75, 0.75, 0.80 },
@@ -47,7 +51,7 @@ addon.RegisterDefaults("chat", {
     -- One font for everything chat-related: message text, tab names and the
     -- DataText bars. false / "Default" leaves Blizzard's font; otherwise a
     -- LibSharedMedia font name.
-    font             = false,
+    font             = "Expressway",
 })
 
 -- addon.db only exists once Core has applied the active profile at
@@ -1054,4 +1058,11 @@ f:SetScript("OnEvent", function(_, event)
     end
 end)
 
-addon.Chat = { refresh = refresh, getFontPath = chatFontPath }
+-- The master switch for the whole Chat module (Panels/DataTexts/Alerts all
+-- check this too, so switching it off hides/mutes everything regardless of
+-- each feature's own enabled flag — see ChatUI.lua's "Enable Chat System").
+local function isEnabled()
+    return isReady() and getData().enabled ~= false
+end
+
+addon.Chat = { refresh = refresh, getFontPath = chatFontPath, isEnabled = isEnabled }

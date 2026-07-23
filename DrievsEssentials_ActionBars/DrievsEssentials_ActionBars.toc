@@ -1,7 +1,7 @@
 ## Interface: 11509
 ## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Action Bars
 ## Notes: Custom action bars (scale, size, rows, growth, flyout, click-through, keybind mode) built on LibActionButton, movable via Edit Mode. Requires Driev's Essentials.
-## Version: 1.1.0
+## Version: 1.1.2
 ## Author: Driev
 ## Dependencies: DrievsEssentials
 ## OptionalDeps: Masque

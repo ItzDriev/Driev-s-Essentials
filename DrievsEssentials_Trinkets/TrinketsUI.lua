@@ -1179,6 +1179,7 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
         raidPanels[key] = buildRaidSection(raid)
 
         local b = createSideTab(sideCol, raid.label, 24)
+        b.text:SetFontObject("GameFontNormalSmall")   -- matches every other inner sidebar list
         if prevSb then
             b:SetPoint("TOPLEFT",  prevSb, "BOTTOMLEFT",  0, -2)
             b:SetPoint("TOPRIGHT", prevSb, "BOTTOMRIGHT", 0, -2)
@@ -2234,6 +2235,7 @@ local function buildTrinketsPanel(parent)
     local prevSb
     for _, def in ipairs(sideDefs) do
         local b = createSideTab(sideCol, def.label, 26)
+        b.text:SetFontObject("GameFontNormalSmall")   -- matches every other inner sidebar list
         if prevSb then
             b:SetPoint("TOPLEFT",  prevSb, "BOTTOMLEFT",  0, -2)
             b:SetPoint("TOPRIGHT", prevSb, "BOTTOMRIGHT", 0, -2)

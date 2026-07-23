@@ -112,6 +112,35 @@ local function styleSlotButton(btn, size)
     if ht then resetTemplateTexture(ht); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
 end
 
+-- Explicit region maps handed to Masque's Group:AddButton(button, ButtonData).
+-- Masque's auto-detect (no ButtonData) only reliably finds a plain Button's
+-- Icon/Cooldown by conventional field name — Normal/Pushed/Highlight/Checked
+-- need to be listed by hand, otherwise Masque skins the icon/cooldown but
+-- leaves those other layers (including the checked flash) drawing with their
+-- original un-recolored textures instead of the active Masque skin's colours.
+-- Defined ahead of the ElvUI skin block below, which needs them to hand
+-- buttons back to Masque when the ElvUI skin is toggled off.
+local function menuButtonData(mb)
+    return {
+        Icon      = mb.icon,
+        Cooldown  = mb.cooldown,
+        Normal    = mb:GetNormalTexture(),
+        Pushed    = mb:GetPushedTexture(),
+        Highlight = mb:GetHighlightTexture(),
+    }
+end
+
+local function displayButtonData(btn)
+    return {
+        Icon      = btn.icon,
+        Cooldown  = btn.cooldown,
+        Normal    = btn:GetNormalTexture(),
+        Pushed    = btn:GetPushedTexture(),
+        Highlight = btn:GetHighlightTexture(),
+        Checked   = btn:GetCheckedTexture(),
+    }
+end
+
 -- ── Saved data ────────────────────────────────────────────────────────────────
 -- Moved ahead of the ElvUI skin block below (which needs it to read the
 -- elvuiSkinEnabled toggle) — Lua locals aren't visible to code written before
@@ -143,6 +172,25 @@ local function getData()
     return d
 end
 
+-- The icon crop that makes ElvUI's flat look (cuts off the baked border/gloss
+-- in standard icon art). E.TexCoords would normally hold it, but it only gets
+-- populated when E:UpdateTexCoords() runs inside E:Initialize() — and in-game
+-- diagnostics showed this ElvUI build never initializes on
+-- Classic Era 1.15.9 (E.initialized stays nil), leaving E.TexCoords at the
+-- identity {0,1,0,1} forever, which made every crop we applied a silent
+-- no-op. So trust E.TexCoords only when it actually holds a crop, otherwise
+-- compute it ourselves from the same cropIcon setting ElvUI would use
+-- (0.04 * cropIcon per E:UpdateTexCoords; default 2 → the stock 8% crop).
+local function getIconCrop()
+    local tc = elvE and elvE.TexCoords
+    if tc and (tc[1] ~= 0 or tc[2] ~= 1 or tc[3] ~= 0 or tc[4] ~= 1) then
+        return tc[1], tc[2], tc[3], tc[4]
+    end
+    local crop = elvE and elvE.db and elvE.db.general and elvE.db.general.cropIcon
+    local m = 0.04 * (tonumber(crop) or 2)
+    return m, 1 - m, m, 1 - m
+end
+
 -- Reskins one worn/menu trinket button to match ElvUI's action-button look
 -- (used by TrinketMenu.lua's own native ElvUI skin, which this mirrors):
 -- swap the baked Blizzard Classic Normal/Pushed/Highlight textures for
@@ -164,14 +212,44 @@ local function elvuiSkinButton(btn)
     -- swipe — a separate Cooldown frame — stayed visible).
     local icon = btn.icon
     local savedTexture = icon and icon:GetTexture()
+    -- 1.15.9's modernized ActionButtonTemplate applies an IconMask MaskTexture
+    -- to the icon. A MaskTexture IS a Texture region, so StripTextures() below
+    -- blanks the mask's own texture too — and a blank mask is alpha 0
+    -- everywhere, which renders the masked icon fully invisible no matter what
+    -- texture we put back on it (blank button, cooldown still visible, no
+    -- error). Save the mask's texture/atlas first so revertElvUIButton can
+    -- restore it for the unskinned look.
+    local mask = btn.IconMask
+    if mask and btn._elvuiMaskTexture == nil and btn._elvuiMaskAtlas == nil then
+        btn._elvuiMaskAtlas   = mask.GetAtlas and mask:GetAtlas() or nil
+        btn._elvuiMaskTexture = mask:GetTexture()
+    end
     btn:StripTextures()
     btn:SetTemplate()
     if btn.StyleButton then btn:StyleButton() end
     btn:SetBackdropColor(0, 0, 0, 0)
     if icon then
-        if savedTexture then icon:SetTexture(savedTexture) end
-        icon:SetTexCoord(unpack(elvE.TexCoords))
-        icon:SetInside()
+        -- Don't render through the template's own icon region while skinned —
+        -- it carries 1.15.9 baggage (the IconMask above, atlas history from
+        -- StripTextures) that made it misrender in ways plain textures don't;
+        -- the TrinketMenu 11509 fix reached the same "only a freshly created
+        -- texture renders reliably" conclusion. So build a virgin replacement
+        -- texture on the button and swap btn.icon to point at it — every
+        -- existing update path (updateWornIcons/buildMenu/click handlers)
+        -- then reads and writes the clean region with no syncing needed.
+        local display = btn._elvuiIcon
+        if not display then
+            display = btn:CreateTexture(nil, "ARTWORK", nil, -1)
+            btn._elvuiIcon = display
+            btn._origIcon  = icon
+        end
+        display:SetTexture(savedTexture)
+        display:SetDesaturated(icon:IsDesaturated())
+        display:SetTexCoord(getIconCrop())
+        display:SetInside(btn)
+        display:Show()
+        icon:Hide()
+        btn.icon, btn.Icon = display, display
     end
 end
 
@@ -184,7 +262,33 @@ local function revertElvUIButton(btn, size)
     btn._elvuiSkinned = nil
     if btn.SetBackdrop then btn:SetBackdrop(nil) end
     styleSlotButton(btn, size)
-    local icon = btn.icon
+    -- Restore the template's IconMask that elvuiSkinButton hid (and whose
+    -- texture StripTextures blanked) so the unskinned icon gets its stock
+    -- rounded-corner crop back. MaskTexture:SetTexture needs the additive
+    -- wrap modes or the mask clamps wrong at the edges.
+    local mask = btn.IconMask
+    if mask then
+        if btn._elvuiMaskAtlas then
+            mask:SetAtlas(btn._elvuiMaskAtlas)
+        elseif btn._elvuiMaskTexture then
+            mask:SetTexture(btn._elvuiMaskTexture,
+                "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+        end
+        mask:Show()
+    end
+    -- Swap btn.icon back to the template's own icon region and hide the
+    -- replacement texture the skin created (see elvuiSkinButton). The current
+    -- texture/desaturation state is copied across so the unskinned button
+    -- shows the same trinket without waiting for the next refresh.
+    local display = btn._elvuiIcon
+    local icon    = btn._origIcon or btn.icon
+    if display and icon then
+        icon:SetTexture(display:GetTexture())
+        icon:SetDesaturated(display:IsDesaturated())
+        icon:Show()
+        display:Hide()
+        btn.icon, btn.Icon = icon, icon
+    end
     if icon then
         icon:ClearAllPoints()
         icon:SetAllPoints(btn)
@@ -201,16 +305,33 @@ end
 local function refreshElvUISkin()
     if not elvE then return end
     local on = getData().elvuiSkinEnabled ~= false
+    -- The ElvUI skin and Masque are mutually exclusive per button: Masque
+    -- reskins every region it owns (its own icon texcoords, border art,
+    -- re-anchored icon) right over the ElvUI template, leaving an ElvUI
+    -- backdrop with a classic-styled icon floating inside it. So skinning a
+    -- button first removes it from the Masque group (RemoveButton restores
+    -- the stock regions and no-ops if it was never added), and reverting
+    -- hands it back so Masque users keep their chosen look.
+    local group = addon.Trinkets and addon.Trinkets._masqueGroup
+    local function apply(btn, size, buttonData)
+        if not btn then return end
+        if on then
+            if group and not btn._elvuiSkinned then group:RemoveButton(btn) end
+            elvuiSkinButton(btn)
+        else
+            local wasSkinned = btn._elvuiSkinned
+            revertElvUIButton(btn, size)
+            if group and wasSkinned then group:AddButton(btn, buttonData(btn)) end
+        end
+    end
     if displayFrame then
         for which = 0, 1 do
-            local btn = displayFrame["t"..which]
-            if on then elvuiSkinButton(btn) else revertElvUIButton(btn, BTN_SIZE) end
+            apply(displayFrame["t"..which], BTN_SIZE, displayButtonData)
         end
     end
     if menuFrame then
         for i = 1, MAX_MENU do
-            local mb = menuFrame["mb"..i]
-            if on then elvuiSkinButton(mb) else revertElvUIButton(mb, MENU_SIZE) end
+            apply(menuFrame["mb"..i], MENU_SIZE, menuButtonData)
         end
     end
 end
@@ -220,6 +341,15 @@ end
 local function setElvUIEngine(E)
     elvE = E
     refreshElvUISkin()
+end
+
+-- Re-asserts the ElvUI icon crop on a skinned button. Called after every
+-- icon:SetTexture() as cheap insurance against anything resetting the
+-- region's texcoords. No-op for unskinned buttons.
+local function applyElvUICrop(btn)
+    if elvE and btn and btn._elvuiSkinned and btn.icon then
+        btn.icon:SetTexCoord(getIconCrop())
+    end
 end
 
 -- ── Bag scanning ─────────────────────────────────────────────────────────────
@@ -535,6 +665,7 @@ local function updateWornIcons()
                 -- Slot genuinely empty: clear it.
                 btn.icon:SetTexture("")
                 btn.icon:SetDesaturated(false)
+                applyElvUICrop(btn)
                 settled = true
             else
                 -- GetInventoryItemTexture is available immediately for worn
@@ -544,6 +675,7 @@ local function updateWornIcons()
                 if tex then
                     btn.icon:SetTexture(tex)
                     btn.icon:SetDesaturated(false)
+                    applyElvUICrop(btn)
                     settled = true
                 end
                 -- If tex is nil (data not cached yet) keep the current grayed
@@ -1419,6 +1551,7 @@ buildMenu = function()
                 local t = baggedTrinkets[i]
                 mb.icon:SetTexture(t.texture or "")
                 mb.icon:SetDesaturated(t.hidden)
+                applyElvUICrop(mb)
                 mb._bag  = t.bag
                 mb._slot = t.slot
                 mb._name = t.name
@@ -1460,33 +1593,6 @@ showMenu = function()
     pendingMenuShow = false
     positionMenu()
     m:Show()
-end
-
--- Explicit region maps handed to Masque's Group:AddButton(button, ButtonData).
--- Masque's auto-detect (no ButtonData) only reliably finds a plain Button's
--- Icon/Cooldown by conventional field name — Normal/Pushed/Highlight/Checked
--- need to be listed by hand, otherwise Masque skins the icon/cooldown but
--- leaves those other layers (including the checked flash) drawing with their
--- original un-recolored textures instead of the active Masque skin's colours.
-local function menuButtonData(mb)
-    return {
-        Icon      = mb.icon,
-        Cooldown  = mb.cooldown,
-        Normal    = mb:GetNormalTexture(),
-        Pushed    = mb:GetPushedTexture(),
-        Highlight = mb:GetHighlightTexture(),
-    }
-end
-
-local function displayButtonData(btn)
-    return {
-        Icon      = btn.icon,
-        Cooldown  = btn.cooldown,
-        Normal    = btn:GetNormalTexture(),
-        Pushed    = btn:GetPushedTexture(),
-        Highlight = btn:GetHighlightTexture(),
-        Checked   = btn:GetCheckedTexture(),
-    }
 end
 
 getOrCreateMenu = function()
@@ -1620,10 +1726,14 @@ getOrCreateMenu = function()
     menuFrame = f
 
     -- Register with Masque if already initialised (e.g. when menu is first opened
-    -- after PLAYER_ENTERING_WORLD).
+    -- after PLAYER_ENTERING_WORLD). ElvUI-skinned buttons stay out of the
+    -- group — Masque would reskin over the ElvUI template (see refreshElvUISkin).
     if addon.Trinkets and addon.Trinkets._masqueGroup then
         for i = 1, MAX_MENU do
-            addon.Trinkets._masqueGroup:AddButton(f["mb"..i], menuButtonData(f["mb"..i]))
+            local mb = f["mb"..i]
+            if not mb._elvuiSkinned then
+                addon.Trinkets._masqueGroup:AddButton(mb, menuButtonData(mb))
+            end
         end
     end
 
@@ -1855,18 +1965,26 @@ local function initMasque()
     if not MSQ then return end
     if addon.Trinkets and addon.Trinkets._masqueGroup then return end
     local group = MSQ:Group("Driev's Essentials", "Trinkets")
+    -- Buttons currently wearing the ElvUI skin stay OUT of the Masque group:
+    -- Masque would immediately reskin its regions over the ElvUI template
+    -- (see refreshElvUISkin, which also moves buttons in/out of the group
+    -- when the "Skin with ElvUI" toggle changes).
     -- Register display buttons (display frame created before initMasque is called)
     if displayFrame then
         for which = 0, 1 do
             local btn = displayFrame["t"..which]
-            group:AddButton(btn, displayButtonData(btn))
+            if not btn._elvuiSkinned then
+                group:AddButton(btn, displayButtonData(btn))
+            end
         end
     end
     -- Force-create menu frame and register its buttons
     local m = getOrCreateMenu()
     for i = 1, MAX_MENU do
         local mb = m["mb"..i]
-        group:AddButton(mb, menuButtonData(mb))
+        if not mb._elvuiSkinned then
+            group:AddButton(mb, menuButtonData(mb))
+        end
     end
     addon.Trinkets._masqueGroup = group
 end
@@ -2257,3 +2375,4 @@ addon.Trinkets = {
     -- edit box would just float over nothing.
     isEnabled          = function() return getData().enabled and true or false end,
 }
+

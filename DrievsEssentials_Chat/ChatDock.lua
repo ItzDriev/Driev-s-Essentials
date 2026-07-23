@@ -203,10 +203,48 @@ local function setLocked(v)
     applyLock()
 end
 
+-- ── Blizzard Edit Mode suppression ──────────────────────────────────────────
+-- ChatFrame1/DEFAULT_CHAT_FRAME is wired up as a full EditModeSystemMixin
+-- system (PrimaryChatFrameMixin:OnLoad calls EditModeSystemMixin.OnSystemLoad)
+-- — the same integration the action bars and bag bar have, and it causes the
+-- same two problems here:
+--
+-- 1. It gets its own Selection highlight box in Blizzard's native Edit Mode,
+--    a second "move this" box alongside ours. defaultHideSelection is the
+--    flag EditModeSystemMixin:OnEditModeEnter checks before calling
+--    HighlightSystem() — setting it true skips that box entirely. (Not the
+--    same mechanism used to suppress MainActionBar/BagsBar in HideBlizzard.lua
+--    — those are fully hidden and reparented off-screen, which isn't an
+--    option here since the chat window still needs to be visible.)
+--
+-- 2. HighlightSystem() is also where our own dragging broke: it calls
+--    self:SetMovable(false), and only SelectSystem() (clicking the system
+--    inside Blizzard's OWN Edit Mode UI) sets it back to true. If Blizzard's
+--    Edit Mode was ever opened this session — even before this addon loaded —
+--    ChatFrame1 is left permanently non-movable, so our StartMoving() calls
+--    in the movers below silently do nothing.
+--
+-- Both only apply while the Chat module itself is enabled: with it off, this
+-- addon isn't replacing anything, so Blizzard's own Edit Mode should behave
+-- exactly as it would with the addon absent. Unlike the action bars'
+-- HideBlizzardActionBars (a one-way hide/reparent), this is fully reversible
+-- — defaultHideSelection is read fresh by Blizzard on every Edit Mode entry —
+-- so toggling the module back off here genuinely restores Blizzard's own
+-- selection box instead of just leaving it suppressed for the rest of the
+-- session.
+local function suppressBlizzardChatEditMode()
+    local on = addon.Chat and addon.Chat.isEnabled()
+    eachChatFrame(function(cf)
+        cf.defaultHideSelection = on or nil
+        if on and cf.SetMovable then cf:SetMovable(true) end
+    end)
+end
+
 local function refresh()
     if not isReady() then return end
     applyLock()
     reapply()
+    suppressBlizzardChatEditMode()
 end
 
 -- ── Move Mode ────────────────────────────────────────────────────────────────
@@ -318,7 +356,10 @@ end
 if UI then
     UI.RegisterMovableProvider(function()
         local list = {}
-        if not isReady() then return list end
+        -- With the Chat module off, this addon isn't managing chat position at
+        -- all — no movers to offer, same as suppressBlizzardChatEditMode above
+        -- leaving Blizzard's own Edit Mode system untouched in that case.
+        if not (isReady() and addon.Chat and addon.Chat.isEnabled()) then return list end
         eachChatFrame(function(cf, i)
             if cf:IsShown() then
                 local m = getOrCreateMover(i)
@@ -329,40 +370,9 @@ if UI then
     end)
 end
 
--- ── Blizzard Edit Mode suppression ──────────────────────────────────────────
--- ChatFrame1/DEFAULT_CHAT_FRAME is wired up as a full EditModeSystemMixin
--- system (PrimaryChatFrameMixin:OnLoad calls EditModeSystemMixin.OnSystemLoad)
--- — the same integration the action bars and bag bar have, and it causes the
--- same two problems here:
---
--- 1. It gets its own Selection highlight box in Blizzard's native Edit Mode,
---    a second "move this" box alongside ours. defaultHideSelection is the
---    flag EditModeSystemMixin:OnEditModeEnter checks before calling
---    HighlightSystem() — setting it true skips that box entirely. (Not the
---    same mechanism used to suppress MainActionBar/BagsBar in HideBlizzard.lua
---    — those are fully hidden and reparented off-screen, which isn't an
---    option here since the chat window still needs to be visible.)
---
--- 2. HighlightSystem() is also where our own dragging broke: it calls
---    self:SetMovable(false), and only SelectSystem() (clicking the system
---    inside Blizzard's OWN Edit Mode UI) sets it back to true. If Blizzard's
---    Edit Mode was ever opened this session — even before this addon loaded —
---    ChatFrame1 is left permanently non-movable, so our StartMoving() calls
---    in the mover below silently do nothing. Setting defaultHideSelection
---    stops this from happening again; the SetMovable(true) call here undoes
---    it if it already happened earlier this session, and enterMoveMode()
---    below repeats it defensively on every entry to our own Move Mode.
-local function suppressBlizzardChatEditMode()
-    eachChatFrame(function(cf)
-        cf.defaultHideSelection = true
-        if cf.SetMovable then cf:SetMovable(true) end
-    end)
-end
-
 -- ── Hooks ───────────────────────────────────────────────────────────────────
 local function init()
     refresh()
-    suppressBlizzardChatEditMode()
 
     -- The one moment docking happens. hooksecurefunc runs after Blizzard has
     -- finished its own drag handling (including any re-docking of tabs), so the

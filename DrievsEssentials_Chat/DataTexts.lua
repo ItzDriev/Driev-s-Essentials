@@ -39,10 +39,32 @@ local BAR_DEFAULTS = {
     -- to bottom-center of the screen when unset.
 }
 
+-- The shipped default bar mirrors this addon author's own "Left Bar" setup,
+-- position included (pulled from live SavedVariables), so a fresh Chat
+-- module still lands on one usable, styled, positioned bar instead of
+-- nothing.
+local DEFAULT_BAR = {
+    name            = "Left Bar",
+    height          = 22,
+    minWidth        = 400,
+    padding         = 10,
+    fixedWidth      = true,
+    width           = 400,
+    borderThickness = 1,
+    bgColor         = { 0.039, 0.039, 0.039 },
+    bgOpacity       = 100,
+    borderColor     = { 0, 0, 0 },
+    borderOpacity   = 100,
+    px = 4,
+    py = 6,
+    order = { "armor", "stamina", "haste", "mail", "gold" },
+    texts = { armor = true, stamina = true, haste = true, mail = true, gold = true },
+}
+
 addon.RegisterDefaults("dataTexts", {
     enabled   = true,
-    bars      = {},  -- [id] = table shaped like BAR_DEFAULTS + { name }
-    nextBarID = 0,
+    bars      = { ["1"] = DEFAULT_BAR }, -- [id] = table shaped like BAR_DEFAULTS + { name }
+    nextBarID = 1,
     -- User-created datatexts: [id] = { label, code, poll }. id is a string
     -- counter key, bumped by nextCustomID each time one is added. Whether a
     -- given datatext is SHOWN is per-bar (bar.texts), not stored here.
@@ -68,6 +90,13 @@ end
 local function getData()
     addon.db.settings.dataTexts = addon.db.settings.dataTexts or {}
     return addon.db.settings.dataTexts
+end
+
+-- "Enable Chat System" (chat.enabled) is the parent switch for this whole
+-- module — DataTexts bars enabled on their own tab still shouldn't show
+-- while that's off.
+local function chatSystemEnabled()
+    return not addon.Chat or addon.Chat.isEnabled()
 end
 
 -- ── Built-in providers ───────────────────────────────────────────────────────
@@ -829,7 +858,7 @@ end
 rebuildBar = function(id)
     local bf   = getOrCreateBarFrame(id)
     local cfg  = getBar(id)
-    local show = getData().enabled ~= false
+    local show = getData().enabled ~= false and chatSystemEnabled()
 
     for _, key in ipairs(providerOrder) do
         local seg = ensureSegment(id, key)
@@ -1123,7 +1152,7 @@ addon.DataTexts = {
 UI.RegisterMovableProvider(function()
     local list = {}
     if not isReady() then return list end
-    if getData().enabled == false then return list end
+    if getData().enabled == false or not chatSystemEnabled() then return list end
     for id in pairs(getData().bars) do list[#list + 1] = getBarMover(id) end
     return list
 end)

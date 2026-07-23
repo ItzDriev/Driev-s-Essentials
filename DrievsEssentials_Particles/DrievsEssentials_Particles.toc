@@ -1,7 +1,7 @@
 ## Interface: 11507
 ## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Particles
 ## Notes: Particle-density control per raid encounter. Requires Driev's Essentials.
-## Version: 1.1.0
+## Version: 1.1.2
 ## Author: Driev
 ## Dependencies: DrievsEssentials
 ## IconTexture: Interface\Icons\INV_Misc_Gear_01
