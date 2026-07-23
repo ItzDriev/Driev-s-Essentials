@@ -264,4 +264,8 @@ addon.TTK = {
     leaveMoveMode    = leaveMoveMode,
     getPosition      = getPosition,
     setPosition      = setPosition,
+    -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode — no
+    -- point offering to drag around a display the "Enable Time to Kill"
+    -- checkbox has turned off.
+    isEnabled        = function() local s = ttkSettings(); return s ~= nil and s.enabled end,
 }

@@ -112,6 +112,17 @@ end
 -- ── move-mode proxy ──────────────────────────────────────────────────────
 local proxy
 
+-- Base (scale-1) size captured once when move mode is entered and reused for
+-- the rest of the session (resize-grip aspect ratio, savePosition's scale
+-- calculation) instead of re-measuring via baseSize() each time. Blizzard's
+-- Edit Mode can change what's actually visible/bounded in the container
+-- while it's open (e.g. its own preview layout), so a fresh measurement on
+-- exit can disagree with the one taken on entry — re-measuring on both ends
+-- turned that disagreement straight into scale drift, compounding a little
+-- more on every Edit Mode open/close. Locking to one measurement per session
+-- makes save a no-op round-trip unless the user actually resized.
+local moveBaseW, moveBaseH
+
 -- Resizes/repositions the proxy to match the real raid frames' current
 -- tight bounding box. Used both on first-ever entry and on demand via the
 -- "Snap to Frames" button, since the roster (and therefore the bounding
@@ -211,7 +222,8 @@ local function getOrCreateProxy()
     grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
     grip:SetScript("OnMouseDown", function(_, button)
         if button ~= "LeftButton" then return end
-        resizeAspectW, resizeAspectH = baseSize()
+        if not moveBaseW then moveBaseW, moveBaseH = baseSize() end
+        resizeAspectW, resizeAspectH = moveBaseW, moveBaseH
         grip:SetScript("OnUpdate", onResizeUpdate)
     end)
     grip:SetScript("OnMouseUp", function(_, button)
@@ -226,12 +238,12 @@ end
 local function enterMoveMode()
     local f = getOrCreateProxy()
     local s = getData()
+    moveBaseW, moveBaseH = baseSize()
 
     if s.px and s.py then
-        local bw, bh = baseSize()
-        local scale  = s.scale or 1
+        local scale = s.scale or 1
         f:ClearAllPoints()
-        f:SetSize(bw * scale, bh * scale)
+        f:SetSize(moveBaseW * scale, moveBaseH * scale)
         f:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", s.px, s.py)
     else
         -- First-time use: snap to wherever the real raid frames currently
@@ -284,6 +296,7 @@ local function leaveMoveMode()
     proxy:SetScript("OnMouseUp",   nil)
     proxy:SetScript("OnUpdate",    nil)
     proxy:Hide()
+    moveBaseW, moveBaseH = nil, nil
 end
 
 -- For the position-editor popup: read/write the proxy directly (TOPLEFT
@@ -313,7 +326,8 @@ local function savePosition()
         s.px, s.py = x, y
     end
 
-    local bw, bh = baseSize()
+    local bw, bh = moveBaseW, moveBaseH
+    if not bw then bw, bh = baseSize() end
     local w, h = proxy:GetSize()
     local scale = ((w / bw) + (h / bh)) / 2
     s.scale = math.max(MIN_SCALE, math.min(MAX_SCALE, scale))
@@ -332,6 +346,42 @@ local function setScale(value)
     return value
 end
 
+-- ── Blizzard Edit Mode cooperation (1.15.9+) ─────────────────────────────────
+-- Opening Blizzard's Edit Mode shows our raid-frame move anchor (only while the
+-- Raid Frame Manager is enabled, i.e. when WE own the frames' position) so it's
+-- dragged alongside everything else instead of through a separate addon edit
+-- mode; closing it saves and hides. Mirrors the action bars' hook so the two
+-- move systems don't fight. Self-contained — NOT UI.EnterMoveMode, which would
+-- re-open the settings window on exit.
+local blizzUnlocked = false
+
+local function blizzardUnlock()
+    if InCombatLockdown() or blizzUnlocked then return end
+    if not (addon.db and addon.db.settings) then return end
+    -- Manager off → we don't reposition the raid frames, so leave them to
+    -- Blizzard's own Edit Mode rather than showing a proxy that moves nothing.
+    if getData().enabled == false then return end
+    blizzUnlocked = true
+    enterMoveMode()
+end
+
+local function blizzardLock()
+    if not blizzUnlocked then return end
+    blizzUnlocked = false
+    savePosition()
+    leaveMoveMode()
+    -- The proxy's click opens the shared X/Y position editor; hide it too or it
+    -- lingers after Edit Mode closes (same fix the action bars needed).
+    if addon.UI and addon.UI.positionEditor then addon.UI.positionEditor:Hide() end
+end
+
+local function hookBlizzardEditMode()
+    if not (EventRegistry and EditModeManagerFrame) then return end
+    EventRegistry:RegisterCallback("EditMode.Enter", blizzardUnlock)
+    EventRegistry:RegisterCallback("EditMode.Exit",  blizzardLock)
+end
+
+local editModeHooked = false
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -341,6 +391,12 @@ eventFrame:SetScript("OnEvent", function(_, event)
         if pendingApply then applyAll() end
     else
         applyAll()
+    end
+    -- Register the Edit Mode callbacks once, by which point EditModeManagerFrame
+    -- exists (same timing the action bars use — at/after login).
+    if not editModeHooked then
+        editModeHooked = true
+        hookBlizzardEditMode()
     end
 end)
 
@@ -356,4 +412,8 @@ addon.RaidFrames = {
     maxScale         = MAX_SCALE,
     getPosition      = getPosition,
     setPosition      = setPosition,
+    -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode — with
+    -- the manager off we don't own the raid frames' position, so the proxy
+    -- would just move nothing.
+    isEnabled        = function() return getData().enabled ~= false end,
 }

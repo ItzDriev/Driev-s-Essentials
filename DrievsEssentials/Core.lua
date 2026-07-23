@@ -40,12 +40,30 @@ local defaults = {
             fontSize = 24,
             fontName = "Friz Quadrata TT",
         },
+        tooltip = {
+            enabled        = false, -- master toggle for the whole skin
+            colorByUnit    = true,  -- border colored by class (players) / reaction (NPCs)
+            showHealth     = true,  -- append a "current / max (pct%)" line on unit tooltips
+            hideRealm      = false, -- strip "-Realmname" from the name line
+            anchorCursor   = false, -- follow the mouse instead of Blizzard's default anchor
+            useAnchor      = false, -- park it on the movable anchor instead
+            anchorX        = nil,   -- anchor position, absent until first moved
+            anchorY        = nil,
+            healthBorder   = true,  -- class-colored outline around the health bar
+            customBorder   = false, -- use borderColor below instead of class/reaction
+            borderColor    = { 0.30, 0.31, 0.42 },
+            bgColor        = { 0.090, 0.098, 0.165 },
+            bgOpacity      = 100,
+        },
+        editBarX      = nil,  -- Edit Mode control box position, absent until moved
+        editBarY      = nil,
         editAlpha     = 0.4,
         editPad       = 4,    -- extra px the edit-mode box extends beyond each element
         editBorder    = 1,    -- edit-mode box border thickness
         moveBgOpacity = 15,   -- % scaling the Move UI dimmed background + grid lines
         moveBgEnabled = true, -- whether the Move UI dimmed background + grid show at all
         uiScale       = 1,    -- settings window scale (the slider next to Edit Mode)
+        editParked    = {},   -- module labels parked (unticked) in the Edit Mode Modules list
         -- settingsWinW/settingsWinH (last dragged window size) are absent
         -- until the user resizes; createMainFrame() falls back to a built-in
         -- default size when unset.
@@ -137,6 +155,24 @@ function addon.SetMoveBgEnabled(value)
     addon.db.settings.moveBgEnabled = value
     if addon.UI and addon.UI.RefreshMoveOverlay then addon.UI.RefreshMoveOverlay() end
     return value
+end
+
+-- Which modules the user has parked (unticked) in the Edit Mode "Modules" tab,
+-- keyed by the same label shown in that list (UI.MovableLabel). Persisted so a
+-- module parked out of the way stays parked the next time Edit Mode opens,
+-- instead of resetting to movable every session.
+function addon.IsEditParked(key)
+    return (addon.db and addon.db.settings and addon.db.settings.editParked and addon.db.settings.editParked[key]) and true or false
+end
+
+function addon.SetEditParked(key, parked)
+    if not (addon.db and addon.db.settings) then return end
+    addon.db.settings.editParked = addon.db.settings.editParked or {}
+    if parked then
+        addon.db.settings.editParked[key] = true
+    else
+        addon.db.settings.editParked[key] = nil
+    end
 end
 
 -- ── Shared edit-mode box ──────────────────────────────────────────────────────
@@ -312,8 +348,10 @@ function addon.RefreshAllModules()
         if addon.Trinkets.populateQueueSorts  then addon.Trinkets.populateQueueSorts() end
     end
     if addon.Particles and addon.Particles.refresh then addon.Particles.refresh() end
+    if addon.Tooltip  and addon.Tooltip.refresh  then addon.Tooltip.refresh() end
     if addon.Raid      and addon.Raid.refresh      then addon.Raid.refresh() end
     if addon.Minimap   and addon.Minimap.refresh   then addon.Minimap.refresh() end
+    if addon.ActionBars and addon.ActionBars.refresh then addon.ActionBars.refresh() end
     -- Any currently-visible settings sub-panel refreshes its controls via its
     -- own OnShow handler; toggling the window's shown state cascades OnShow
     -- to whatever's actually on screen without needing a bespoke hook per tab.

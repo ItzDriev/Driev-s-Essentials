@@ -1,0 +1,16 @@
+## Interface: 11507
+## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Chat
+## Notes: Chat button hiding, free chat positioning, background chat panels, and customizable movable DataText stat bars. Requires Driev's Essentials.
+## Version: 1.1.0
+## Author: Driev
+## Dependencies: DrievsEssentials
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+## SavedVariables: DrievGoldDB
+## SavedVariablesPerCharacter: DrievChatHistoryDB
+
+Chat.lua
+ChatPanels.lua
+ChatDock.lua
+DataTexts.lua
+Alerts.lua
+ChatUI.lua

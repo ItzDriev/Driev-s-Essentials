@@ -44,10 +44,53 @@ local ICON_REF     = 36
 local NORMAL_RATIO = 66 / ICON_REF
 local PUSHED_RATIO = 38 / ICON_REF
 
+-- 1.15.9's modernized button templates define their state textures (Normal/
+-- Pushed/Highlight) as nine-sliced atlas frames, i.e. with texture slice margins,
+-- sometimes a non-default TexCoord, and a slightly-faded vertex color/alpha.
+-- Those properties live on the texture *region*, so they persist even after we
+-- swap in our own plain classic texture with SetNormalTexture/SetPushedTexture/
+-- SetHighlightTexture: the leftover slice margins stretch a plain texture into a
+-- huge, wrong frame, and the leftover tint/alpha makes it render below full
+-- opacity (both only visible without Masque, since Masque discards the regions
+-- and draws its own). Resetting slice, texcoord, color and alpha makes our
+-- texture draw at exactly the size and strength we intend. Resetting the color
+-- to white / alpha to 1 can only strip an *added* tint — it can't make the
+-- texture's own transparent pixels opaque — so it just restores UI-Quickslot2's
+-- natural look. Guarded because these APIs don't all exist on older clients
+-- (where there's no bug to fix anyway).
+local function resetTemplateTexture(tex)
+    if not tex then return end
+    if tex.SetTextureSliceMargins then tex:SetTextureSliceMargins(0, 0, 0, 0) end
+    if tex.SetTexCoord    then tex:SetTexCoord(0, 1, 0, 1) end
+    if tex.SetVertexColor then tex:SetVertexColor(1, 1, 1) end
+    if tex.SetAlpha       then tex:SetAlpha(1) end
+end
+
 local function styleSlotButton(btn, size)
+    -- 1.15.9 backported the modernized ActionButtonTemplate, which adds new
+    -- decorative regions — SlotBackground (a fill behind the icon) and SlotArt —
+    -- drawn at the template's own (oversized-for-us) size. Our buttons are
+    -- type="item" / plain menu buttons, not real action slots, so nothing hides
+    -- those the way a real action button would; without Masque they render as a
+    -- big background/frame around our baked classic art. (With Masque there's no
+    -- problem because Masque replaces every region itself — which is exactly why
+    -- the bug only shows with Masque off.) LibActionButton hides these same
+    -- regions for its own non-Masque path; we do the equivalent here. Each is
+    -- nil-checked so this stays a no-op on older clients that lack them.
+    if btn.SlotBackground then btn.SlotBackground:Hide() end
+    if btn.SlotArt        then btn.SlotArt:Hide()        end
+    -- Also silence the template's inherited OnEvent so it can't re-show those
+    -- regions on a later ACTIONBAR_* event. Safe: every caller creates these out
+    -- of combat, we drive icon/cooldown/checked ourselves, and the secure
+    -- "use item" click runs off the type/slot attributes via the client's secure
+    -- dispatch, not this Lua-side OnEvent.
+    btn:UnregisterAllEvents()
+    btn:SetScript("OnEvent", nil)
+
     btn:SetNormalTexture("Interface\\Buttons\\UI-Quickslot2")
     local nt = btn:GetNormalTexture()
     if nt then
+        resetTemplateTexture(nt)
         nt:ClearAllPoints()
         local w = size * NORMAL_RATIO
         nt:SetSize(w, w)
@@ -57,6 +100,7 @@ local function styleSlotButton(btn, size)
     btn:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
     local pt = btn:GetPushedTexture()
     if pt then
+        resetTemplateTexture(pt)
         pt:ClearAllPoints()
         local w = size * PUSHED_RATIO
         pt:SetSize(w, w)
@@ -65,7 +109,7 @@ local function styleSlotButton(btn, size)
 
     btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
     local ht = btn:GetHighlightTexture()
-    if ht then ht:ClearAllPoints(); ht:SetAllPoints(btn) end
+    if ht then resetTemplateTexture(ht); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
 end
 
 -- ── Saved data ────────────────────────────────────────────────────────────────
@@ -2052,14 +2096,15 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         -- Native ElvUI skin support for the worn Display Menu buttons and the
         -- pop-out Bag Menu grid (see elvuiSkinButton/refreshElvUISkin above).
         -- ShadowElvUI is a fork that keeps ElvUI's engine API intact but
-        -- renames the global from ElvUI to ShadowElvUI, so both the load
-        -- check and the engine unpack need an explicit fallback or
-        -- ShadowElvUI users silently get no skin.
-        if IsAddOnLoaded("ElvUI") or IsAddOnLoaded("ShadowElvUI") then
-            local engine = ElvUI or ShadowElvUI
-            if engine then
-                setElvUIEngine((unpack(engine)))
-            end
+        -- renames the global from ElvUI to ShadowElvUI, hence the fallback.
+        --
+        -- The engine is a global table (unpackable into E, L, V, P, G) that
+        -- only exists once the addon has loaded, so its presence IS the load
+        -- check. Using it directly avoids IsAddOnLoaded, which Blizzard moved to
+        -- C_AddOns.IsAddOnLoaded and removed as a global in Classic Era 1.15.9.
+        local engine = ElvUI or ShadowElvUI
+        if type(engine) == "table" then
+            setElvUIEngine((unpack(engine)))
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
         applyVisibility()   -- creates the frame, applies scale + saved position
@@ -2207,4 +2252,8 @@ addon.Trinkets = {
     updateHotkeys      = updateHotkeys,
     updateQueueIndicators = updateQueueIndicators,
     refreshElvUISkin   = refreshElvUISkin,
+    -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode — with
+    -- "Enable Trinket Menu" off the display frame is hidden entirely, so its
+    -- edit box would just float over nothing.
+    isEnabled          = function() return getData().enabled and true or false end,
 }

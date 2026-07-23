@@ -1,0 +1,19 @@
+## Interface: 11509
+## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Action Bars
+## Notes: Custom action bars (scale, size, rows, growth, flyout, click-through, keybind mode) built on LibActionButton, movable via Edit Mode. Requires Driev's Essentials.
+## Version: 1.1.0
+## Author: Driev
+## Dependencies: DrievsEssentials
+## OptionalDeps: Masque
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+
+# Libraries (LibStub + CallbackHandler-1.0 are provided by the core addon,
+# which is guaranteed loaded first via ## Dependencies above).
+Libs\LibButtonGlow-1.0\LibButtonGlow-1.0.lua
+Libs\LibKeyBound-1.0\lib.xml
+Libs\LibActionButton-1.0\LibActionButton-1.0.lua
+
+# Module
+HideBlizzard.lua
+ActionBars.lua
+ActionBarsUI.lua

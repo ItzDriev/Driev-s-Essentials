@@ -18,7 +18,7 @@ local function effectiveRaidLike()
     if not S or not S.isReady() then return false end
     if S.isInRaidInstance() then return true end
     local s = raidSettings()
-    if s and s.debug and S.getInstanceType() == "party" then return true end
+    if s and s.enabled and s.debug and S.getInstanceType() == "party" then return true end
     return false
 end
 
@@ -26,6 +26,12 @@ end
 -- during combat lockdown.  We store a pending flag and retry on PLAYER_REGEN_ENABLED.
 local pendingApply = false
 
+-- Master switch off by default (see UI.lua's "Enable Raid Settings" checkbox).
+-- Rather than early-returning, apply() always runs and simply treats the
+-- sub-settings as off when the master is off — that way flipping the master
+-- switch off mid-raid resets the CVars immediately instead of leaving names/
+-- bubbles hidden until the raid is left (which is when revert() would
+-- otherwise be the only thing to undo them).
 local function apply()
     if InCombatLockdown() then
         pendingApply = true
@@ -34,9 +40,11 @@ local function apply()
     pendingApply = false
     local s = raidSettings()
     if not s then return end
-    local nameVal = s.disableNames and 0 or 1
+    local disableNames   = s.enabled and s.disableNames
+    local disableBubbles = s.enabled and s.disableChatBubbles
+    local nameVal = disableNames and 0 or 1
     for _, cvar in ipairs(NAMES_CVARS) do SetCVar(cvar, nameVal) end
-    SetCVar("chatBubbles", s.disableChatBubbles and 0 or 1)
+    SetCVar("chatBubbles", disableBubbles and 0 or 1)
 end
 
 local function revert()
@@ -47,10 +55,10 @@ local function revert()
     pendingApply = false
     local s = raidSettings()
     if not s then return end
-    if s.disableNames then
+    if s.enabled and s.disableNames then
         for _, cvar in ipairs(NAMES_CVARS) do SetCVar(cvar, 1) end
     end
-    if s.disableChatBubbles then
+    if s.enabled and s.disableChatBubbles then
         SetCVar("chatBubbles", 1)
     end
 end

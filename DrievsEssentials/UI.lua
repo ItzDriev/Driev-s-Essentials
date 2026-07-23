@@ -379,7 +379,10 @@ local function makeScrollPanel(parent, innerHeight)
         C_Timer.After(0, refreshScroll)
     end)
 
-    return shell, inner
+    -- Third return value lets a caller re-fit the scroll child after adding
+    -- or removing rows while the panel is already shown (rebuilding a list
+    -- doesn't fire OnShow/OnSizeChanged on its own).
+    return shell, inner, refreshScroll
 end
 
 -- Custom dark/red themed checkbox. The whole row is clickable.
@@ -510,8 +513,15 @@ local function buildRaidSettingsPanel(parent)
     desc:SetText("Applied automatically when entering a raid instance and reverted on leaving.")
     desc:SetTextColor(unpack(C.textGrey))
 
+    local enableCheck = createCheckbox(panel, "Enable Raid Settings", 260)
+    enableCheck:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -14)
+    enableCheck.OnChange = function(_, checked)
+        raidData().enabled = checked
+        if addon.Raid then addon.Raid.refresh() end
+    end
+
     local namesCheck = createCheckbox(panel, "Disable Names in Raid", 260)
-    namesCheck:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -18)
+    namesCheck:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -18)
     namesCheck.OnChange = function(_, checked)
         raidData().disableNames = checked
         if addon.Raid then addon.Raid.refresh() end
@@ -548,6 +558,7 @@ local function buildRaidSettingsPanel(parent)
 
     local function refreshPanel()
         local d = raidData()
+        enableCheck:SetChecked(d.enabled or false)
         namesCheck:SetChecked(d.disableNames or false)
         bubblesCheck:SetChecked(d.disableChatBubbles or false)
         debugCheck:SetChecked(d.debug or false)
@@ -1036,6 +1047,178 @@ local function buildGeneralTabPanel(parent)
     })
     sizeStepper:SetPoint("LEFT", sizeLabel, "RIGHT", 10, 0)
 
+    -- A clickable colour swatch opening WoW's native picker. RGB only — opacity
+    -- is a separate stepper here, so the two controls can't fight over alpha.
+    local function ttSwatch(parent, getRGB, setRGB, onChange)
+        local sw = CreateFrame("Button", nil, parent, "BackdropTemplate")
+        sw:SetSize(20, 20)
+        applyBackdrop(sw, 1, { 1, 1, 1 }, C.tabBorder)
+
+        local function paint()
+            local r, g, b = getRGB()
+            sw:SetBackdropColor(r or 1, g or 1, b or 1, 1)
+        end
+
+        sw:SetScript("OnClick", function()
+            local r, g, b = getRGB()
+            local function apply()
+                local nr, ng, nb = ColorPickerFrame:GetColorRGB()
+                setRGB(nr, ng, nb); paint(); if onChange then onChange() end
+            end
+            local function cancel()
+                setRGB(r, g, b); paint(); if onChange then onChange() end
+            end
+            if ColorPickerFrame.SetupColorPickerAndShow then
+                ColorPickerFrame:SetupColorPickerAndShow({
+                    r = r, g = g, b = b, hasOpacity = false,
+                    swatchFunc = apply, cancelFunc = cancel,
+                })
+            else
+                ColorPickerFrame.hasOpacity = false
+                ColorPickerFrame.func       = apply
+                ColorPickerFrame.cancelFunc = cancel
+                ColorPickerFrame:SetColorRGB(r, g, b)
+                ColorPickerFrame:Hide() -- force OnShow to refire with these values
+                ColorPickerFrame:Show()
+            end
+        end)
+
+        sw.Refresh = paint
+        paint()
+        return sw
+    end
+
+    -- ── Tooltip section ──────────────────────────────────────────────────────
+    local function getTooltipData()
+        addon.db.settings.tooltip = addon.db.settings.tooltip or {}
+        return addon.db.settings.tooltip
+    end
+
+    local ttHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    ttHeader:SetPoint("TOPLEFT", sizeStepper, "BOTTOMLEFT", -10, -24)
+    ttHeader:SetText("Tooltip")
+    ttHeader:SetTextColor(unpack(C.red))
+
+    local ttDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ttDesc:SetPoint("TOPLEFT", ttHeader, "BOTTOMLEFT", 0, -4)
+    ttDesc:SetWidth(420); ttDesc:SetJustifyH("LEFT")
+    ttDesc:SetText("Restyles the game tooltip (item/unit/etc.) to match this addon's theme.")
+    ttDesc:SetTextColor(unpack(C.textGrey))
+
+    local ttEnableCB = createCheckbox(panel, "Enable custom tooltip skin", 300)
+    ttEnableCB:SetPoint("TOPLEFT", ttDesc, "BOTTOMLEFT", 0, -10)
+    ttEnableCB.OnChange = function(_, checked)
+        getTooltipData().enabled = checked
+        if addon.Tooltip then addon.Tooltip.refresh() end
+    end
+
+    local ttColorCB = createCheckbox(panel, "Color border by class (players) / reaction (NPCs)", 340)
+    ttColorCB:SetPoint("TOPLEFT", ttEnableCB, "BOTTOMLEFT", 0, -6)
+    ttColorCB.OnChange = function(_, checked)
+        getTooltipData().colorByUnit = checked
+    end
+
+    local ttHealthCB = createCheckbox(panel, "Show health value on unit tooltips", 340)
+    ttHealthCB:SetPoint("TOPLEFT", ttColorCB, "BOTTOMLEFT", 0, -6)
+    ttHealthCB.OnChange = function(_, checked)
+        getTooltipData().showHealth = checked
+    end
+
+    local ttRealmCB = createCheckbox(panel, "Hide realm name", 300)
+    ttRealmCB:SetPoint("TOPLEFT", ttHealthCB, "BOTTOMLEFT", 0, -6)
+    ttRealmCB.OnChange = function(_, checked)
+        getTooltipData().hideRealm = checked
+    end
+
+    local ttHealthBorderCB = createCheckbox(panel, "Class-color the health bar outline", 340)
+    ttHealthBorderCB:SetPoint("TOPLEFT", ttRealmCB, "BOTTOMLEFT", 0, -6)
+    ttHealthBorderCB.OnChange = function(_, checked)
+        getTooltipData().healthBorder = checked
+    end
+
+    local ttCursorCB = createCheckbox(panel, "Anchor tooltip to cursor", 300)
+    ttCursorCB:SetPoint("TOPLEFT", ttHealthBorderCB, "BOTTOMLEFT", 0, -6)
+    ttCursorCB.OnChange = function(_, checked)
+        getTooltipData().anchorCursor = checked
+    end
+
+    local ttAnchorCB = createCheckbox(panel, "Use a movable tooltip anchor", 340)
+    ttAnchorCB:SetPoint("TOPLEFT", ttCursorCB, "BOTTOMLEFT", 0, -6)
+    ttAnchorCB.OnChange = function(_, checked)
+        getTooltipData().useAnchor = checked
+    end
+
+    local ttAnchorHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ttAnchorHint:SetPoint("TOPLEFT", ttAnchorCB, "BOTTOMLEFT", 20, -4)
+    ttAnchorHint:SetWidth(420); ttAnchorHint:SetJustifyH("LEFT")
+    ttAnchorHint:SetText("Parks the tooltip on a handle you can drag in Edit Mode. Cursor anchoring wins if both are ticked.")
+    ttAnchorHint:SetTextColor(unpack(C.textDim))
+
+    local function ttChanged()
+        if addon.Tooltip then addon.Tooltip.refresh() end
+    end
+
+    -- One colour serves two roles: it is the fallback whenever there is no
+    -- class/reaction tint to apply, and it is what the override below uses when
+    -- switched on. Two separate colours could disagree for no good reason.
+    local ttBorderRow = CreateFrame("Frame", nil, panel)
+    ttBorderRow:SetSize(320, 22)
+    ttBorderRow:SetPoint("TOPLEFT", ttAnchorHint, "BOTTOMLEFT", -20, -12)
+    local ttBorderLbl = ttBorderRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ttBorderLbl:SetPoint("LEFT", 0, 0); ttBorderLbl:SetWidth(150); ttBorderLbl:SetJustifyH("LEFT")
+    ttBorderLbl:SetText("Default border color:"); ttBorderLbl:SetTextColor(unpack(C.textGrey))
+    local ttBorderSwatch = ttSwatch(ttBorderRow,
+        function()
+            local c = getTooltipData().borderColor or { 0.30, 0.31, 0.42 }
+            return c[1], c[2], c[3]
+        end,
+        function(r, g, b) getTooltipData().borderColor = { r, g, b } end, ttChanged)
+    ttBorderSwatch:SetPoint("LEFT", ttBorderLbl, "RIGHT", 6, 0)
+
+    local ttBorderHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ttBorderHint:SetPoint("TOPLEFT", ttBorderRow, "BOTTOMLEFT", 0, -4)
+    ttBorderHint:SetWidth(420); ttBorderHint:SetJustifyH("LEFT")
+    ttBorderHint:SetText("Used whenever there is no class or reaction color to apply — items, spells, objects and the like.")
+    ttBorderHint:SetTextColor(unpack(C.textDim))
+
+    local ttCustomBorderCB = createCheckbox(panel, "Use it for units too, ignoring class colors", 360)
+    ttCustomBorderCB:SetPoint("TOPLEFT", ttBorderHint, "BOTTOMLEFT", 0, -10)
+    ttCustomBorderCB.OnChange = function(_, checked)
+        getTooltipData().customBorder = checked
+        ttChanged()
+    end
+
+    local ttBgRow = CreateFrame("Frame", nil, panel)
+    ttBgRow:SetSize(320, 22)
+    ttBgRow:SetPoint("TOPLEFT", ttCustomBorderCB, "BOTTOMLEFT", 0, -10)
+    local ttBgLbl = ttBgRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ttBgLbl:SetPoint("LEFT", 0, 0); ttBgLbl:SetWidth(150); ttBgLbl:SetJustifyH("LEFT")
+    ttBgLbl:SetText("Background color:"); ttBgLbl:SetTextColor(unpack(C.textGrey))
+    local ttBgSwatch = ttSwatch(ttBgRow,
+        function()
+            local c = getTooltipData().bgColor or { 0.090, 0.098, 0.165 }
+            return c[1], c[2], c[3]
+        end,
+        function(r, g, b) getTooltipData().bgColor = { r, g, b } end, ttChanged)
+    ttBgSwatch:SetPoint("LEFT", ttBgLbl, "RIGHT", 6, 0)
+
+    local ttOpRow = CreateFrame("Frame", nil, panel)
+    ttOpRow:SetSize(320, 22)
+    ttOpRow:SetPoint("TOPLEFT", ttBgRow, "BOTTOMLEFT", 0, -8)
+    local ttOpLbl = ttOpRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ttOpLbl:SetPoint("LEFT", 0, 0); ttOpLbl:SetWidth(150); ttOpLbl:SetJustifyH("LEFT")
+    ttOpLbl:SetText("Background opacity:"); ttOpLbl:SetTextColor(unpack(C.textGrey))
+    local ttOpStepper = buildStepper(ttOpRow, {
+        min = 0, max = 100, step = 5,
+        get = function() return getTooltipData().bgOpacity or 100 end,
+        set = function(v) getTooltipData().bgOpacity = v end,
+        onChange = ttChanged,
+    })
+    ttOpStepper:SetPoint("LEFT", ttOpLbl, "RIGHT", 6, 0)
+    local ttOpSuffix = ttOpRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ttOpSuffix:SetPoint("LEFT", ttOpStepper.plus, "RIGHT", 6, 0)
+    ttOpSuffix:SetText("%"); ttOpSuffix:SetTextColor(unpack(C.textDim))
+
     local function refreshPanel()
         local d  = getTTKData()
         local fn = d.fontName or "Friz Quadrata TT"
@@ -1045,6 +1228,17 @@ local function buildGeneralTabPanel(parent)
         bossOnlyCB:SetChecked(d.bossOnly or false)
         sizeStepper.Refresh()
         fontDropdown:setValue(fn)
+
+        local td = getTooltipData()
+        ttEnableCB:SetChecked(td.enabled ~= false)
+        ttColorCB:SetChecked(td.colorByUnit ~= false)
+        ttHealthCB:SetChecked(td.showHealth ~= false)
+        ttRealmCB:SetChecked(td.hideRealm or false)
+        ttHealthBorderCB:SetChecked(td.healthBorder ~= false)
+        ttCursorCB:SetChecked(td.anchorCursor or false)
+        ttAnchorCB:SetChecked(td.useAnchor or false)
+        ttCustomBorderCB:SetChecked(td.customBorder or false)
+        ttBorderSwatch.Refresh(); ttBgSwatch.Refresh(); ttOpStepper.Refresh()
     end
 
     shell:SetScript("OnShow", refreshPanel)
@@ -2033,6 +2227,58 @@ end
 -- `order` sorts the sidebar top→down (ties fall back to registration order).
 UI.tabRegistry = {}
 
+-- Names of addon.X tables (TTK, RaidFrames, Trinkets, ...) that expose the
+-- movable interface (getFrame/enterMoveMode/leaveMoveMode/savePosition/
+-- getPosition/setPosition — see TTK.lua for the reference shape) and should
+-- be included whenever UI.EnterMoveMode() is called with no explicit list
+-- (the "Edit Mode" button). A module addon calls UI.RegisterMovable("Name")
+-- once at load time instead of core needing to know it exists.
+UI.movableNames = { "TTK", "RaidFrames", "Trinkets", "Tooltip" }
+
+-- Display names for the Modules list in Edit Mode. Keyed by the addon.X name;
+-- anything missing falls back to the key itself.
+UI.movableLabels = {
+    TTK        = "Time to Kill",
+    RaidFrames = "Raid Frames",
+    Trinkets   = "Trinket Menu",
+    Tooltip    = "Tooltip Anchor",
+}
+
+-- A movable's name for that list. Runtime-created movables (DataText bars,
+-- chat panels) supply their own getLabel, since their names are user-editable
+-- and there is no fixed addon.X key to look them up by.
+function UI.MovableLabel(m)
+    if type(m.getLabel) == "function" then
+        local ok, text = pcall(m.getLabel)
+        if ok and text then return text end
+    end
+    if m.label then return m.label end
+    for _, name in ipairs(UI.movableNames) do
+        if addon[name] == m then return UI.movableLabels[name] or name end
+    end
+    return "Element"
+end
+
+function UI.RegisterMovable(name)
+    if not name then return end
+    for _, n in ipairs(UI.movableNames) do
+        if n == name then return end -- already registered
+    end
+    UI.movableNames[#UI.movableNames + 1] = name
+end
+
+-- For movables that don't exist as a fixed addon.X table — things the user
+-- creates at runtime (DataText bars, chat docks), where the set changes as
+-- they add/remove them. A provider is a function returning a list of movable
+-- objects; it's called fresh every time Edit Mode opens, so newly-created
+-- objects are picked up without re-registering anything.
+UI.movableProviders = {}
+
+function UI.RegisterMovableProvider(fn)
+    if type(fn) ~= "function" then return end
+    UI.movableProviders[#UI.movableProviders + 1] = fn
+end
+
 function UI.RegisterTab(def)
     if not (def and def.key and def.build) then return end
     def.order = def.order or 100
@@ -2274,9 +2520,25 @@ function UI.EnterMoveMode(movables)
         -- Collect by name rather than building { addon.TTK, ... } directly: a
         -- module addon (Trinkets) can be disabled, and a nil inside a table
         -- constructor silently truncates it for ipairs.
+        -- A movable can opt out of Edit Mode entirely via isEnabled() (e.g. the
+        -- "Enable Time to Kill" checkbox off) — skip it here so a disabled
+        -- feature's box never appears, rather than filtering it out later.
         movables = {}
-        for _, name in ipairs({ "TTK", "RaidFrames", "Trinkets" }) do
-            if addon[name] then movables[#movables + 1] = addon[name] end
+        for _, name in ipairs(UI.movableNames) do
+            local m = addon[name]
+            if m and (type(m.isEnabled) ~= "function" or m.isEnabled()) then
+                movables[#movables + 1] = m
+            end
+        end
+        -- Runtime-created movables (DataText bars, chat docks) — see
+        -- UI.RegisterMovableProvider.
+        for _, provider in ipairs(UI.movableProviders) do
+            local ok, list = pcall(provider)
+            if ok and type(list) == "table" then
+                for _, m in ipairs(list) do
+                    if m and m.getFrame then movables[#movables + 1] = m end
+                end
+            end
         end
     end
     UI.activeMovables = movables
@@ -2286,10 +2548,21 @@ function UI.EnterMoveMode(movables)
     -- Each movable's own enterMoveMode() wires up OnMouseDown/OnMouseUp itself
     -- (instant StartMoving() + click-vs-drag detection that opens the precise
     -- position editor), so this loop just shows the frame and hands off.
+    --
+    -- Whether an element starts parked (unticked in the Modules tab) is
+    -- persisted per label via addon.SetEditParked, so a box tucked out of the
+    -- way stays tucked away on the next Edit Mode entry instead of resetting
+    -- to movable every time.
     for _, m in ipairs(movables) do
+        local parked = addon.IsEditParked(UI.MovableLabel(m))
+        m.__editEnabled = not parked
         local f = m.getFrame()
         if f then f:Show() end
-        m.enterMoveMode()
+        if parked then
+            m.leaveMoveMode()
+        else
+            m.enterMoveMode()
+        end
     end
 
     if not UI.moveOverlay then
@@ -2335,36 +2608,90 @@ function UI.EnterMoveMode(movables)
 
     if not UI.lockBar then
         local bar = CreateFrame("Frame", "DrievLockBar", UIParent, "BackdropTemplate")
-        bar:SetSize(280, 300)
-        bar:SetPoint("TOP", UIParent, "TOP", 0, -8)
+        bar:SetSize(280, 400)
         bar:SetFrameStrata("TOOLTIP")
         applyBackdrop(bar, 2, C.panelBG, C.red)
 
+        -- Draggable, and it remembers where it was left. With the grid covering
+        -- the screen this box can easily sit on top of whatever you are trying
+        -- to position, and being unable to shift it out of the way is the whole
+        -- problem.
+        bar:SetClampedToScreen(true)
+        bar:EnableMouse(true)
+        bar:SetMovable(true)
+        bar:RegisterForDrag("LeftButton")
+        bar:SetScript("OnDragStart", function(self) self:StartMoving() end)
+        bar:SetScript("OnDragStop", function(self)
+            self:StopMovingOrSizing()
+            if addon.db and addon.db.settings then
+                addon.db.settings.editBarX = self:GetLeft()
+                addon.db.settings.editBarY = self:GetBottom()
+            end
+        end)
+
         local hint = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        hint:SetPoint("TOP", bar, "TOP", 0, -8)
-        hint:SetText("Drag to reposition")
+        hint:SetPoint("TOP", bar, "TOP", 0, -7)
+        hint:SetText("Drag this box to move it")
         hint:SetTextColor(unpack(C.textGrey))
 
-        local boxHeader = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        boxHeader:SetPoint("TOP", bar, "TOP", 0, -28)
+        -- Tabs
+        bar.tabs, bar.panels = {}, {}
+
+        local settingsTab = createTab(bar, "Settings", 122)
+        settingsTab:SetHeight(20)
+        settingsTab:SetPoint("TOPLEFT", bar, "TOPLEFT", 8, -24)
+
+        local modulesTab = createTab(bar, "Modules", 122)
+        modulesTab:SetHeight(20)
+        modulesTab:SetPoint("LEFT", settingsTab, "RIGHT", 4, 0)
+
+        local function makeBarPanel()
+            local p = CreateFrame("Frame", nil, bar)
+            p:SetPoint("TOPLEFT", settingsTab, "BOTTOMLEFT", 0, -10)
+            p:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -8, 42)
+            p:Hide()
+            return p
+        end
+
+        local settingsPanel = makeBarPanel()
+
+        -- The Modules list grows with however many bars/movables exist (14
+        -- action bars alone), which can easily run taller than the fixed-size
+        -- lock bar — even off the bottom of the screen. Scrollable, unlike the
+        -- Settings tab's fixed set of sliders.
+        local modulesHost = makeBarPanel()
+        modulesHost:Show()
+        local modulesShell, modulesPanel, refreshModulesScroll = makeScrollPanel(modulesHost)
+
+        bar.tabs.settings   = settingsTab
+        bar.tabs.modules    = modulesTab
+        bar.panels.settings = settingsPanel
+        bar.panels.modules  = modulesShell
+
+        settingsTab:SetScript("OnClick", function() activateTab(bar.tabs, bar.panels, "settings") end)
+        modulesTab:SetScript("OnClick",  function() activateTab(bar.tabs, bar.panels, "modules")  end)
+
+        -- Settings tab
+        local boxHeader = settingsPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        boxHeader:SetPoint("TOP", settingsPanel, "TOP", 0, -2)
         boxHeader:SetText("Edit Box")
         boxHeader:SetTextColor(unpack(C.red))
 
-        local opacity = buildEditSlider(bar, {
+        local opacity = buildEditSlider(settingsPanel, {
             label = "Opacity", min = 0, max = 100, suffix = "%",
             get = function() return math.floor(addon.GetEditAlpha() * 100 + 0.5) end,
             set = function(v) addon.SetEditAlpha(v / 100) end,
         })
         opacity:SetPoint("TOP", boxHeader, "BOTTOM", 0, -8)
 
-        local padding = buildEditSlider(bar, {
+        local padding = buildEditSlider(settingsPanel, {
             label = "Padding", min = 0, max = 40, suffix = "px",
             get = function() return addon.GetEditPad() end,
             set = function(v) addon.SetEditPad(v) end,
         })
         padding:SetPoint("TOP", opacity, "BOTTOM", 0, -6)
 
-        local border = buildEditSlider(bar, {
+        local border = buildEditSlider(settingsPanel, {
             label = "Border", min = 1, max = 10, suffix = "px",
             get = function() return addon.GetEditBorder() end,
             set = function(v) addon.SetEditBorder(v) end,
@@ -2373,12 +2700,12 @@ function UI.EnterMoveMode(movables)
 
         UI.editSliders = { opacity, padding, border }
 
-        local bgHeader = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        local bgHeader = settingsPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         bgHeader:SetPoint("TOP", border, "BOTTOM", 0, -16)
         bgHeader:SetText("Background")
         bgHeader:SetTextColor(unpack(C.red))
 
-        local bgOpacity = buildEditSlider(bar, {
+        local bgOpacity = buildEditSlider(settingsPanel, {
             label = "Opacity", min = 0, max = 100, suffix = "%",
             get = function() return addon.GetMoveBgOpacity() end,
             set = function(v) addon.SetMoveBgOpacity(v) end,
@@ -2386,7 +2713,7 @@ function UI.EnterMoveMode(movables)
         bgOpacity:SetPoint("TOP", bgHeader, "BOTTOM", 0, -8)
         UI.bgOpacitySlider = bgOpacity
 
-        local bgToggleBtn = CreateFrame("Button", nil, bar, "BackdropTemplate")
+        local bgToggleBtn = CreateFrame("Button", nil, settingsPanel, "BackdropTemplate")
         bgToggleBtn:SetSize(200, 22)
         bgToggleBtn:SetPoint("TOP", bgOpacity, "BOTTOM", 0, -10)
         applyBackdrop(bgToggleBtn, 1, C.panelDark, C.tabBorder)
@@ -2405,9 +2732,57 @@ function UI.EnterMoveMode(movables)
         end)
         UI.refreshBgToggle = refreshBgToggle
 
+        -- Modules tab
+        local modHint = modulesPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        modHint:SetPoint("TOPLEFT", modulesPanel, "TOPLEFT", 4, -2)
+        modHint:SetWidth(250); modHint:SetJustifyH("LEFT")
+        modHint:SetText("Untick an element to park it, so you can reach whatever sits underneath it.")
+        modHint:SetTextColor(unpack(C.textGrey))
+
+        local modRows = {}
+
+        -- Rebuilt on every entry to Edit Mode: which elements exist changes with
+        -- what the user has created and which module addons are enabled.
+        local function refreshModuleList()
+            local list = UI.activeMovables or {}
+
+            while #modRows < #list do
+                modRows[#modRows + 1] = createCheckbox(modulesPanel, "", 220)
+            end
+
+            for i, m in ipairs(list) do
+                local cb = modRows[i]
+                cb:ClearAllPoints()
+                cb:SetPoint("TOPLEFT", modHint, "BOTTOMLEFT", 0, -8 - (i - 1) * 22)
+                cb.text:SetText(UI.MovableLabel(m))
+                cb:SetChecked(m.__editEnabled ~= false)
+                cb.OnChange = function(_, checked)
+                    m.__editEnabled = checked
+                    -- Persisted so a parked element stays parked next time
+                    -- Edit Mode opens instead of resetting to movable.
+                    addon.SetEditParked(UI.MovableLabel(m), not checked)
+                    if checked then
+                        local f = m.getFrame()
+                        if f then f:Show() end
+                        m.enterMoveMode()
+                    else
+                        -- leaveMoveMode clears the element's mouse handlers and
+                        -- hides its edit box, which is exactly what stops it
+                        -- intercepting clicks meant for what sits beneath.
+                        m.leaveMoveMode()
+                    end
+                end
+                cb:Show()
+            end
+            for i = #list + 1, #modRows do modRows[i]:Hide() end
+            if refreshModulesScroll then refreshModulesScroll() end
+        end
+        UI.RefreshModuleList = refreshModuleList
+
+        -- Lock
         local lockBtn = CreateFrame("Button", nil, bar, "BackdropTemplate")
         lockBtn:SetSize(120, 22)
-        lockBtn:SetPoint("TOP", bgToggleBtn, "BOTTOM", 0, -16)
+        lockBtn:SetPoint("BOTTOM", bar, "BOTTOM", 0, 10)
         applyBackdrop(lockBtn, 1, C.panelDark, C.tabBorder)
         local lockLabel = lockBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         lockLabel:SetPoint("CENTER")
@@ -2417,13 +2792,27 @@ function UI.EnterMoveMode(movables)
         lockBtn:SetScript("OnLeave", function() lockLabel:SetTextColor(unpack(C.red)) end)
         lockBtn:SetScript("OnClick", function() UI.ExitMoveMode() end)
 
+        activateTab(bar.tabs, bar.panels, "settings")
         UI.lockBar = bar
+    end
+
+    -- Position is applied on every entry rather than only at creation: the
+    -- saved coordinates live in addon.db, which may not have loaded at the
+    -- moment the frame was first built.
+    UI.lockBar:ClearAllPoints()
+    local bx = addon.db and addon.db.settings and addon.db.settings.editBarX
+    local by = addon.db and addon.db.settings and addon.db.settings.editBarY
+    if bx and by then
+        UI.lockBar:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", bx, by)
+    else
+        UI.lockBar:SetPoint("TOP", UIParent, "TOP", 0, -8)
     end
     if UI.editSliders then
         for _, s in ipairs(UI.editSliders) do s:Refresh() end
     end
     if UI.bgOpacitySlider then UI.bgOpacitySlider:Refresh() end
     if UI.refreshBgToggle then UI.refreshBgToggle() end
+    if UI.RefreshModuleList then UI.RefreshModuleList() end
     UI.lockBar:Show()
 end
 

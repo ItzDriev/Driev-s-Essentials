@@ -26,7 +26,7 @@ local flatButton      = W.flatButton
 -- Settings this module owns. Registered into core's defaults at load time and
 -- merged into the active profile at PLAYER_LOGIN, so disabling this addon
 -- simply leaves the (harmless) saved values untouched.
-addon.RegisterDefaults("particles", { classes = { WARRIOR = true } })
+addon.RegisterDefaults("particles", { enabled = false, classes = { WARRIOR = true } })
 
 -- Lazy: only writes into SavedVariables when the panel is actually built.
 -- On first init for a raid, pre-checks any boss with `default = true` (the
@@ -133,6 +133,19 @@ end
 local function buildGeneralPanel(parent)
     local shell, panel = makeScrollPanel(parent)
 
+    -- ── Master switch ─────────────────────────────────────────────────────
+    local function getModuleData()
+        addon.db.settings.particles = addon.db.settings.particles or {}
+        return addon.db.settings.particles
+    end
+
+    local enableCB = createCheckbox(panel, "Enable Particles", 260)
+    enableCB:SetPoint("TOPLEFT", 14, -14)
+    enableCB.OnChange = function(_, checked)
+        getModuleData().enabled = checked
+        if addon.Particles then addon.Particles.refresh() end
+    end
+
     -- ── Class filter ──────────────────────────────────────────────────────
     local function getClassData()
         addon.db.settings.particles         = addon.db.settings.particles or {}
@@ -141,7 +154,7 @@ local function buildGeneralPanel(parent)
     end
 
     local classHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    classHeader:SetPoint("TOPLEFT", 14, -14)
+    classHeader:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -18)
     classHeader:SetText("Class Filter")
     classHeader:SetTextColor(unpack(C.red))
 
@@ -223,6 +236,7 @@ local function buildGeneralPanel(parent)
     rangeNote:SetTextColor(unpack(C.textDim))
 
     local function refreshDisplay()
+        enableCB:SetChecked(getModuleData().enabled == true)
         densityStepper.Refresh()
         local classData = getClassData()
         for token, cb in pairs(classCBs) do

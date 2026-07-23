@@ -16,5 +16,6 @@ Raids.lua
 Raid.lua
 RaidFrames.lua
 TTK.lua
+Tooltip.lua
 Minimap.lua
 UI.lua

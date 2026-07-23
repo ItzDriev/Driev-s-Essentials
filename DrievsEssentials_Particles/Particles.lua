@@ -26,7 +26,16 @@ local function getEncounterDensity()
     return (s and s.general and s.general.encounterDensity) or 3
 end
 
+-- Master switch for the whole module (General tab), independent of the
+-- per-class filter below — off by default, same as every other module's
+-- master toggle, so a fresh install does nothing until explicitly turned on.
+local function isModuleEnabled()
+    local s = settings()
+    return s and s.enabled == true
+end
+
 local function isClassEnabled()
+    if not isModuleEnabled() then return false end
     local s = settings()
     local classes = s and s.classes
     if not classes then return false end
