@@ -38,6 +38,10 @@ addon.RegisterDefaults("chat", {
     copyButton      = true,        -- top-right button opening a copyable chat-log window
     timestamps      = true,        -- [15:25:46] in front of each message
     timestampFormat = "%H:%M:%S",
+    -- Proportional fonts don't give every digit the same advance width, so two
+    -- timestamps with different digits can render a pixel or two apart even
+    -- though both are "[HH:MM:SS]". Off by default - see padStamp.
+    timestampEqualWidth = false,
     noHoverFade     = true,        -- kill the chat's fade-in-on-mouseover
     flatTabs        = true,        -- flat tabs, names always legible
     stickyChat      = true,        -- reopen the edit box on the last channel used
@@ -714,6 +718,87 @@ local function messageIsProtected(msg)
     return msg and msg:find("|K", 1, true) ~= nil
 end
 
+-- ── Equal-width timestamps ──────────────────────────────────────────────────
+-- Chat lines are one FontString per line with exactly one font, so the
+-- timestamp can't be rendered in a separate (monospaced) font from the rest
+-- of the message. Instead: measure the actual pixel width of a given
+-- timestamp string against the widest that format can ever render (using
+-- whichever single digit is widest in the current font), and pad the
+-- difference with plain spaces so every timestamp block occupies the same
+-- width regardless of which specific digits it contains.
+local measureFS
+local function measurer()
+    if not measureFS then
+        measureFS = UIParent:CreateFontString(nil, "OVERLAY")
+        measureFS:Hide()
+    end
+    return measureFS
+end
+
+-- Cached per "facePath:size", since that's everything GetStringWidth depends
+-- on here (flags don't affect advance width the way size does).
+local widestDigitCache = {}
+local function widestDigit(face, size)
+    local key = face .. ":" .. size
+    local cached = widestDigitCache[key]
+    if cached then return cached end
+
+    local fs = measurer()
+    fs:SetFont(face, size, "")
+    local best, bestW = "0", 0
+    for d = 0, 9 do
+        fs:SetText(tostring(d))
+        local w = fs:GetStringWidth() or 0
+        if w > bestW then best, bestW = tostring(d), w end
+    end
+    widestDigitCache[key] = best
+    return best
+end
+
+local function measureWidth(face, size, text)
+    local fs = measurer()
+    fs:SetFont(face, size, "")
+    fs:SetText(text)
+    return fs:GetStringWidth() or 0
+end
+
+-- Target width per "format:facePath:size" - the widest this exact timestamp
+-- format can ever render, built by substituting every digit with the widest
+-- one available in the current font.
+local stampTargetCache = {}
+local function stampTarget(format, face, size)
+    local key = format .. "|" .. face .. ":" .. size
+    local cached = stampTargetCache[key]
+    if cached then return cached end
+
+    local widest = widestDigit(face, size)
+    local worstCase = (date(format):gsub("%d", widest))
+    local target = measureWidth(face, size, worstCase)
+    stampTargetCache[key] = target
+    return target
+end
+
+-- Pads with trailing spaces (measured in the same font) until the stamp's
+-- pixel width reaches the format's worst-case width. Whole spaces only, so
+-- this narrows the jitter to well under a space's width rather than
+-- eliminating it entirely - the best available without per-glyph textures.
+local function padStamp(cf, format, text)
+    local face, size = cf:GetFont()
+    if not (face and size) then return text end
+
+    local target = stampTarget(format, face, size)
+    local actual = measureWidth(face, size, text)
+    local diff   = target - actual
+    if diff <= 0 then return text end
+
+    local spaceW = measureWidth(face, size, " ")
+    if spaceW <= 0 then return text end
+
+    local n = math.floor(diff / spaceW)
+    if n <= 0 then return text end
+    return text .. string.rep(" ", n)
+end
+
 -- Resolves the clicked arrow back to its own line and loads that line's text
 -- into the edit box. The line index comes from the frame's own hit-testing
 -- rather than from the link, because a message's index shifts as new lines
@@ -878,8 +963,14 @@ local function hookAddMessage(cf)
                 if d.copyButton ~= false then pushCopyLog(self, msg) end
 
                 if d.timestamps then
-                    msg = string.format("%s[%s]|r %s",
-                        STAMP_COLOR, date(d.timestampFormat or "%H:%M:%S"), msg)
+                    local format = d.timestampFormat or "%H:%M:%S"
+                    local stamp  = date(format)
+                    local pad    = ""
+                    if d.timestampEqualWidth then
+                        local padded = padStamp(self, format, stamp)
+                        pad = padded:sub(#stamp + 1)
+                    end
+                    msg = string.format("%s[%s]|r%s %s", STAMP_COLOR, stamp, pad, msg)
                 end
                 -- Prepended last, so it sits left of the timestamp.
                 if d.copyArrow ~= false then

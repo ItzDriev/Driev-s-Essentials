@@ -231,6 +231,7 @@ local function buildChatSettingsPanel(parent)
         -- Re-evaluates Blizzard Edit Mode suppression for the new state too
         -- (see suppressBlizzardChatEditMode in ChatDock.lua).
         if addon.ChatDock then addon.ChatDock.refresh() end
+        UI.RefreshTabDots()
     end
 
     -- One font for chat text, tab names and the DataText bars.
@@ -406,8 +407,21 @@ local function buildChatSettingsPanel(parent)
     stampHint:SetText("Prints the time in front of each message. The copy arrow, when on, always sits to the left of the timestamp. Copying a line leaves the timestamp out.")
     stampHint:SetTextColor(unpack(C.textDim))
 
+    local stampWidthCB = createCheckbox(panel, "Equal-width timestamps", 320)
+    stampWidthCB:SetPoint("TOPLEFT", stampHint, "BOTTOMLEFT", 0, -8)
+    stampWidthCB.OnChange = function(_, checked)
+        getChatData().timestampEqualWidth = checked
+        if addon.Chat then addon.Chat.refresh() end
+    end
+
+    local stampWidthHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    stampWidthHint:SetPoint("TOPLEFT", stampWidthCB, "BOTTOMLEFT", 20, -4)
+    stampWidthHint:SetWidth(460); stampWidthHint:SetJustifyH("LEFT")
+    stampWidthHint:SetText("Off by default. Pads timestamps with spaces so they always take up the same width, even though some digits render narrower than others in most fonts. Only affects messages printed from then on.")
+    stampWidthHint:SetTextColor(unpack(C.textDim))
+
     local stickyCB = createCheckbox(panel, "Sticky chat", 320)
-    stickyCB:SetPoint("TOPLEFT", stampHint, "BOTTOMLEFT", 0, -12)
+    stickyCB:SetPoint("TOPLEFT", stampWidthHint, "BOTTOMLEFT", -20, -12)
     stickyCB.OnChange = function(_, checked)
         getChatData().stickyChat = checked
         if addon.Chat then addon.Chat.refresh() end
@@ -541,6 +555,7 @@ local function buildChatSettingsPanel(parent)
         copyBtnCB:SetChecked(d.copyButton ~= false)
         stampCB:SetChecked(d.timestamps or false)
         stampDD:Refresh()
+        stampWidthCB:SetChecked(d.timestampEqualWidth or false)
         stickyCB:SetChecked(d.stickyChat ~= false)
         stickyWCB:SetChecked(d.stickyWhispers or false)
         historyCB:SetChecked(d.chatHistory ~= false)
@@ -561,6 +576,29 @@ end
 -- Purely decorative backdrops meant to sit behind the chat. They don't move,
 -- resize or reparent anything Blizzard owns — see ChatPanels.lua for why that
 -- separation matters.
+
+-- The dock dropdown's options are "Name (#id)" strings — both the id AND the
+-- name are shown because bar names aren't guaranteed unique, but the id (the
+-- actual stored value) alone would be meaningless to pick from.
+local function barDockOptions()
+    local list = { "None" }
+    if addon.DataTexts then
+        for id, cfg in pairs(addon.DataTexts.listBars()) do
+            list[#list + 1] = string.format("%s (#%s)", cfg.name or ("Bar " .. id), id)
+        end
+    end
+    return list
+end
+
+local function barIDFromOption(opt)
+    return opt and opt:match("%(#(%S+)%)$")
+end
+
+local function barOptionForID(id)
+    local cfg = id and addon.DataTexts and addon.DataTexts.listBars()[id]
+    return cfg and string.format("%s (#%s)", cfg.name or ("Bar " .. id), id) or "None"
+end
+
 -- Panels 1 and 2 are laid out as two side-by-side columns; xOffset shifts a
 -- whole section into its column. Every row inside anchors to the one above it
 -- with x=0, so offsetting only the header carries the entire column across.
@@ -618,14 +656,52 @@ local function buildPanelSection(panel, anchorAbove, index, xOffset)
         function() return get().borderOpacity or 100 end,
         function(v) get().borderOpacity = v end, onChange, "%")
 
+    -- Auto-dock to a DataText bar: the panel's position tracks the bar
+    -- directly (see ChatPanels.lua's dockBarFrame), offset by the two
+    -- steppers below.
+    local dockHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    dockHeader:SetPoint("TOPLEFT", bdOpRow, "BOTTOMLEFT", 0, -14)
+    dockHeader:SetText("Dock to bar:")
+    dockHeader:SetTextColor(unpack(C.textGrey))
+
+    local dockDD = createScrollDropdown(panel, 200, barDockOptions, function(opt)
+        get().dockBarID = barIDFromOption(opt)
+        onChange()
+    end)
+    dockDD:SetPoint("LEFT", dockHeader, "RIGHT", 6, 0)
+
+    local dockHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    dockHint:SetPoint("TOPLEFT", dockHeader, "BOTTOMLEFT", 0, -6)
+    dockHint:SetWidth(300); dockHint:SetJustifyH("LEFT")
+    dockHint:SetText("Docked, the panel follows that bar instead of its own saved position.")
+    dockHint:SetTextColor(unpack(C.textDim))
+
+    local offXRow, offXStepper = addStepperRow(panel, dockHint, "X offset:", -500, 500,
+        function() return get().dockOffsetX or 0 end,
+        function(v) get().dockOffsetX = v end, onChange, "px")
+
+    local offYRow, offYStepper = addStepperRow(panel, offXRow, "Y offset:", -500, 500,
+        function() return get().dockOffsetY or 0 end,
+        function(v) get().dockOffsetY = v end, onChange, "px")
+
+    local matchWidthCB = createCheckbox(panel, "Match bar width", 260)
+    matchWidthCB:SetPoint("TOPLEFT", offYRow, "BOTTOMLEFT", 0, -8)
+    matchWidthCB.OnChange = function(_, checked)
+        get().dockMatchWidth = checked
+        onChange()
+    end
+
     local function refresh()
         enableCB:SetChecked(get().enabled or false)
         widthStepper.Refresh(); heightStepper.Refresh(); borderStepper.Refresh()
         bgSwatch.Refresh(); bgOpStepper.Refresh()
         bdSwatch.Refresh(); bdOpStepper.Refresh()
+        dockDD:setValue(barOptionForID(get().dockBarID))
+        offXStepper.Refresh(); offYStepper.Refresh()
+        matchWidthCB:SetChecked(get().dockMatchWidth or false)
     end
 
-    return bdOpRow, refresh
+    return matchWidthCB, refresh
 end
 
 local function buildPanelsPanel(parent)
@@ -1742,4 +1818,8 @@ local function buildChatShell(parent)
     return panel
 end
 
-UI.RegisterTab({ key = "chat", label = "Chat", order = 25, build = buildChatShell })
+UI.RegisterTab({ key = "chat", label = "Chat", order = 25, build = buildChatShell,
+    status = function()
+        local d = addon.db and addon.db.settings and addon.db.settings.chat
+        return d and d.enabled or false
+    end })

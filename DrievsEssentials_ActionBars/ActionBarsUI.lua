@@ -24,6 +24,11 @@ local makeScrollPanel     = W.makeScrollPanel
 
 local AB = function() return addon.ActionBars end
 
+-- Set by buildActionBarsTab; the per-bar "Enabled" checkboxes call it so the
+-- green/gray status dot on each sidebar tab updates the moment a bar is toggled.
+-- Forward-declared here because those checkbox panels are built above it.
+local refreshBarDots
+
 -- Re-apply everything for one bar after a settings change. applyBar is combat-
 -- guarded internally, so callers never have to check.
 local function apply(key)
@@ -201,12 +206,16 @@ local function buildGeneralPanel(parent, def)
     local shell, panel = makeScrollPanel(parent)
     local key = def.key
     local isAction = (def.kind == "action")
+    -- Status bars are a single reparented frame, so the grid knobs (orientation,
+    -- rows, padding, growth) don't apply — they only get Enabled + Scale.
+    local isGrid = (def.kind ~= "status")
     local function data() return AB().getData(key) end
     local F = makeForm(panel)
 
     F.check("Enabled", function() return data().enabled ~= false end, function(c)
         data().enabled = c
         if AB() then AB().applyVisibility(key) end
+        if refreshBarDots then refreshBarDots() end
     end)
 
     if isAction then
@@ -223,6 +232,7 @@ local function buildGeneralPanel(parent, def)
     -- it directly, and the count stepper below relabels Rows↔Columns to match.
     local hBtn, vBtn, rowsLabel
     local function refreshOrientation()
+        if not hBtn then return end   -- status bars have no orientation controls
         local vert = (data().orientation == "VERTICAL")
         hBtn.label:SetTextColor(unpack(vert and C.textWhite or C.red))
         vBtn.label:SetTextColor(unpack(vert and C.red or C.textWhite))
@@ -233,28 +243,30 @@ local function buildGeneralPanel(parent, def)
         refreshOrientation()
         if AB() then AB().applyBar(key) end
     end
-    F.customRow(22, function(r)
-        local lbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        lbl:SetPoint("LEFT", 0, 0)
-        lbl:SetWidth(48); lbl:SetJustifyH("LEFT")
-        lbl:SetText("Build:"); lbl:SetTextColor(unpack(C.textWhite))
+    if isGrid then
+        F.customRow(22, function(r)
+            local lbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            lbl:SetPoint("LEFT", 0, 0)
+            lbl:SetWidth(48); lbl:SetJustifyH("LEFT")
+            lbl:SetText("Build:"); lbl:SetTextColor(unpack(C.textWhite))
 
-        hBtn = flatButton(r, "Horizontal", 84, 20)
-        hBtn:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
-        hBtn:SetScript("OnClick", function() setOrientation("HORIZONTAL") end)
+            hBtn = flatButton(r, "Horizontal", 84, 20)
+            hBtn:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
+            hBtn:SetScript("OnClick", function() setOrientation("HORIZONTAL") end)
 
-        vBtn = flatButton(r, "Vertical", 84, 20)
-        vBtn:SetPoint("LEFT", hBtn, "RIGHT", 6, 0)
-        vBtn:SetScript("OnClick", function() setOrientation("VERTICAL") end)
-    end)
+            vBtn = flatButton(r, "Vertical", 84, 20)
+            vBtn:SetPoint("LEFT", hBtn, "RIGHT", 6, 0)
+            vBtn:SetScript("OnClick", function() setOrientation("VERTICAL") end)
+        end)
 
-    local _, rlbl = F.stepper("Rows", {
-        min = 1, max = 12,
-        get = function() return data().rows or 1 end,
-        set = function(v) data().rows = v end,
-        onChange = function() apply(key) end,
-    })
-    rowsLabel = rlbl
+        local _, rlbl = F.stepper("Rows", {
+            min = 1, max = 12,
+            get = function() return data().rows or 1 end,
+            set = function(v) data().rows = v end,
+            onChange = function() apply(key) end,
+        })
+        rowsLabel = rlbl
+    end
 
     if isAction then
         F.stepper("Icon Size", {
@@ -264,12 +276,14 @@ local function buildGeneralPanel(parent, def)
             onChange = function() apply(key) end,
         })
     end
-    F.stepper("Padding", {
-        min = 0, max = 20,
-        get = function() return data().padding or 4 end,
-        set = function(v) data().padding = v end,
-        onChange = function() apply(key) end,
-    })
+    if isGrid then
+        F.stepper("Padding", {
+            min = 0, max = 20,
+            get = function() return data().padding or 4 end,
+            set = function(v) data().padding = v end,
+            onChange = function() apply(key) end,
+        })
+    end
     F.editStepper("Scale", {
         min = 50, max = 200, step = 1, suffix = "%",
         get = function() return math.floor((data().scale or 1) * 100 + 0.5) end,
@@ -278,16 +292,18 @@ local function buildGeneralPanel(parent, def)
     })
 
     -- Grow direction (moved here from the Position tab), just above Flyout.
-    F.dropdown("Grow Horizontal",
-        { { value = "RIGHT", label = "Right" }, { value = "LEFT", label = "Left" } },
-        function() return data().growthH end,
-        function(v) data().growthH = v end,
-        function() apply(key) end)
-    F.dropdown("Grow Vertical",
-        { { value = "DOWN", label = "Down" }, { value = "UP", label = "Up" } },
-        function() return data().growthV end,
-        function(v) data().growthV = v end,
-        function() apply(key) end)
+    if isGrid then
+        F.dropdown("Grow Horizontal",
+            { { value = "RIGHT", label = "Right" }, { value = "LEFT", label = "Left" } },
+            function() return data().growthH end,
+            function(v) data().growthH = v end,
+            function() apply(key) end)
+        F.dropdown("Grow Vertical",
+            { { value = "DOWN", label = "Down" }, { value = "UP", label = "Up" } },
+            function() return data().growthV end,
+            function(v) data().growthV = v end,
+            function() apply(key) end)
+    end
 
     if isAction then
         F.dropdown("Flyout Direction",
@@ -324,6 +340,7 @@ local function buildVisibilityPanel(parent, def)
     F.check("Enabled", function() return data().enabled ~= false end, function(c)
         data().enabled = c
         if AB() then AB().applyVisibility(key) end
+        if refreshBarDots then refreshBarDots() end
     end)
 
     F.stepper("Alpha", {
@@ -419,8 +436,22 @@ local function buildPagingPanel(parent, def)
     end
     local F = makeForm(panel)
 
-    F.text("Switch this bar to a different action page while in a stance. " ..
-           "\"No Paging\" keeps this bar's own abilities and macros.")
+    -- Master toggle for this bar's stance paging (default on for the Main bar,
+    -- off for every other bar). While off, the bar ignores the per-stance choices
+    -- below and always shows its own page.
+    F.check("Enable stance paging",
+        function()
+            local v = data().pagingEnabled
+            if v == nil then v = def.paged end
+            return v and true or false
+        end,
+        function(c)
+            data().pagingEnabled = c
+            if AB() then AB().applyPaging(key) end
+        end)
+
+    F.text("While in a stance/form, switch this bar to another bar's page. " ..
+           "\"No paging\" keeps this bar's own page in that stance.")
 
     local stances = getStanceList()
     if #stances == 0 then
@@ -429,13 +460,27 @@ local function buildPagingPanel(parent, def)
         return shell
     end
 
-    local pageOptions = { { value = false, label = "No Paging" } }
-    for p = 1, 10 do pageOptions[#pageOptions + 1] = { value = p, label = "Page " .. p } end
+    -- "Page N" means "switch to Action Bar N's page". Our bars don't own action
+    -- pages in numeric order (see BAR_PAGE in ActionBars.lua — e.g. Bar 2 owns
+    -- action page 6), so each label maps to the real action page that Bar N shows;
+    -- otherwise picking "Page 2" would page to the wrong bar's abilities. The
+    -- stored value stays a raw action page, which is what the paging driver wants.
+    local pageOptions = { { value = false, label = "No paging" } }
+    for i = 1, 10 do
+        local bdef = AB().bars[i]
+        if bdef and bdef.kind == "action" then
+            pageOptions[#pageOptions + 1] = { value = bdef.page, label = "Page " .. i }
+        end
+    end
 
     for _, st in ipairs(stances) do
         F.dropdown(st.name, pageOptions,
+            -- false / nil both display (and behave) as "No paging" = own page.
             function() return data().paging[st.index] or false end,
-            function(v) data().paging[st.index] = v or nil end,   -- false → nil (removes)
+            -- Store "No paging" as an explicit false (not nil) so it survives the
+            -- default-merge — otherwise a warrior's saved "No paging" would be
+            -- re-filled by the Bar 1 stance defaults on next login.
+            function(v) data().paging[st.index] = v end,
             function() if AB() then AB().applyPaging(key) end end)
     end
 
@@ -509,6 +554,17 @@ local function buildGlobalPanel(parent)
     local function setg(k, v) if AB() then AB().setGeneral(k, v) end end
     local F = makeForm(panel)
 
+    -- Blizzard keybind link — the one setting here that isn't hotkey-text styling,
+    -- so it sits at the top with its own explanation.
+    F.check("Use Blizzard's action bar keybinds",
+        function() return AB() and AB().getBlizzBindings() end,
+        function(c) if AB() then AB().setBlizzBindings(c) end end)
+    F.text("Bars 1-5 match Blizzard's Action Bars 1-5 (same abilities and keys), so " ..
+           "the keybinds you set in Escape → Key Bindings → Action Bar drive them " ..
+           "directly — no re-binding when switching over. Every bar can also be bound " ..
+           "individually under \"Driev's ActionBars\" in that same panel, or with " ..
+           "Keybind Mode above.")
+
     F.text("Keybind (hotkey) text styling. Turn it on per bar with each bar's " ..
            "\"Use General settings\" checkbox (in that bar's General tab).")
 
@@ -568,6 +624,7 @@ local function buildActionBarsTab(parent)
     enableCB:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     enableCB.OnChange = function(_, checked)
         if AB() then AB().setEnabled(checked) end
+        UI.RefreshTabDots()
     end
 
     local enableHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -665,6 +722,14 @@ local function buildActionBarsTab(parent)
             tab:SetPoint("TOPRIGHT", sidebar, "TOPRIGHT", -3, -6)
         end
         tab:SetScript("OnClick", function() selectBar(ndef.key) end)
+        -- Status dot: green when this bar is enabled, gray when not. The General
+        -- entry isn't a bar, so it gets no dot.
+        if not ndef.general then
+            local dot = tab:CreateTexture(nil, "OVERLAY")
+            dot:SetSize(8, 8)
+            dot:SetPoint("RIGHT", tab, "RIGHT", -8, 0)
+            tab.dot = dot
+        end
         panel.barTabs[ndef.key] = tab
         if ndef.general then
             panel.barPanels[ndef.key] = buildGlobalPanel(content)
@@ -673,6 +738,20 @@ local function buildActionBarsTab(parent)
         end
         prevNav = tab
     end
+
+    -- Recolour every bar's status dot from its saved enabled state. Assigned to
+    -- the file-scoped upvalue so the per-bar "Enabled" checkboxes can call it.
+    refreshBarDots = function()
+        for key, tab in pairs(panel.barTabs) do
+            if tab.dot then
+                local on = AB() and AB().getData(key).enabled ~= false
+                if on then tab.dot:SetColorTexture(0.15, 0.85, 0.25, 1)   -- green
+                else       tab.dot:SetColorTexture(0.45, 0.45, 0.45, 1) end -- gray
+            end
+        end
+    end
+    refreshBarDots()
+
     refreshSidebarScroll()
 
     selectBar("general")
@@ -680,10 +759,15 @@ local function buildActionBarsTab(parent)
         enableCB:SetChecked(AB() and AB().getEnabled())
         refreshKeybindBtn()
         dragDD.Refresh()   -- re-read the saved modifier (e.g. after a profile switch)
+        refreshBarDots()   -- re-read enabled state (e.g. after a profile switch)
         refreshSidebarScroll()
     end)
 
     return panel
 end
 
-UI.RegisterTab({ key = "actionbars", label = "Action Bars", order = 35, build = buildActionBarsTab })
+UI.RegisterTab({ key = "actionbars", label = "Action Bars", order = 35, build = buildActionBarsTab,
+    status = function()
+        local d = addon.db and addon.db.settings and addon.db.settings.actionBars
+        return d and d.enabled or false
+    end })

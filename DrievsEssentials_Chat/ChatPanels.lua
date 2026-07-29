@@ -32,6 +32,16 @@ local PANEL_DEFAULTS = {
     borderOpacity   = 100,
     -- px/py (saved position) are absent until moved; each panel then falls back
     -- to its own default corner.
+    -- Auto-docking to a DataText bar: dockBarID is nil when off. Docked, the
+    -- panel's position tracks the bar's frame directly (a live anchor, not a
+    -- copied coordinate) so it keeps following the bar with no extra hook.
+    dockBarID      = nil,
+    dockOffsetX    = 0,
+    dockOffsetY    = 0,
+    -- When docked, take on the bar's current width instead of the panel's own
+    -- `width` - off by default since a panel might be sized deliberately
+    -- differently from its bar.
+    dockMatchWidth = false,
 }
 
 local function copy(t)
@@ -81,9 +91,52 @@ local function getOrCreateFrame(i)
     return f
 end
 
+-- The DataText bar's own frame, via its mover (DataTexts.lua exposes no
+-- separate "get frame by id", but the mover's getFrame() is the same object
+-- and already part of its public API). nil if not docked, the bar was
+-- deleted, or it isn't currently shown.
+local function dockBarFrame(d)
+    if not (d.dockBarID and addon.DataTexts) then return nil end
+    -- Checked against listBars() rather than calling getBarMover() directly:
+    -- getBarMover/getOrCreateBarFrame auto-vivify a bar's config and frame on
+    -- first access, so calling it for an id that no longer exists (its bar was
+    -- deleted while this was still set) would silently resurrect an empty,
+    -- ghost bar entry instead of just reporting "not docked".
+    local bars = addon.DataTexts.listBars()
+    if not (bars and bars[d.dockBarID]) then return nil end
+
+    local mover = addon.DataTexts.getBarMover(d.dockBarID)
+    local f = mover and mover.getFrame()
+    if f and f:IsShown() then return f end
+    return nil
+end
+
+-- Forward declaration: ensureSizeHook's closure calls this, but it isn't
+-- defined until after applyPosition below.
+local applyPanel
+
+-- Re-applies applyPanel(i) whenever a docked-to bar's frame resizes, so
+-- dockMatchWidth stays correct as the bar's content changes. Hooked once per
+-- bar frame (harmless if it later ends up docked to a different bar - the
+-- old hook just becomes a no-op re-check).
+local sizeHooked = {}
+local function ensureSizeHook(i, barFrame)
+    if sizeHooked[barFrame] then return end
+    sizeHooked[barFrame] = true
+    barFrame:HookScript("OnSizeChanged", function() applyPanel(i) end)
+end
+
 local function applyPosition(i)
     local d, f = getPanel(i), getOrCreateFrame(i)
     f:ClearAllPoints()
+
+    local barFrame = dockBarFrame(d)
+    if barFrame then
+        ensureSizeHook(i, barFrame)
+        f:SetPoint("BOTTOMLEFT", barFrame, "TOPLEFT", d.dockOffsetX or 0, d.dockOffsetY or 0)
+        return
+    end
+
     if d.px and d.py then
         f:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", d.px, d.py)
     elseif i == 1 then
@@ -100,7 +153,7 @@ local function chatSystemEnabled()
     return not addon.Chat or addon.Chat.isEnabled()
 end
 
-local function applyPanel(i)
+applyPanel = function(i)
     local d = getPanel(i)
     local f = getOrCreateFrame(i)
 
@@ -109,7 +162,12 @@ local function applyPanel(i)
         return
     end
 
-    f:SetSize(d.width or 430, d.height or 190)
+    local barFrame = dockBarFrame(d)
+    local width = d.width or 430
+    if barFrame and d.dockMatchWidth then
+        width = barFrame:GetWidth() or width
+    end
+    f:SetSize(width, d.height or 190)
     applyPosition(i)
 
     local edge = math.max(d.borderThickness or 1, 1)
@@ -177,7 +235,11 @@ local function makeMover(i)
 
     function mover.enterMoveMode()
         local f = getOrCreateFrame(i)
-        if not getPanel(i).enabled then return end
+        local d = getPanel(i)
+        if not d.enabled then return end
+        -- Docked position is driven by the offset fields, not by dragging —
+        -- dragging it here would just snap back on the next refresh().
+        if dockBarFrame(d) then return end
         mover._enterX, mover._enterY = f:GetLeft(), f:GetBottom()
         f:SetFrameStrata("TOOLTIP")
         addon.ShowEditBox(f)

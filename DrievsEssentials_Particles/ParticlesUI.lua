@@ -144,6 +144,7 @@ local function buildGeneralPanel(parent)
     enableCB.OnChange = function(_, checked)
         getModuleData().enabled = checked
         if addon.Particles then addon.Particles.refresh() end
+        UI.RefreshTabDots()
     end
 
     -- ── Class filter ──────────────────────────────────────────────────────
@@ -373,4 +374,8 @@ end
 
 -- Adds the Particles entry to core's settings sidebar. Because this lives in
 -- the module, disabling the addon removes the tab entirely.
-UI.RegisterTab({ key = "particles", label = "Particles", order = 20, build = buildParticlesPanel })
+UI.RegisterTab({ key = "particles", label = "Particles", order = 20, build = buildParticlesPanel,
+    status = function()
+        local d = addon.db and addon.db.settings and addon.db.settings.particles
+        return d and d.enabled or false
+    end })

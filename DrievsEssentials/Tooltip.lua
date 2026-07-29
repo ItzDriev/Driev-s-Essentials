@@ -61,6 +61,41 @@ local function backgroundColor()
     return c[1], c[2], c[3], (d.bgOpacity or 100) / 100
 end
 
+-- Border color for the unit currently shown, or nil to leave the resting border.
+local function unitBorderColor(unit)
+    if UnitIsPlayer(unit) then
+        local _, class = UnitClass(unit)
+        local color = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+        if color then return color.r, color.g, color.b end
+        return nil
+    end
+    local reaction = UnitReaction(unit, "player")
+    local c = reaction and REACTION_COLORS[reaction]
+    if c then return c[1], c[2], c[3] end
+    return nil
+end
+
+-- The border colour a tooltip frame should have *right now*. A unit tooltip gets
+-- the class (player) / reaction (NPC) tint when colouring is on and the fixed-
+-- border override is off; everything else — item/spell tooltips, units with no
+-- colour, or when the override is set — gets the resting border.
+--
+-- Both the OnShow skin (styleFrame) and the unit post-call go through this, so
+-- they can never disagree. That's the fix for the intermittent class border:
+-- previously styleFrame always stamped the resting border and the post-call the
+-- class tint, and whichever fired last won — which varied per tooltip.
+local function frameBorderColor(tt)
+    local d = getData()
+    if tt == GameTooltip and d.colorByUnit ~= false and not d.customBorder then
+        local _, unit = tt:GetUnit()
+        if unit then
+            local r, g, b = unitBorderColor(unit)
+            if r then return r, g, b, 1 end
+        end
+    end
+    return restingBorder()
+end
+
 -- Applies (or, with the master toggle off, restores) the backdrop recolor on
 -- one tooltip frame. Only ever touches SetBackdropColor/SetBackdropBorderColor
 -- — never SetBackdrop itself — so Blizzard's own backdrop template (and its
@@ -81,22 +116,7 @@ local function styleFrame(tt)
         return
     end
     tt:SetBackdropColor(backgroundColor())
-    tt:SetBackdropBorderColor(restingBorder())
-end
-
--- Border color for the unit currently shown, or nil to leave styleFrame's
--- default border alone.
-local function unitBorderColor(unit)
-    if UnitIsPlayer(unit) then
-        local _, class = UnitClass(unit)
-        local color = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
-        if color then return color.r, color.g, color.b end
-        return nil
-    end
-    local reaction = UnitReaction(unit, "player")
-    local c = reaction and REACTION_COLORS[reaction]
-    if c then return c[1], c[2], c[3] end
-    return nil
+    tt:SetBackdropBorderColor(frameBorderColor(tt))
 end
 
 -- ── Health bar outline ──────────────────────────────────────────────────────
@@ -212,6 +232,28 @@ local function isLevelLine(text)
     return text:lower():find(LEVEL_WORD, 1, true) ~= nil
 end
 
+-- Insert a new left-hand line carrying `text` at position `idx` (1-based),
+-- pushing the existing lines idx..n down by one. GameTooltip only grows via
+-- AddLine (which appends), so we append a blank then copy each line's text +
+-- colour up one slot. Needed because this client doesn't add a guild line of its
+-- own for unit tooltips — there's nothing to rewrite, so we build one.
+local function insertLineAt(tt, idx, text)
+    local base = tt:GetName()
+    if not base then return end
+    local n = tt:NumLines()
+    tt:AddLine(" ")   -- grow by one slot at the bottom
+    for i = n + 1, idx + 1, -1 do
+        local dst, src = _G[base .. "TextLeft" .. i], _G[base .. "TextLeft" .. (i - 1)]
+        if dst and src then
+            dst:SetText(src:GetText())
+            dst:SetTextColor(src:GetTextColor())
+            dst:Show()
+        end
+    end
+    local target = _G[base .. "TextLeft" .. idx]
+    if target then target:SetText(text); target:Show() end
+end
+
 -- Classification suffix for a mob (Rare / Elite / Boss ...), mirroring ElvUI.
 local CLASSIFICATION = {
     rare      = " Rare",
@@ -240,19 +282,29 @@ local function reformatUnit(tt, unit)
             nameFS:SetFormattedText("|cff%s%s%s|r", hex(cr, cg, cb), display, away)
         end
 
-        -- Guild line (Blizzard puts it on line 2 for players): green name, and
-        -- the rank in brackets after it, matching ElvUI's guildRanks look.
+        -- Guild line: green name, with the rank in brackets after it, matching
+        -- ElvUI's guildRanks look. Both parts are independently toggleable (default
+        -- on). This client doesn't add a guild line of its own (only name + level),
+        -- so when there's no existing line to rewrite we insert one under the name.
         local guild, rank = GetGuildInfo(unit)
-        if guild then
+        local td = getData()
+        if guild and td.showGuild ~= false then
+            local text
+            if td.showGuildRank ~= false and rank and rank ~= "" then
+                text = string.format("<|cff%s%s|r> [|cff%s%s|r]", GREEN_HEX, guild, GREEN_HEX, rank)
+            else
+                text = string.format("<|cff%s%s|r>", GREEN_HEX, guild)
+            end
             local gFS = findLine(tt, function(t) return t:find(guild, 1, true) end)
             if gFS then
-                if rank and rank ~= "" then
-                    gFS:SetText(string.format("<|cff%s%s|r> [|cff%s%s|r]",
-                        GREEN_HEX, guild, GREEN_HEX, rank))
-                else
-                    gFS:SetText(string.format("<|cff%s%s|r>", GREEN_HEX, guild))
-                end
+                gFS:SetText(text)
+            else
+                insertLineAt(tt, 2, text)   -- right under the name
             end
+        elseif guild then
+            -- showGuild off: blank any guild line the client did add.
+            local gFS = findLine(tt, function(t) return t:find(guild, 1, true) end)
+            if gFS then gFS:SetText(""); gFS:Hide() end
         end
 
         -- Level line → "60 Gnome Warlock": difficulty-coloured level, race,
@@ -347,14 +399,14 @@ local function onTooltipSetUnit(tt)
     local _, unit = tt:GetUnit()
     if not unit then return end
 
-    local ur, ug, ub = unitBorderColor(unit)
-
-    -- A custom border colour is a deliberate override, so it wins over the
-    -- class/reaction tint on the tooltip frame itself. The health bar outline
-    -- stays unit-coloured regardless — that's the whole point of it.
-    if d.colorByUnit and ur and not d.customBorder then
-        tt:SetBackdropBorderColor(ur, ug, ub)
+    -- Border on the tooltip frame itself goes through the shared decision so it
+    -- always agrees with the OnShow skin (frameBorderColor handles the colorByUnit
+    -- and customBorder rules). The health bar outline stays unit-coloured
+    -- regardless of the frame border — that's the whole point of it.
+    if tt.SetBackdropBorderColor then
+        tt:SetBackdropBorderColor(frameBorderColor(tt))
     end
+    local ur, ug, ub = unitBorderColor(unit)
     styleHealthBorder(ur, ug, ub)
 
     reformatUnit(tt, unit)
@@ -486,7 +538,20 @@ local function init()
             tt:HookScript("OnShow", styleFrame)
         end
     end
-    if GameTooltip then
+    -- Unit reformatting. The 1.14.4 / 10.0.2 tooltip rework retired the
+    -- OnTooltipSetUnit *script* — HookScript("OnTooltipSetUnit") simply never
+    -- fires on modern Classic Era, so all of reformatUnit (name/guild/rank/level/
+    -- health) silently did nothing. The replacement is a post-call registered
+    -- through TooltipDataProcessor; fall back to the old script only on clients
+    -- that predate it.
+    if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall
+       and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Unit then
+        TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, function(tt)
+            -- Fires for every unit tooltip; we only own GameTooltip (health text /
+            -- outline are tied to GameTooltipStatusBar).
+            if tt == GameTooltip then onTooltipSetUnit(tt) end
+        end)
+    elseif GameTooltip then
         GameTooltip:HookScript("OnTooltipSetUnit", onTooltipSetUnit)
     end
 

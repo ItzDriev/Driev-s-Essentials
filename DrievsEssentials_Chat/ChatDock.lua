@@ -383,14 +383,60 @@ local function init()
     end
 end
 
+-- A Blizzard Edit Mode PRESET ("Modern"/"Classic", as opposed to a custom
+-- layout you've saved yourself) snaps every system — chat included — back to
+-- its own fixed position not just on a loading screen but the instant Edit
+-- Mode itself is opened, which is when it re-anchors everything to show you
+-- where the active layout puts it. A custom layout doesn't carry a stored
+-- position of its own the same way, which is why this only ever showed up on
+-- a preset. EditMode.Enter/.Exit are the same EventRegistry callbacks the
+-- action bars and raid frames already hook for Blizzard's Edit Mode; see
+-- ActionBars.lua's hookBlizzardEditMode for the identical registration
+-- pattern (this addon doesn't need an unlock/lock pair here — the chat
+-- frame is already draggable via its own tab — just a re-assert).
+local editModeHooked = false
+local function hookBlizzardEditMode()
+    if editModeHooked or not (EventRegistry and EditModeManagerFrame) then return end
+    editModeHooked = true
+    EventRegistry:RegisterCallback("EditMode.Enter", function() C_Timer.After(0, refresh) end)
+    EventRegistry:RegisterCallback("EditMode.Exit",  function() C_Timer.After(0, refresh) end)
+end
+
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
-f:SetScript("OnEvent", function()
-    init()
-    -- Blizzard restores chat positions across the first frames after login, so
-    -- re-assert once that has settled.
-    C_Timer.After(1, refresh)
-    f:UnregisterEvent("PLAYER_LOGIN")
+-- Also PLAYER_ENTERING_WORLD (not unregistered, unlike PLAYER_LOGIN): a preset
+-- re-applies its own fixed system positions on every loading screen too, not
+-- just once at login, so this needs to keep re-winning on every zone change.
+f:RegisterEvent("PLAYER_ENTERING_WORLD")
+-- A preset also reflows the default chat frame's position whenever the active
+-- action bar page changes (Bar 1's own paging, a stance/vehicle swap, or
+-- Blizzard's native "next/previous action bar" keybind all change this) — the
+-- same "how much space does the bottom bar need" logic a preset applies on
+-- every loading screen, just re-triggered by a page change instead. Fires
+-- regardless of whether this addon's ActionBars module or Blizzard's own bars
+-- are what's currently showing, since it's the action page itself that
+-- changed (see LibActionButton-1.0.lua's own use of this same pair of events).
+f:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
+f:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
+f:SetScript("OnEvent", function(_, event)
+    if event == "PLAYER_LOGIN" then
+        init()
+        f:UnregisterEvent("PLAYER_LOGIN")
+    end
+    -- EditModeManagerFrame only exists once Blizzard's own UI has loaded —
+    -- safe to try on every firing here since hookBlizzardEditMode no-ops
+    -- once it's actually hooked.
+    hookBlizzardEditMode()
+    if event == "ACTIONBAR_PAGE_CHANGED" or event == "UPDATE_BONUS_ACTIONBAR" then
+        -- No loading screen involved here, so no need for the longer settling
+        -- delay below — just enough to run after Blizzard's own reflow this
+        -- frame.
+        C_Timer.After(0, refresh)
+    else
+        -- Same settling delay as the original login-only re-assert, needed
+        -- every time since a preset's own re-apply runs on this same event too.
+        C_Timer.After(1, refresh)
+    end
 end)
 
 addon.ChatDock = {

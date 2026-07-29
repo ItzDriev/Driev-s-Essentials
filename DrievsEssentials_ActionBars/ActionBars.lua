@@ -53,12 +53,28 @@ local BTN_PREFIX    = "DrievABarButton"   -- distinct from BT4's BT4Button so bo
 
 -- ── Bar definitions ──────────────────────────────────────────────────────────
 -- Ten action bars (Bar 1-10) plus the stance / micro-menu / bag bars. For action
--- bars `page` is the action-page offset: bar N owns slots (N-1)*12+1 .. N*12
--- (Bar 1 → 1-12 … Bar 10 → 109-120). Bar 1 follows stance/bonusbar/possess
--- paging via a secure state driver; bars 2-10 are static. Defaults enable Bar 1
--- plus bars 5 & 6 (the old Bottom Right / Bottom Left slots), and all three
--- special bars.
+-- bars `page` is the action-page offset: a bar owns slots (page-1)*12+1 .. page*12.
+--
+-- The page each bar owns is chosen so the addon's "Action Bar N" shows the same
+-- abilities AND the same keybinds as Blizzard's Edit-Mode "Action Bar N" — because
+-- Blizzard's bar numbering does NOT follow the action-page order (its "Action Bar
+-- 2" is the Bottom-Left bar, which is action page 6, and so on):
+--   Bar 1 → page 1 (Main)          Bar 2 → page 6 (Bottom Left)
+--   Bar 3 → page 5 (Bottom Right)  Bar 4 → page 3 (Right)
+--   Bar 5 → page 4 (Left)          Bar 6 → page 7 (Action Bar 6 / MultiBar5)
+--   Bar 7 → page 8 (Action Bar 7)  Bar 8 → page 9 (Action Bar 8)
+-- Bars 6-8 map to Blizzard's extra bars (retail only; their bindings are pruned
+-- below on clients that lack them). Bars 9-10 take the two pages with no Blizzard
+-- binding — page 2 (the Main bar's 2nd page) and page 10 — so every Blizzard-bound
+-- bar still lines up 1:1 with ours. A bar's page is what maps it onto its action
+-- slots and, via BLIZZ_BINDING (keyed by page), onto Blizzard's own keybinds, so
+-- this one table drives the whole linkage. The Main bar (page 1) is the only one
+-- flagged `paged`, so it gets the possess/vehicle override and the manual page
+-- arrows; explicit per-stance paging (Paging tab) applies on top. The rest are
+-- static. Defaults enable Bar 1-3 (Main + Bottom Left + Bottom Right — the classic
+-- default look) plus the three special bars.
 local NUM_BARS = 10
+local BAR_PAGE  = { 1, 6, 5, 3, 4, 7, 8, 9, 2, 10 }
 local BARS = {}        -- ordered list of every bar def (used by UI + refresh)
 local BAR_BY_KEY = {}
 for i = 1, NUM_BARS do
@@ -66,16 +82,54 @@ for i = 1, NUM_BARS do
         key            = "bar" .. i,
         label          = "Action Bar " .. i,
         kind           = "action",
-        page           = i,
-        paged          = (i == 1),
-        defaultEnabled = (i == 1 or i == 5 or i == 6),
+        page           = BAR_PAGE[i],
+        paged          = (BAR_PAGE[i] == 1),   -- the Main bar (page 1) follows paging
+        defaultEnabled = (i <= 3),
     }
 end
 BARS[#BARS + 1] = { key = "stance", label = "Stance Bar", kind = "stance", defaultEnabled = true }
 BARS[#BARS + 1] = { key = "pet",    label = "Pet Bar",    kind = "pet",    defaultEnabled = true }
 BARS[#BARS + 1] = { key = "micro",  label = "Micro Menu", kind = "micro",  defaultEnabled = true }
 BARS[#BARS + 1] = { key = "bag",    label = "Bag Bar",    kind = "bag",    defaultEnabled = true }
+BARS[#BARS + 1] = { key = "status1", label = "Status Bar 1", kind = "status", defaultEnabled = true }
+BARS[#BARS + 1] = { key = "status2", label = "Status Bar 2", kind = "status", defaultEnabled = true }
 for _, def in ipairs(BARS) do BAR_BY_KEY[def.key] = def end
+
+-- ── Blizzard keybind linkage ─────────────────────────────────────────────────
+-- Every action slot Blizzard's own UI can bind lives on one of its bars, and each
+-- of those bars owns a fixed block of action slots. Keyed by the action page a bar
+-- owns (see BAR_PAGE above), this maps that page 1:1 onto the Blizzard binding set
+-- covering the same slots — which is what makes each of our bars share Blizzard's
+-- keybinds for the very abilities it shows:
+--   page 1  → ACTIONBUTTON1-12          (main bar,        slots   1-12)
+--   page 3  → MULTIACTIONBAR3BUTTON1-12 (Right,           slots  25-36)
+--   page 4  → MULTIACTIONBAR4BUTTON1-12 (Right 2 / Left,  slots  37-48)
+--   page 5  → MULTIACTIONBAR2BUTTON1-12 (Bottom Right,    slots  49-60)
+--   page 6  → MULTIACTIONBAR1BUTTON1-12 (Bottom Left,     slots  61-72)
+--   pages 7-9 → MULTIACTIONBAR5/6/7 (retail only; pruned below when absent)
+-- Page 2 (slots 13-24) is the main bar's second page and has no binding set, and
+-- page 10 has none either — those bars are bind-only through our own bindings
+-- (see Bindings.xml). This is the same mapping Bartender4 uses, which is what
+-- makes a Bartender/Blizzard user's existing keybinds carry over untouched.
+local BLIZZ_BINDING = {
+    [1] = "ACTIONBUTTON%d",
+    [3] = "MULTIACTIONBAR3BUTTON%d",
+    [4] = "MULTIACTIONBAR4BUTTON%d",
+    [5] = "MULTIACTIONBAR2BUTTON%d",
+    [6] = "MULTIACTIONBAR1BUTTON%d",
+    [7] = "MULTIACTIONBAR5BUTTON%d",
+    [8] = "MULTIACTIONBAR6BUTTON%d",
+    [9] = "MULTIACTIONBAR7BUTTON%d",
+}
+-- Classic Era has no MultiBar5/6/7; their binding commands don't exist there, so
+-- drop them rather than binding names the client will never report keys for. The
+-- five bars that exist on every client are kept unconditionally.
+for page = 7, 9 do
+    local fmt = BLIZZ_BINDING[page]
+    if fmt and not _G["BINDING_NAME_" .. fmt:format(1)] then
+        BLIZZ_BINDING[page] = nil
+    end
+end
 
 -- Per-bar defaults registered into core's profile. Action bars carry the full
 -- knob set; the special bars omit the ones that don't apply (button count is
@@ -100,6 +154,17 @@ local function barDefault(def)
         d.buttonSize = DEFAULT_SIZE
         d.flyout     = "UP"      -- UP | DOWN | LEFT | RIGHT
         d.useGeneral = true      -- apply the General tab's keybind-text settings
+        -- Stance paging is on only for the Main bar out of the box; every other
+        -- bar starts with it off (toggle in the Paging tab).
+        d.pagingEnabled = (def.paged == true)
+        -- Warrior Main bar ships with a sensible default: Battle → Bar 6's page,
+        -- Defensive → Bar 7's page, Berserker → Bar 8's page (stance indices 1/2/3).
+        -- Stored as the real action pages those bars own, matching the "Page N"
+        -- dropdown. Other classes start unconfigured (every stance = own page) —
+        -- their stance indices don't map to Battle/Defensive/Berserker.
+        if def.paged and select(2, UnitClass("player")) == "WARRIOR" then
+            d.paging = { [1] = BAR_PAGE[6], [2] = BAR_PAGE[7], [3] = BAR_PAGE[8] }
+        end
     end
     return d
 end
@@ -120,6 +185,12 @@ do
     -- alongside the bar keys in the actionBars table; getData() only ever reads
     -- real bar keys, so this extra key is inert to it.
     defaults.dragModifier = "SHIFT"   -- SHIFT | CTRL | ALT
+    -- Link our action bars to Blizzard's own action-bar keybinds (see
+    -- BLIZZ_BINDING above): the keys bound to ACTIONBUTTONn / MULTIACTIONBARnBUTTONn
+    -- in Escape → Key Bindings drive the matching button on our bar, and our
+    -- hotkey text shows them. On by default so an existing keybind setup keeps
+    -- working the moment the module is enabled.
+    defaults.blizzBindings = true
     -- ── General (addon-wide) keybind-text settings, applied to any action bar
     -- whose per-bar `useGeneral` is on. ──
     -- false → whole button reddens when out of range (Blizzard default);
@@ -177,6 +248,30 @@ local pendingRefresh = false
 local function layoutBar(bar)
     local d    = getData(bar.def.key)
     local kind = bar.def.kind
+
+    -- Status bars are a single reparented Blizzard container, not a grid of
+    -- buttons: size the header to the container and pin the container into it.
+    if kind == "status" then
+        local c = bar.statusFrame
+        -- Blizzard's own Edit Mode scale lives on the container frame; neutralise
+        -- it so our header's Scale setting is the only scale that applies (else a
+        -- previously-shrunk Blizzard bar stays tiny at our 100%).
+        if c then c:SetScale(1) end
+        local w, h = 200, 12
+        if c then w = c:GetWidth() or 0; h = c:GetHeight() or 0 end
+        if w < 1 then w = 200 end
+        if h < 1 then h = 12 end
+        bar.header:SetSize(w, h)
+        if c then
+            c:ClearAllPoints()
+            c:SetPoint("TOPLEFT", bar.header, "TOPLEFT", 0, 0)
+        end
+        if bar.overlay then
+            bar.overlay:ClearAllPoints()
+            bar.overlay:SetAllPoints(bar.header)
+        end
+        return
+    end
 
     local list, cw, ch, resize, showEach
     if kind == "action" then
@@ -290,23 +385,71 @@ local function buildButtonConfig(bar)
     return cfg
 end
 
+-- The Blizzard binding command that button `i` of this bar mirrors, or nil when
+-- the bar has no Blizzard counterpart (pages 2/10) or the link is switched off.
+-- Handing this to LibActionButton as `keyBoundTarget` makes the button *display*
+-- the Blizzard keybind and makes keybind mode write to it (LAB's SetKey), so the
+-- addon and Blizzard's Key Bindings panel stay one and the same setting.
+local function blizzBindingFor(def, i)
+    if def.kind ~= "action" then return nil end
+    if not isReady() or getGlobalData().blizzBindings == false then return nil end
+    local fmt = BLIZZ_BINDING[def.page]
+    return fmt and fmt:format(i) or nil
+end
+
 local function applyButtonConfig(bar)
     if bar.def.kind ~= "action" then return end
     local cfg = buildButtonConfig(bar)
-    for _, btn in ipairs(bar.buttons) do
+    for i, btn in ipairs(bar.buttons) do
+        -- UpdateConfig deep-copies into the button's own config table, so reusing
+        -- (and mutating) one table across the loop is safe — same as BT4.
+        cfg.keyBoundTarget = blizzBindingFor(bar.def, i) or false
         btn:UpdateConfig(cfg)
+    end
+end
+
+-- ── Blizzard keybind pass-through ────────────────────────────────────────────
+-- Mirroring the key in the hotkey text isn't enough: pressing it would still run
+-- Blizzard's (hidden) button on Blizzard's own page. Override bindings on the
+-- bar's header point each of those keys at *our* button instead, so the press
+-- respects this bar's paging and settings. Same mechanism the stance/pet bars
+-- already use for SHAPESHIFT/BONUSACTION bindings, and it takes priority over the
+-- normal binding, so nothing fires twice.
+-- NOTE: our own "CLICK <button>:Keybind" bindings (Bindings.xml) are unaffected —
+-- a key can only carry one binding, so the two can never both claim it.
+local function reassignActionBindings(bar)
+    if bar.def.kind ~= "action" then return end
+    if InCombatLockdown() then pendingRefresh = true; return end
+    ClearOverrideBindings(bar.header)
+
+    local d = getData(bar.def.key)
+    if d.enabled == false then return end   -- disabled bar: leave the keys to Blizzard
+    local fmt = BLIZZ_BINDING[bar.def.page]
+    if not fmt or getGlobalData().blizzBindings == false then return end
+
+    -- Only the buttons the bar actually shows; a hidden button shouldn't swallow
+    -- the key (layoutBar hides everything past d.buttons).
+    for i = 1, min(d.buttons or NUM_BUTTONS, #bar.buttons) do
+        local btn, cmd = bar.buttons[i], fmt:format(i)
+        for k = 1, select("#", GetBindingKey(cmd)) do
+            local key = select(k, GetBindingKey(cmd))
+            if key and key ~= "" then
+                SetOverrideBindingClick(bar.header, false, key, btn:GetName(), "Keybind")
+            end
+        end
     end
 end
 
 -- ── Paging ───────────────────────────────────────────────────────────────────
 -- Every action bar can switch which action page it shows based on the player's
--- stance/form (configured in the "Paging" tab). Each button is told every page's
--- action slot up front (state p → slot (p-1)*12 + i) and a secure state driver
--- flips the header's state. The config maps stance index → page (or nil for "no
--- paging", which falls through to the bar's own default page). Bar 1 additionally
--- keeps Blizzard's action-bar-page + bonusbar/possess/vehicle paging *below* the
--- user's stance choices in priority, so druid/rogue forms and vehicle bars still
--- work while an explicit per-stance page always wins.
+-- stance/form (configured in the "Paging" tab, gated by that bar's "Enable stance
+-- paging"). Each button is told every page's action slot up front (state p → slot
+-- (p-1)*12 + i) and a secure state driver flips the header's state. The config
+-- maps stance index → page; a stance set to "No paging" contributes no condition
+-- and so falls through to the bar's own page. Bar 1 additionally keeps the
+-- possess/vehicle override and Blizzard's action-bar-page conditions ([bar:*],
+-- the ACTIONPAGE keybinds) — but NOT [bonusbar:*] auto-paging, so "No paging"
+-- reliably means own page (see buildPagingDriver).
 local POSSESS_SNIPPET = [[
     if newstate == "possess" then
         if HasVehicleActionBar and HasVehicleActionBar() then
@@ -330,24 +473,51 @@ local SIMPLE_SNIPPET = [[
     control:ChildUpdate("state", newstate)
 ]]
 
+-- Whether stance paging is active for a bar. Defaults to the paged (Main) bar
+-- only; every other bar is off until switched on in the Paging tab.
+local function isPagingEnabled(bar)
+    local v = getData(bar.def.key).pagingEnabled
+    if v == nil then v = bar.def.paged end
+    return v and true or false
+end
+
 -- Builds the state-driver string from the bar's per-stance paging config.
+--
+-- Paging is now fully explicit: when enabled, each stance that has a page picked
+-- switches to it; a stance left on "No paging" gets no condition and so falls
+-- through to the bar's own page (the default at the end). We deliberately do NOT
+-- add Blizzard's [bonusbar:*] auto-paging any more — that was what made "No
+-- paging" still page. The possess/vehicle override stays (you must get the
+-- vehicle bar), and the Main bar keeps its [bar:*] conditions so Blizzard's own
+-- action-bar-page changes (e.g. the ACTIONPAGE1-6 keybinds) still page it.
 local function buildPagingDriver(bar)
     local d = getData(bar.def.key)
     local conds = {}
-    -- User per-stance pages first (highest priority). Stance conditions are
-    -- mutually exclusive, so pairs() order doesn't matter.
-    if d.paging then
+
+    -- Vehicle / possess / override — highest priority, essential, and independent
+    -- of stance paging.
+    if bar.def.paged then
+        conds[#conds + 1] = "[overridebar][possessbar][shapeshift]possess"
+    end
+
+    -- Per-stance pages (only the ones set to an actual page; "No paging" is stored
+    -- as false / absent and intentionally contributes no condition). Stance
+    -- conditions are mutually exclusive, so pairs() order doesn't matter.
+    if isPagingEnabled(bar) and d.paging then
         for stanceIdx, page in pairs(d.paging) do
-            if page and page >= 1 and page <= 10 then
+            if type(page) == "number" and page >= 1 and page <= 10 then
                 conds[#conds + 1] = ("[stance:%d]%d"):format(stanceIdx, page)
             end
         end
     end
+
+    -- Blizzard action-bar-page paging (Main bar), driven by the ACTIONPAGE1-6
+    -- keybinds. Only true when the player has actively changed page, so it never
+    -- fights a stance.
     if bar.def.paged then
-        conds[#conds + 1] = "[overridebar][possessbar][shapeshift]possess"
         conds[#conds + 1] = "[bar:2]2;[bar:3]3;[bar:4]4;[bar:5]5;[bar:6]6"
-        conds[#conds + 1] = "[bonusbar:1]7;[bonusbar:2]8;[bonusbar:3]9;[bonusbar:4]10;[bonusbar:5]11"
     end
+
     conds[#conds + 1] = tostring(bar.def.page)   -- default = the bar's own page
     return table.concat(conds, ";")
 end
@@ -376,12 +546,14 @@ end
 
 local function createActionButtons(bar)
     local prefixBase = (bar.def.page - 1) * NUM_BUTTONS
+    local cfg = buildButtonConfig(bar)
     for i = 1, NUM_BUTTONS do
         if not bar.buttons[i] then
             -- Unique global name per absolute slot so keybinds map 1:1 and never
             -- collide between bars.
             local name = BTN_PREFIX .. (prefixBase + i)
-            local btn  = LAB:CreateButton(prefixBase + i, name, bar.header, buildButtonConfig(bar))
+            cfg.keyBoundTarget = blizzBindingFor(bar.def, i) or false
+            local btn  = LAB:CreateButton(prefixBase + i, name, bar.header, cfg)
             if bar.MasqueGroup then btn:AddToMasque(bar.MasqueGroup) end
             bar.buttons[i] = btn
         end
@@ -472,12 +644,19 @@ local function buildStanceBar(bar)
         ef:RegisterEvent("UPDATE_SHAPESHIFT_USABLE")
         ef:RegisterEvent("UPDATE_BINDINGS")
         ef:SetScript("OnEvent", function(_, ev)
-            if InCombatLockdown() then pendingRefresh = true; return end
             if ev == "UPDATE_SHAPESHIFT_FORM" or ev == "UPDATE_SHAPESHIFT_COOLDOWN"
                or ev == "UPDATE_SHAPESHIFT_USABLE" then
+                -- Pure visual refresh (checked highlight, icon, cooldown). None of
+                -- these are protected, so they MUST run in combat too — otherwise
+                -- shifting form mid-combat leaves the highlight stuck on the stance
+                -- you just left until combat ends. (Blizzard's own stance bar
+                -- likewise updates its checked state in combat.)
                 for _, b in ipairs(bar.buttons) do updateStanceButton(b) end
             else
-                -- form count or bindings changed → rebuild + relayout + rebind
+                -- Form count or bindings changed → rebuild + relayout + rebind.
+                -- These touch secure frames (create/hide buttons, SetPoint,
+                -- override bindings), so they have to wait until out of combat.
+                if InCombatLockdown() then pendingRefresh = true; return end
                 updateStanceButtons(bar)
                 layoutBar(bar)
                 reassignStanceBindings(bar)
@@ -694,6 +873,90 @@ local function buildBagBar(bar)
             end
         end
     end
+
+    -- Blizzard's BagsBar is an EditMode system that re-anchors — and sometimes
+    -- re-parents — its bag-slot buttons whenever Edit Mode changes or the bar
+    -- refreshes. That yanks our reparented buttons back toward the (hidden)
+    -- BagsBar, so our bag bar appears to "snap away" and stops following our
+    -- mover. Rather than chase Blizzard's specific layout call, we watch the
+    -- buttons themselves: when one is moved/reparented out from under us, put it
+    -- back on the next frame. A reentrancy flag stops our own SetParent/SetPoint
+    -- from re-triggering, and a coalescing flag batches Blizzard's multi-button
+    -- relayout into a single fix. Bag buttons are plain (non-secure) frames, so
+    -- this is combat-safe; skipped in combat only because layoutBar touches the
+    -- (secure) header. Same idea as the micro menu's UpdateMicroButtonsParent hook.
+    if not bar._bagHooked then
+        bar._bagHooked = true
+        local reasserting, scheduled = false, false
+        local function reassert()
+            reasserting = true
+            for _, b in ipairs(bar.buttons) do b:SetParent(bar.header) end
+            layoutBar(bar)
+            reasserting = false
+        end
+        local function schedule()
+            if reasserting or scheduled then return end
+            if getData(bar.def.key).enabled == false then return end
+            scheduled = true
+            C_Timer.After(0, function()
+                scheduled = false
+                if getData(bar.def.key).enabled ~= false and not InCombatLockdown() then
+                    reassert()
+                end
+            end)
+        end
+        for _, b in ipairs(bar.buttons) do
+            hooksecurefunc(b, "SetPoint",  schedule)
+            hooksecurefunc(b, "SetParent", schedule)
+        end
+    end
+end
+
+-- ── Status bars (XP / reputation tracking) ───────────────────────────────────
+-- The two Blizzard status-tracking-bar containers, reparented onto our own movable
+-- headers. StatusTrackingBarManager keeps managing their contents (XP/rep values,
+-- which one is shown), we just own where they sit. Like the bag bar, the manager
+-- re-anchors them on its own layout passes, so we watch each container's
+-- SetPoint/SetParent and put it back. Nil-checked in case a client build names
+-- these frames differently — then the bar simply stays empty.
+local STATUS_CONTAINER = {
+    status1 = "MainStatusTrackingBarContainer",
+    status2 = "SecondaryStatusTrackingBarContainer",
+}
+
+local function buildStatusBar(bar)
+    local c = _G[STATUS_CONTAINER[bar.def.key] or ""]
+    if not c then return end
+    bar.statusFrame = c
+    c:SetParent(bar.header)
+    c:SetScale(1)   -- drop Blizzard's Edit Mode scale; our header owns scale now
+    c:ClearAllPoints()
+    c:SetPoint("TOPLEFT", bar.header, "TOPLEFT", 0, 0)
+
+    if not bar._statusHooked then
+        bar._statusHooked = true
+        local reasserting, scheduled = false, false
+        local function reassert()
+            reasserting = true
+            c:SetParent(bar.header)
+            layoutBar(bar)   -- re-pins the container + resizes the header
+            reasserting = false
+        end
+        local function schedule()
+            if reasserting or scheduled then return end
+            if getData(bar.def.key).enabled == false then return end
+            scheduled = true
+            C_Timer.After(0, function()
+                scheduled = false
+                if getData(bar.def.key).enabled ~= false and not InCombatLockdown() then
+                    reassert()
+                end
+            end)
+        end
+        hooksecurefunc(c, "SetPoint",  schedule)
+        hooksecurefunc(c, "SetParent", schedule)
+        hooksecurefunc(c, "SetScale",  schedule)   -- Blizzard re-applying its scale
+    end
 end
 
 -- ── Bar creation dispatch ────────────────────────────────────────────────────
@@ -726,6 +989,8 @@ local function createBar(def)
         buildMicroBar(bar)
     elseif kind == "bag" then
         buildBagBar(bar)
+    elseif kind == "status" then
+        buildStatusBar(bar)
     end
 
     return bar
@@ -734,9 +999,76 @@ end
 -- ── Position ─────────────────────────────────────────────────────────────────
 -- TOPLEFT-from-UIParent-BOTTOMLEFT convention, matching every other movable in
 -- this addon (TTK, RaidFrames, chat panels).
+--
+-- Out-of-the-box the three default bars (Bar 1-3) sit horizontally centred and
+-- stacked up from the bottom of the screen, 40px apart — py is the height (in
+-- bar-local units) of the bar's top edge above the screen bottom.
+local DEFAULT_STACK_Y = { bar1 = 50, bar2 = 90, bar3 = 130 }
+
+-- Full screen width expressed in the bar's own (scaled) coordinate units — the
+-- space its px offset is measured in. Matches the drag-to-centre snap math.
+local function localScreenWidth(bar)
+    local scale = bar.header:GetScale()
+    if scale == 0 or scale == nil then scale = 1 end
+    return GetScreenWidth() / scale
+end
+
+-- Default positions rely on other bars already being positioned: stance/pet read
+-- Action Bar 3, and the bag bar reads the micro menu. refreshAll positions bars in
+-- BARS order (bar1-10, then stance, pet, micro, bag), so those always run first.
 local function initialPosition(bar)
     local d = getData(bar.def.key)
     if d.px and d.py then return end
+    local key = bar.def.key
+
+    local stackY = DEFAULT_STACK_Y[key]
+    if stackY then
+        -- Centre horizontally, then sit at the configured height from the bottom.
+        d.px = localScreenWidth(bar) / 2 - bar.header:GetWidth() / 2
+        d.py = stackY
+        return
+    end
+
+    -- Stance bar: just above the left end of Action Bar 3.
+    if key == "stance" then
+        local b3 = getData("bar3")
+        d.px = b3.px or (localScreenWidth(bar) / 2 - bar.header:GetWidth() / 2)
+        d.py = (b3.py or DEFAULT_STACK_Y.bar3) + 6 + bar.header:GetHeight()
+        return
+    end
+
+    -- Pet bar: the same spot as the stance bar (few classes ever show both).
+    if key == "pet" then
+        local s = getData("stance")
+        d.px = s.px or (getData("bar3").px or (localScreenWidth(bar) / 2 - bar.header:GetWidth() / 2))
+        d.py = s.py or (DEFAULT_STACK_Y.bar3 + 6 + bar.header:GetHeight())
+        return
+    end
+
+    -- Micro menu + bag bar: stacked in the bottom-right corner, both right-aligned,
+    -- with the micro menu on the bottom and the bag bar directly above it.
+    if key == "micro" or key == "bag" then
+        local margin, gap = 20, 8
+        d.px = localScreenWidth(bar) - margin - bar.header:GetWidth()
+        if key == "micro" then
+            d.py = margin + bar.header:GetHeight()
+        else
+            local m = getData("micro")
+            local microTop = m.py or (margin + bar.header:GetHeight())
+            d.py = microTop + gap + bar.header:GetHeight()
+        end
+        return
+    end
+
+    -- Status bars: centred, stacked just above the very bottom of the screen
+    -- (Status Bar 1 lowest, Status Bar 2 above it).
+    if key == "status1" or key == "status2" then
+        d.px = localScreenWidth(bar) / 2 - bar.header:GetWidth() / 2
+        d.py = (key == "status1") and 16 or (16 + bar.header:GetHeight() + 4)
+        return
+    end
+
+    -- Every other bar: stagger down from a fixed point so they don't overlap.
     local idx = 0
     for i, def in ipairs(BARS) do if def.key == bar.def.key then idx = i - 1 end end
     d.px = (UIParent:GetWidth() / 2) - 250
@@ -862,6 +1194,7 @@ local function applyBar(bar)
     if kind == "action" then
         applyButtonConfig(bar)
         refreshPagingDriver(bar)
+        reassignActionBindings(bar)
     elseif kind == "stance" then
         updateStanceButtons(bar)
         reassignStanceBindings(bar)
@@ -1097,6 +1430,19 @@ local function applyActionButtonConfig()
     end
 end
 
+-- Re-derives the Blizzard-keybind override bindings on every action bar. Run at
+-- refresh time and whenever the game reports a binding change (UPDATE_BINDINGS),
+-- which covers Escape → Key Bindings, keybind mode, and binding-set swaps.
+local function applyActionBindings()
+    if InCombatLockdown() then pendingRefresh = true; return end
+    for _, def in ipairs(BARS) do
+        if def.kind == "action" then
+            local b = bars[def.key]
+            if b then reassignActionBindings(b) end
+        end
+    end
+end
+
 -- ── Refresh / lifecycle ──────────────────────────────────────────────────────
 local function refreshAll()
     if not isReady() then return end
@@ -1136,7 +1482,9 @@ addon.ActionBars = {
     getData         = getData,
     refresh         = refreshAll,
     applyBar        = guarded(applyBar),
-    applyLayout     = guarded(layoutBar),
+    -- Button count feeds the override bindings (hidden buttons don't get keys),
+    -- so a layout change has to re-derive them too.
+    applyLayout     = guarded(function(b) layoutBar(b); reassignActionBindings(b) end),
     applyScale      = guarded(applyScale),
     applyAlpha      = function(key) local b = bars[key]; if b then applyAlpha(b) end end,
     -- applyMouseover is combat-safe (SetScript/SetAlpha only), so it's ungated
@@ -1144,7 +1492,9 @@ addon.ActionBars = {
     applyMouseover  = function(key) local b = bars[key]; if b then applyMouseover(b) end end,
     applyButtonCfg  = guarded(applyButtonConfig),
     applyClickThru  = guarded(applyClickThrough),
-    applyVisibility = guarded(applyVisibility),
+    -- A disabled bar hands its Blizzard keys back to Blizzard, so toggling a bar
+    -- re-derives the overrides as well.
+    applyVisibility = guarded(function(b) applyVisibility(b); reassignActionBindings(b) end),
     applyPosition   = guarded(applyPosition),
     applyPaging     = guarded(refreshPagingDriver),
     getMover        = function(key) return bars[key] and bars[key].mover end,
@@ -1175,6 +1525,15 @@ addon.ActionBars = {
     -- The settings UI registers its toggle-button refresh here so the label
     -- updates when keybind mode is closed via LibKeyBound's own dialog / combat.
     setKeybindChangedCallback = function(fn) keybindChangedCb = fn end,
+    -- Blizzard keybind link (General tab). Toggling it re-pushes the button config
+    -- (hotkey text switches between the Blizzard binding and our own) and rebuilds
+    -- the override bindings.
+    getBlizzBindings = function() return getGlobalData().blizzBindings ~= false end,
+    setBlizzBindings = function(v)
+        getGlobalData().blizzBindings = v and true or false
+        applyActionButtonConfig()
+        applyActionBindings()
+    end,
     getDragModifier   = function() return getGlobalData().dragModifier or "SHIFT" end,
     setDragModifier   = function(v)
         getGlobalData().dragModifier = v
@@ -1235,9 +1594,12 @@ local function hookBlizzardEditMode()
     EventRegistry:RegisterCallback("EditMode.Exit",  blizzardLock)
 end
 
--- Binding names so our per-button action keybinds show up (and are nameable) in
--- the Escape → Key Bindings UI, grouped per action bar.
-BINDING_HEADER_DRIEVACTIONBARS = "Driev's Essentials Action Bars"
+-- Display names for the bindings declared in Bindings.xml (the XML is what makes
+-- them exist in the Escape → Key Bindings UI at all; these globals are only the
+-- labels). BINDING_HEADER_DRIEVACTIONBARS names both the left-hand category tab
+-- (via each binding's category="BINDING_HEADER_DRIEVACTIONBARS") and the section
+-- header, so our bindings get their own tab instead of landing under "Other".
+BINDING_HEADER_DRIEVACTIONBARS = "|cfffb2c36Driev's|r ActionBars"
 for _, def in ipairs(BARS) do
     if def.kind == "action" then
         local base = (def.page - 1) * NUM_BUTTONS
@@ -1251,11 +1613,17 @@ end
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+eventFrame:RegisterEvent("UPDATE_BINDINGS")
 eventFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LOGIN" then
         refreshAll()
         hookBlizzardEditMode()
     elseif event == "PLAYER_REGEN_ENABLED" then
         if pendingRefresh then refreshAll() end
+    elseif event == "UPDATE_BINDINGS" then
+        -- The player rebound something (Key Bindings panel, keybind mode, a
+        -- character/account binding-set swap) — re-point our override bindings at
+        -- the new keys. LibActionButton refreshes the hotkey text on its own.
+        applyActionBindings()
     end
 end)

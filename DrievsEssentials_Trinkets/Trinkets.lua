@@ -191,6 +191,42 @@ local function getIconCrop()
     return m, 1 - m, m, 1 - m
 end
 
+-- Frame strata / level for the two frames, user-configurable under each
+-- section's Layout tab. Both default to MEDIUM / 0 — the same layer normal UI
+-- panels use, so the trinket frames sit predictably among them and can be
+-- raised or lowered to resolve overlaps with other addons.
+local STRATA_OPTS = {
+    "BACKGROUND", "LOW", "MEDIUM", "HIGH", "DIALOG", "FULLSCREEN",
+    "FULLSCREEN_DIALOG", "TOOLTIP",
+}
+local DEFAULT_STRATA, DEFAULT_LEVEL = "MEDIUM", 0
+
+local function isValidStrata(s)
+    for _, v in ipairs(STRATA_OPTS) do
+        if v == s then return true end
+    end
+    return false
+end
+
+-- Applies the saved strata/level to one frame. Level is clamped at 0 (the
+-- client rejects negatives) and applied after the strata, since changing
+-- strata re-bases a frame's level.
+local function applyFrameLayer(f, strata, level)
+    if not f then return end
+    if not isValidStrata(strata) then strata = DEFAULT_STRATA end
+    f:SetFrameStrata(strata)
+    f:SetFrameLevel(math.max(0, tonumber(level) or DEFAULT_LEVEL))
+end
+
+-- Re-applies both frames' configured strata/level. Called at frame creation,
+-- when leaving Move Mode (which temporarily raises them), and whenever the
+-- settings change.
+local function applyFrameLayers()
+    local d = getData()
+    applyFrameLayer(displayFrame, d.displayStrata, d.displayLevel)
+    applyFrameLayer(menuFrame,    d.menuStrata,    d.menuLevel)
+end
+
 -- Reskins one worn/menu trinket button to match ElvUI's action-button look
 -- (used by TrinketMenu.lua's own native ElvUI skin, which this mirrors):
 -- swap the baked Blizzard Classic Normal/Pushed/Highlight textures for
@@ -1602,7 +1638,7 @@ getOrCreateMenu = function()
     f:SetBackdrop({ bgFile=WHITE, edgeFile=WHITE, edgeSize=2 })
     f:SetBackdropColor(0, 0, 0, 0)
     f:SetBackdropBorderColor(0, 0, 0, 0)
-    f:SetFrameStrata("DIALOG")
+    applyFrameLayer(f, getData().menuStrata, getData().menuLevel)
     f:SetClampedToScreen(true)
     f:SetMovable(true)
     f:EnableMouse(true)
@@ -1805,7 +1841,7 @@ local function getOrCreateDisplay()
     f:SetPoint("CENTER", UIParent, "CENTER", 200, 0)
     f:SetMovable(true)
     f:SetClampedToScreen(true)
-    f:SetFrameStrata("MEDIUM")
+    applyFrameLayer(f, getData().displayStrata, getData().displayLevel)
     f:SetBackdrop({ bgFile=WHITE, edgeFile=WHITE, edgeSize=2 })
     f:SetBackdropColor(0, 0, 0, 0)
     f:SetBackdropBorderColor(0, 0, 0, 0)
@@ -2017,6 +2053,9 @@ local function applyVisibility()
     updateHotkeys()
     layoutDisplay()
     updateQueueIndicators()
+    -- Frames are only created once, so a profile switch has to re-assert the
+    -- new profile's strata/level on the existing ones.
+    applyFrameLayers()
     -- Scale before position so the GetCenter()/SetPoint() round-trip is
     -- evaluated at the same scale it was saved at.
     applyDisplayScale()
@@ -2148,7 +2187,9 @@ end
 local function leaveMoveMode()
     local f = displayFrame
     if not f then return end
-    f:SetFrameStrata("MEDIUM")
+    -- Move Mode raises both frames above everything so their edit boxes stay
+    -- grabbable; restore whatever the user configured (see applyFrameLayers).
+    applyFrameLayer(f, getData().displayStrata, getData().displayLevel)
     addon.HideEditBox(f)
     f:SetScript("OnMouseDown", nil)
     f:SetScript("OnMouseUp",   nil)
@@ -2156,7 +2197,7 @@ local function leaveMoveMode()
 
     hideDockIndicator()
     if menuFrame then
-        menuFrame:SetFrameStrata("DIALOG")
+        applyFrameLayer(menuFrame, getData().menuStrata, getData().menuLevel)
         addon.HideEditBox(menuFrame)
         menuFrame:SetScript("OnMouseDown", nil)
         menuFrame:SetScript("OnMouseUp",   nil)
@@ -2370,6 +2411,8 @@ addon.Trinkets = {
     updateHotkeys      = updateHotkeys,
     updateQueueIndicators = updateQueueIndicators,
     refreshElvUISkin   = refreshElvUISkin,
+    applyFrameLayers   = applyFrameLayers,
+    STRATA_OPTS        = STRATA_OPTS,
     -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode — with
     -- "Enable Trinket Menu" off the display frame is hidden entirely, so its
     -- edit box would just float over nothing.

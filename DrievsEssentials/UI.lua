@@ -607,6 +607,7 @@ local function buildRaidFramesPanel(parent)
     enableCB.OnChange = function(_, checked)
         raidFramesData().enabled = checked
         if addon.RaidFrames then addon.RaidFrames.applyAll() end
+        UI.RefreshTabDots()
     end
 
     local moveBtn = flatButton(panel, "Move / Resize", 140, 22)
@@ -1143,8 +1144,23 @@ local function buildGeneralTabPanel(parent)
         getTooltipData().hideRealm = checked
     end
 
+    -- Guild name / rank on player tooltips, shown as "<Guild Name> [Guild Rank]".
+    -- Rank only appears when the guild name is also shown (and the player is in a
+    -- guild); both default on.
+    local ttGuildCB = createCheckbox(panel, "Show guild name on unit tooltips", 340)
+    ttGuildCB:SetPoint("TOPLEFT", ttRealmCB, "BOTTOMLEFT", 0, -6)
+    ttGuildCB.OnChange = function(_, checked)
+        getTooltipData().showGuild = checked
+    end
+
+    local ttGuildRankCB = createCheckbox(panel, "Show guild rank on unit tooltips", 340)
+    ttGuildRankCB:SetPoint("TOPLEFT", ttGuildCB, "BOTTOMLEFT", 0, -6)
+    ttGuildRankCB.OnChange = function(_, checked)
+        getTooltipData().showGuildRank = checked
+    end
+
     local ttHealthBorderCB = createCheckbox(panel, "Class-color the health bar outline", 340)
-    ttHealthBorderCB:SetPoint("TOPLEFT", ttRealmCB, "BOTTOMLEFT", 0, -6)
+    ttHealthBorderCB:SetPoint("TOPLEFT", ttGuildRankCB, "BOTTOMLEFT", 0, -6)
     ttHealthBorderCB.OnChange = function(_, checked)
         getTooltipData().healthBorder = checked
     end
@@ -1247,6 +1263,8 @@ local function buildGeneralTabPanel(parent)
         ttColorCB:SetChecked(td.colorByUnit ~= false)
         ttHealthCB:SetChecked(td.showHealth ~= false)
         ttRealmCB:SetChecked(td.hideRealm or false)
+        ttGuildCB:SetChecked(td.showGuild ~= false)
+        ttGuildRankCB:SetChecked(td.showGuildRank ~= false)
         ttHealthBorderCB:SetChecked(td.healthBorder ~= false)
         ttCursorCB:SetChecked(td.anchorCursor or false)
         ttAnchorCB:SetChecked(td.useAnchor or false)
@@ -1622,6 +1640,7 @@ local function createMainFrame()
     f.content = content
     f.tabs    = {}
     f.panels  = {}
+    f.tabDots = {}   -- key -> status dot texture, for tabs that registered a status()
 
     tinsert(UISpecialFrames, "DrievSettingsFrame")
     return f
@@ -2236,8 +2255,13 @@ end
 -- just by calling UI.RegisterTab at load time. Registration must happen before
 -- the settings window is first opened, which is always the case: addons finish
 -- loading long before the user can click anything.
---   def = { key, label, order, build = function(parent) -> panel frame }
+--   def = { key, label, order, build = function(parent) -> panel frame,
+--           status = function() -> boolean }
 -- `order` sorts the sidebar top→down (ties fall back to registration order).
+-- `status` is optional: when supplied, the nav button gets a green/grey dot
+-- (same look as the per-raid dots in Particles → Raids) reflecting whether that
+-- module is currently enabled. Tabs that aren't a toggleable module (General,
+-- Profiles) simply omit it and get no dot.
 UI.tabRegistry = {}
 
 -- Names of addon.X tables (TTK, RaidFrames, Trinkets, ...) that expose the
@@ -2329,6 +2353,20 @@ function UI.GetFrame()
             tab:SetPoint("TOPRIGHT", f.sidebar, "TOPRIGHT", -3, -48)
         end
         tab:SetScript("OnClick", function() selectTab(f, def.key) end)
+
+        -- Enabled/disabled status dot, right-aligned in the button. The label
+        -- gets a matching right bound so a long name truncates instead of
+        -- running under the dot.
+        if def.status then
+            local dot = tab:CreateTexture(nil, "OVERLAY")
+            dot:SetTexture(WHITE)
+            dot:SetSize(8, 8)
+            dot:SetPoint("RIGHT", -10, 0)
+            tab.text:SetPoint("RIGHT", dot, "LEFT", -6, 0)
+            tab.text:SetJustifyH("LEFT")
+            f.tabDots[def.key] = dot
+        end
+
         f.tabs[def.key] = tab
         prevNav = tab
     end
@@ -2340,14 +2378,37 @@ function UI.GetFrame()
     if defs[1] then selectTab(f, defs[1].key) end
 
     UI.frame = f
+    -- Dots reflect saved state, so re-sync every time the window opens (profile
+    -- switches, or a toggle flipped from a slash command).
+    f:HookScript("OnShow", UI.RefreshTabDots)
+    UI.RefreshTabDots()
     return f
+end
+
+-- Re-read every registered tab's status() and recolour its sidebar dot. Called
+-- on window open, and by the module panels whenever their master toggle flips.
+function UI.RefreshTabDots()
+    local f = UI.frame
+    if not f then return end
+    for _, def in ipairs(UI.tabRegistry) do
+        local dot = f.tabDots[def.key]
+        if dot and def.status then
+            local ok, on = pcall(def.status)
+            dot:SetVertexColor(unpack((ok and on) and C.statusOn or C.statusOff))
+        end
+    end
 end
 
 -- Core's own tabs. The Particles (order 20) and Trinkets (order 40) module
 -- addons register their own from their own files, so they slot into the gaps
 -- below — and disappear entirely when those addons are disabled.
 UI.RegisterTab({ key = "general",   label = "General",   order = 10, build = buildGeneralTabPanel })
-UI.RegisterTab({ key = "raid",      label = "Raid",      order = 30, build = buildRaidTabPanel })
+UI.RegisterTab({ key = "raid",      label = "Raid",      order = 30, build = buildRaidTabPanel,
+    -- Raid Frames is the one toggleable module on this tab.
+    status = function()
+        local d = addon.db and addon.db.settings and addon.db.settings.raidFrames
+        return d and d.enabled or false
+    end })
 UI.RegisterTab({ key = "profiles",  label = "Profiles",  order = 90, build = buildProfilesPanel })
 
 function addon.ToggleUI()

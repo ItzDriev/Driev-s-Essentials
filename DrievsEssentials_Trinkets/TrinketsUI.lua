@@ -1256,6 +1256,7 @@ local function buildTrinketsPanel(parent)
     enableCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.enabled = checked end
         if addon.Trinkets then addon.Trinkets.applyVisibility() end
+        UI.RefreshTabDots()
     end
 
     local moveBtn = flatButton(displayPanel, "Move", 80, 22)
@@ -2064,6 +2065,103 @@ local function buildTrinketsPanel(parent)
         function(v) local d = getTData(); if d then d.displayEdgePad = v end end,
         applyDisplayLayout)
 
+    -- ── Frame layer (strata + level) ──────────────────────────────────────────
+    -- One row per frame, controlling where it sits in the UI's stacking order:
+    -- a strata dropdown (the coarse layer) plus a level stepper (fine ordering
+    -- within that strata). Both default to MEDIUM / 0 so the frames sit with
+    -- normal UI panels, and can be raised/lowered to fix overlaps with other
+    -- addons.
+    local STRATA_LABELS = {
+        BACKGROUND        = "Background",
+        LOW               = "Low",
+        MEDIUM            = "Medium",
+        HIGH              = "High",
+        DIALOG            = "Dialog",
+        FULLSCREEN        = "Fullscreen",
+        FULLSCREEN_DIALOG = "Fullscreen Dialog",
+        TOOLTIP           = "Tooltip",
+    }
+
+    local function makeLayerRow(anchorAbove, getStrata, setStrata, getLevel, setLevel)
+        local apply = function()
+            if addon.Trinkets then addon.Trinkets.applyFrameLayers() end
+        end
+
+        local row = CreateFrame("Frame", nil, displayPanel)
+        row:SetSize(460, 22)
+        row:SetPoint("TOPLEFT", anchorAbove, "BOTTOMLEFT", 0, -18)
+
+        local sLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        sLbl:SetPoint("LEFT", 0, 0)
+        sLbl:SetText("Frame strata:")
+        sLbl:SetTextColor(unpack(C.textGrey))
+
+        -- Trinkets.lua loads before this file (see the .toc), so the shared
+        -- strata list is always available — the dropdown's height is baked
+        -- from #options at creation, so an empty list would build a dead
+        -- control rather than fail loudly.
+        local opts = {}
+        for _, v in ipairs(addon.Trinkets.STRATA_OPTS) do
+            opts[#opts + 1] = { value = v, label = STRATA_LABELS[v] or v }
+        end
+        local dd = createDropdown(row, 130, opts, getStrata, setStrata, apply)
+        dd:SetPoint("LEFT", sLbl, "RIGHT", 8, 0)
+
+        local lLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        lLbl:SetPoint("LEFT", dd, "RIGHT", 16, 0)
+        lLbl:SetText("Level:")
+        lLbl:SetTextColor(unpack(C.textGrey))
+
+        local btnM = CreateFrame("Button", nil, row, "BackdropTemplate")
+        btnM:SetSize(22, 22)
+        btnM:SetPoint("LEFT", lLbl, "RIGHT", 8, 0)
+        applyBackdrop(btnM, 1, C.panelDark, C.tabBorder)
+        local mLbl = btnM:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        mLbl:SetPoint("CENTER"); mLbl:SetText("-"); mLbl:SetTextColor(unpack(C.textWhite))
+
+        local numLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        numLbl:SetPoint("LEFT", btnM, "RIGHT", 6, 0)
+        numLbl:SetWidth(24); numLbl:SetJustifyH("CENTER")
+        numLbl:SetTextColor(unpack(C.textWhite))
+
+        local btnP = CreateFrame("Button", nil, row, "BackdropTemplate")
+        btnP:SetSize(22, 22)
+        btnP:SetPoint("LEFT", numLbl, "RIGHT", 6, 0)
+        applyBackdrop(btnP, 1, C.panelDark, C.tabBorder)
+        local pLbl = btnP:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        pLbl:SetPoint("CENTER"); pLbl:SetText("+"); pLbl:SetTextColor(unpack(C.textWhite))
+
+        local function refresh()
+            numLbl:SetText(tostring(getLevel()))
+            if dd.Refresh then dd.Refresh() end
+        end
+
+        btnM:SetScript("OnClick", function()
+            setLevel(math.max(0, getLevel() - 1)); refresh(); apply()
+        end)
+        btnM:SetScript("OnEnter", function() btnM:SetBackdropBorderColor(unpack(C.red)) end)
+        btnM:SetScript("OnLeave", function() btnM:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        btnP:SetScript("OnClick", function()
+            setLevel(math.min(128, getLevel() + 1)); refresh(); apply()
+        end)
+        btnP:SetScript("OnEnter", function() btnP:SetBackdropBorderColor(unpack(C.red)) end)
+        btnP:SetScript("OnLeave", function() btnP:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
+        return row, refresh
+    end
+
+    local dispLayerRow, refreshDispLayer = makeLayerRow(dispEdgePadRow,
+        function() local d = getTData(); return (d and d.displayStrata) or "MEDIUM" end,
+        function(v) local d = getTData(); if d then d.displayStrata = v end end,
+        function() local d = getTData(); return (d and d.displayLevel) or 0 end,
+        function(v) local d = getTData(); if d then d.displayLevel = v end end)
+
+    local menuLayerRow, refreshMenuLayer = makeLayerRow(dispLayerRow,
+        function() local d = getTData(); return (d and d.menuStrata) or "MEDIUM" end,
+        function(v) local d = getTData(); if d then d.menuStrata = v end end,
+        function() local d = getTData(); return (d and d.menuLevel) or 0 end,
+        function(v) local d = getTData(); if d then d.menuLevel = v end end)
+
     -- ── Misc section ──────────────────────────────────────────────────────────
     local miscHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     miscHeader:SetPoint("TOPLEFT", dispEdgePadRow, "BOTTOMLEFT", 0, -20)
@@ -2271,6 +2369,7 @@ local function buildTrinketsPanel(parent)
     stackIn(dmLay, {
         { dispScaleHeader, h = 18 }, { dispScaleRow, gap = 4 },
         { dispGapRow, gap = 16 }, { dispEdgePadRow, gap = 6 },
+        { dispLayerRow, gap = 16 },
     })
 
     stackIn(bmGen, {
@@ -2285,6 +2384,7 @@ local function buildTrinketsPanel(parent)
         { orientRow }, { perLineRow, gap = 10 }, { alignRow, gap = 12 },
         { scaleHeader, gap = 16, h = 18 }, { scaleRow, gap = 4 },
         { btnGapRow, gap = 16 }, { edgePadRow, gap = 6 },
+        { menuLayerRow, gap = 16 },
     })
 
     stackIn(behInner, {
@@ -2335,6 +2435,8 @@ local function buildTrinketsPanel(parent)
         refreshButtonGap()
         refreshDispEdgePad()
         refreshDispButtonGap()
+        refreshDispLayer()
+        refreshMenuLayer()
     end
     displayShell:SetScript("OnShow", refreshDisplay)
 
@@ -2437,4 +2539,8 @@ end
 
 -- Adds the Trinkets entry to core's settings sidebar. Because this lives in the
 -- module, disabling the addon removes the tab entirely.
-UI.RegisterTab({ key = "trinkets", label = "Trinkets", order = 40, build = buildTrinketsPanel })
+UI.RegisterTab({ key = "trinkets", label = "Trinkets", order = 40, build = buildTrinketsPanel,
+    status = function()
+        local d = addon.db and addon.db.settings and addon.db.settings.trinkets
+        return d and d.enabled or false
+    end })

@@ -1,0 +1,146 @@
+<Bindings>
+    <!-- Per-button keybinds for our own action bars, so they show up (and are
+         nameable) in Escape -> Key Bindings under their own tab.
+         category="BINDING_HEADER_DRIEVACTIONBARS" is what puts them in their own
+         left-hand category (a binding with no category lands under "Other"); the
+         tab/section title is the value of that global, set in ActionBars.lua. This
+         mirrors how Blizzard tabs its own bindings (e.g. category='BINDING_HEADER_MOVEMENT').
+         Button names are absolute action slots (DrievABarButtonN = slot N), but they
+         are listed here grouped by BAR (Bar 1 first, then Bar 2, ...) so the Key
+         Bindings list shows the bars in 1..10 order. Which slots a bar owns is set
+         by BAR_PAGE in ActionBars.lua; keep this order in sync with it.
+         ":Keybind" matches the buttons keyBoundClickButton (ActionBars.lua), which
+         keeps the left mouse button free for dragging abilities off a slot.
+         Bars that mirror a Blizzard bar can also be bound from Blizzards own Action
+         Bar tabs - see BLIZZ_BINDING in ActionBars.lua. -->
+    <!-- Action Bar 1 (page 1) -->
+    <Binding name="CLICK DrievABarButton1:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS" header="DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton2:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton3:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton4:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton5:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton6:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton7:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton8:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton9:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton10:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton11:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton12:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 2 (page 6) -->
+    <Binding name="CLICK DrievABarButton61:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton62:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton63:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton64:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton65:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton66:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton67:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton68:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton69:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton70:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton71:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton72:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 3 (page 5) -->
+    <Binding name="CLICK DrievABarButton49:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton50:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton51:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton52:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton53:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton54:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton55:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton56:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton57:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton58:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton59:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton60:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 4 (page 3) -->
+    <Binding name="CLICK DrievABarButton25:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton26:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton27:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton28:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton29:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton30:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton31:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton32:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton33:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton34:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton35:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton36:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 5 (page 4) -->
+    <Binding name="CLICK DrievABarButton37:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton38:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton39:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton40:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton41:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton42:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton43:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton44:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton45:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton46:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton47:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton48:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 6 (page 7) -->
+    <Binding name="CLICK DrievABarButton73:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton74:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton75:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton76:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton77:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton78:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton79:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton80:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton81:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton82:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton83:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton84:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 7 (page 8) -->
+    <Binding name="CLICK DrievABarButton85:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton86:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton87:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton88:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton89:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton90:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton91:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton92:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton93:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton94:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton95:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton96:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 8 (page 9) -->
+    <Binding name="CLICK DrievABarButton97:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton98:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton99:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton100:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton101:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton102:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton103:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton104:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton105:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton106:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton107:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton108:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 9 (page 2) -->
+    <Binding name="CLICK DrievABarButton13:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton14:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton15:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton16:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton17:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton18:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton19:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton20:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton21:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton22:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton23:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton24:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <!-- Action Bar 10 (page 10) -->
+    <Binding name="CLICK DrievABarButton109:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton110:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton111:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton112:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton113:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton114:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton115:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton116:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton117:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton118:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton119:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+    <Binding name="CLICK DrievABarButton120:Keybind" category="BINDING_HEADER_DRIEVACTIONBARS"/>
+</Bindings>
