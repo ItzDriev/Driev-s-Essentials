@@ -975,6 +975,37 @@ local function buildGeneralTabPanel(parent)
         return (LSM and LSM:List("font")) or { "Friz Quadrata TT" }
     end
 
+    -- ── Input section ──────────────────────────────────────────────────────
+    -- Drives Blizzard's ActionButtonUseKeyDown CVar, which decides whether a
+    -- keybind/click fires on the press (key down) or the release (key up). This
+    -- addon's action bars and trinket buttons both register for both phases and
+    -- follow this CVar, so it's the single switch for their key up/down feel.
+    -- The CVar is its own persistent store (saved by the client), so nothing is
+    -- kept in the addon DB — reading it back is always current.
+    local inputHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    inputHeader:SetPoint("TOPLEFT", 14, -14)
+    inputHeader:SetText("Input")
+    inputHeader:SetTextColor(unpack(C.red))
+
+    local keyDownCB = createCheckbox(panel, "Use abilities on key down (uncheck for key up)", 360)
+    keyDownCB:SetPoint("TOPLEFT", inputHeader, "BOTTOMLEFT", 0, -10)
+    keyDownCB.OnChange = function(self, checked)
+        -- SetCVar for this key is blocked in combat; bounce the box back to the
+        -- real value and tell the user rather than silently no-opping.
+        if InCombatLockdown() then
+            print("|cfffb2c36Driev's|r |cffffffffEssentials|r: can't change key up/down while in combat — try again afterwards.")
+            self:SetChecked(GetCVarBool("ActionButtonUseKeyDown"))
+            return
+        end
+        SetCVar("ActionButtonUseKeyDown", checked and "1" or "0")
+    end
+
+    local keyDownHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    keyDownHint:SetPoint("TOPLEFT", keyDownCB, "BOTTOMLEFT", 20, -3)
+    keyDownHint:SetWidth(430); keyDownHint:SetJustifyH("LEFT")
+    keyDownHint:SetText("Applies to this addon's action bars and trinket buttons. On: abilities fire the instant a key is pressed; off: on release. This is Blizzard's ActionButtonUseKeyDown setting, so it also affects the default action bars.")
+    keyDownHint:SetTextColor(unpack(C.textDim))
+
     -- ── Debug section ──────────────────────────────────────────────────────
     local function getDebugData()
         addon.db.settings.particles       = addon.db.settings.particles or {}
@@ -983,7 +1014,7 @@ local function buildGeneralTabPanel(parent)
     end
 
     local debugHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    debugHeader:SetPoint("TOPLEFT", 14, -14)
+    debugHeader:SetPoint("TOPLEFT", keyDownHint, "BOTTOMLEFT", -20, -24)
     debugHeader:SetText("Debug")
     debugHeader:SetTextColor(unpack(C.red))
 
@@ -1251,6 +1282,7 @@ local function buildGeneralTabPanel(parent)
     local function refreshPanel()
         local d  = getTTKData()
         local fn = d.fontName or "Friz Quadrata TT"
+        keyDownCB:SetChecked(GetCVarBool("ActionButtonUseKeyDown"))
         debugCB:SetChecked(getDebugData().enabled or false)
         minimapHideCB:SetChecked(addon.db.minimap.hide or false)
         enableCB:SetChecked(d.enabled or false)

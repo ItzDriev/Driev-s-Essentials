@@ -1502,15 +1502,26 @@ local function applyDisplayScale()
     displayFrame:SetScale(getData().displayScale or 1.0)
 end
 
--- Switches whether the worn-trinket buttons fire their bound "use item"
--- keybind on key-down (default, matches standard action-bar feel) or
--- key-up. Safe to call any time; RegisterForClicks isn't combat-protected.
+-- Worn-trinket buttons register for BOTH the down and up phase of the click,
+-- always — never just one.
+--
+-- Using an inventory item is a protected action, and the client only treats
+-- ONE physical phase as the valid hardware trigger for it — the phase chosen
+-- by the `ActionButtonUseKeyDown` CVar, for mouse AND keybind alike. A secure
+-- button registered for the opposite phase gets its OnClick, but the protected
+-- UseInventoryItem inside is silently rejected, so the trinket can't be used
+-- at all. By registering both phases the secure use always lands on whichever
+-- phase the CVar makes valid; the other phase's use no-ops harmlessly (so no
+-- double use). This mirrors what LibActionButton does — and what our action
+-- bars do — so trinkets and action bars share one key-up/down behaviour,
+-- driven by that CVar (toggle it under General → Input). PreClick dedupes its
+-- own non-secure side effects via the `down` arg so they fire once per press.
+-- Safe to call any time; RegisterForClicks isn't combat-protected.
 local function applyClickTrigger()
     if not displayFrame then return end
-    local mode = getData().triggerOnKeyUp and "LeftButtonUp" or "LeftButtonDown"
     for which = 0, 1 do
         local btn = displayFrame["t"..which]
-        if btn then btn:RegisterForClicks(mode) end
+        if btn then btn:RegisterForClicks("LeftButtonDown", "LeftButtonUp") end
     end
 end
 
@@ -1884,7 +1895,9 @@ local function getOrCreateDisplay()
             BTN_PAD + which * (BTN_SIZE + BTN_GAP), -BTN_PAD)
         btn:SetAttribute("type", "item")
         btn:SetAttribute("slot", slot)
-        btn:RegisterForClicks(getData().triggerOnKeyUp and "LeftButtonUp" or "LeftButtonDown")
+        -- Register both click phases; the CVar decides which one actually fires
+        -- the protected use. See applyClickTrigger for the full reasoning.
+        btn:RegisterForClicks("LeftButtonDown", "LeftButtonUp")
 
         styleSlotButton(btn, BTN_SIZE)
 
@@ -1931,7 +1944,13 @@ local function getOrCreateDisplay()
         -- A modifier set to "none" matches nothing here, so it just fires the
         -- trinket. The swap modifier is checked first so it wins if somehow both
         -- happen to be held.
-        btn:SetScript("PreClick", function()
+        btn:SetScript("PreClick", function(_, _, down)
+            -- The button is registered for both the down and up phase (see
+            -- applyClickTrigger), so PreClick fires twice per press. These side
+            -- effects (swap, soft-queue toggle) must run once — act on the down
+            -- phase only. `down == false` is the up event; skip it. (A nil down
+            -- from a legacy path still runs, so nothing is lost there.)
+            if down == false then return end
             local d = getData()
 
             local swapMod  = d.swapMod or "ctrl"

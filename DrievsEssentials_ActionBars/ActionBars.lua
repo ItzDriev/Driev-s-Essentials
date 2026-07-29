@@ -358,7 +358,11 @@ local function buildButtonConfig(bar)
         hideElements        = { macro = false, hotkey = false, equipped = false, border = false },
         keyBoundTarget      = false,
         keyBoundClickButton = "Keybind",
-        clickOnDown         = false,
+        -- No clickOnDown here on purpose: LibActionButton registers every button
+        -- for both the down and up phase and lets the client's
+        -- ActionButtonUseKeyDown CVar decide which one fires, so the bars follow
+        -- that CVar (toggled under General → Input) — the same single switch the
+        -- trinket buttons obey. Forcing a phase here would break that.
         flyoutDirection     = d.flyout or "UP",
         outOfRangeColoring  = "button",   -- default: whole icon reddens out of range
     }

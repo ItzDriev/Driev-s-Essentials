@@ -55,7 +55,6 @@ addon.RegisterDefaults("trinkets", {
     displayButtonGap = 2,
     displayScale     = 1.0,
     menuOrderEnabled = false,
-    triggerOnKeyUp   = false,
     reverseClickSlots = false, -- swap left/right click targets: left = bottom slot, right = top slot
     elvuiSkinEnabled  = true,  -- auto-skin the Display/Bag Menu buttons when ElvUI/ShadowElvUI is loaded
     blockModCtrl     = false,
@@ -1774,21 +1773,16 @@ local function buildTrinketsPanel(parent)
     swapHint:SetTextColor(unpack(C.textDim))
     swapHint:SetWidth(340); swapHint:SetJustifyH("LEFT")
 
-    local keyUpCB = createCheckbox(displayPanel,
-        "Trigger keybind on key up (default: key down)", 340)
-    keyUpCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
-    keyUpCB.OnChange = function(_, checked)
-        local d = getTData(); if d then d.triggerOnKeyUp = checked end
-        if addon.Trinkets then addon.Trinkets.applyClickTrigger() end
-    end
-
     -- ── Keybind modifier blockers ──────────────────────────────────────────────
     -- Lets a trinket keybind share a physical key with an unrelated modified
     -- shortcut from outside the game (e.g. a Discord push-to-talk bound to
     -- Alt+NumpadPlus) — WoW itself has no binding registered for that modified
     -- combo, so it would otherwise just see NumpadPlus and fire the trinket.
+    -- (Key-up vs key-down triggering is a game-wide behaviour now — set under
+    -- Driev's Essentials → General → Input, which drives the client's
+    -- ActionButtonUseKeyDown CVar for trinkets and action bars alike.)
     local ctrlCB = createCheckbox(displayPanel, "Ignore trinket keybind while Ctrl is held", 340)
-    ctrlCB:SetPoint("TOPLEFT", keyUpCB, "BOTTOMLEFT", 0, -6)
+    ctrlCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
     ctrlCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.blockModCtrl = checked end
         if addon.Trinkets then addon.Trinkets.applyModifierBlockers() end
@@ -2391,7 +2385,7 @@ local function buildTrinketsPanel(parent)
         { watchdogCB }, { watchdogHint, indent = 20, h = 48 },
         { softQRow, gap = 12 }, { softQHint, h = 48 },
         { swapRow, gap = 12 }, { swapHint, h = 34 },
-        { keyUpCB, gap = 12 }, { ctrlCB, gap = 12 }, { altCB }, { shiftCB },
+        { ctrlCB, gap = 12 }, { altCB }, { shiftCB },
         { reverseClickCB, gap = 12 }, { elvuiSkinCB, gap = 12 },
     })
 
@@ -2419,7 +2413,6 @@ local function buildTrinketsPanel(parent)
         swapDD.Refresh()
         showBindCB:SetChecked(d.showBindings ~= false)
         truncBindCB:SetChecked(d.truncateBindings ~= false)
-        keyUpCB:SetChecked(d.triggerOnKeyUp or false)
         ctrlCB:SetChecked(d.blockModCtrl or false)
         altCB:SetChecked(d.blockModAlt or false)
         shiftCB:SetChecked(d.blockModShift or false)
