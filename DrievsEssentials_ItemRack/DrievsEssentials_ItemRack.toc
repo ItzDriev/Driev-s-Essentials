@@ -1,0 +1,16 @@
+## Interface: 11509
+## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Item Rack
+## Notes: Equipment sets, character-sheet slot menus and movable item buttons. An ItemRack-compatible gear manager. Requires Driev's Essentials.
+## Version: 1.0.0
+## Author: Driev
+## Dependencies: DrievsEssentials
+## OptionalDeps: Masque
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+## SavedVariablesPerCharacter: DrievItemRackDB
+
+ItemRack.lua
+ItemRackEquip.lua
+ItemRackEvents.lua
+ItemRackButtons.lua
+ItemRackSets.lua
+ItemRackUI.lua

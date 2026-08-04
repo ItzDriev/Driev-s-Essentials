@@ -22,6 +22,10 @@ addon.State = State
 -- ── tunables ──────────────────────────────────────────────────────────────────
 local SETTLE_DELAY = 0.8   -- seconds to wait after a zone event before trusting the API
 local MAX_LOG      = 300   -- rolling cap on persisted log entries
+-- Slack above MAX_LOG before trimming. Removing entry 1 on every write shifts
+-- the whole array down each time; letting it overshoot and then dropping the
+-- excess in one pass amortises that to a single shift per SLACK writes.
+local LOG_SLACK    = 100
 
 -- ── debug log ─────────────────────────────────────────────────────────────────
 -- Stored under DrievSettingsDB.debug so it survives /reload and relog.
@@ -37,7 +41,13 @@ local function dbg(msg)
     if not d or not d.enabled then return end
     local entry = format("|cffaaaaaa[%.2f]|r %s", GetTime(), msg)
     tinsert(d.log, entry)
-    if #d.log > MAX_LOG then tremove(d.log, 1) end
+    local n = #d.log
+    if n > MAX_LOG + LOG_SLACK then
+        -- Compact in place down to MAX_LOG, keeping the newest entries.
+        local drop = n - MAX_LOG
+        for i = 1, MAX_LOG do d.log[i] = d.log[i + drop] end
+        for i = MAX_LOG + 1, n do d.log[i] = nil end
+    end
 end
 
 function State.isDebugEnabled()
@@ -73,7 +83,9 @@ function State.printLog()
         print("|cfffb2c36Driev's Essentials|r debug log is empty.")
         return
     end
-    print(format("|cfffb2c36Driev's Essentials|r — debug log (%d / %d entries):", #d.log, MAX_LOG))
+    -- Plain count, not "n / MAX_LOG": the buffer is allowed to overshoot the cap
+    -- by up to LOG_SLACK between compactions, and "350 / 300" reads like a bug.
+    print(format("|cfffb2c36Driev's Essentials|r — debug log (%d entries):", #d.log))
     for _, line in ipairs(d.log) do
         print(line)
     end
@@ -88,18 +100,19 @@ local inCombat     = false
 -- ── settle timer (frame OnUpdate — no C_Timer dependency) ─────────────────────
 -- Pushing validateAt forward on repeated events means the last event in a burst
 -- wins: we always wait SETTLE_DELAY from the *most recent* trigger.
+--
+-- The handler is attached only while a validation is genuinely pending and
+-- detached again the instant it fires. It used to stay installed for the whole
+-- session, which meant running a script on every frame forever just to read a
+-- timestamp and return — the window it actually cares about is the sub-second
+-- settle after a zone change, which happens a handful of times per session.
 local validateAt = 0
-
-local function scheduleValidate(reason)
-    ready       = false
-    validateAt  = GetTime() + SETTLE_DELAY
-    dbg(format("SETTLE ARMED (+%.1fs) [%s]", SETTLE_DELAY, reason or "?"))
-end
-
 local timerFrame = CreateFrame("Frame")
-timerFrame:SetScript("OnUpdate", function()
-    if validateAt == 0 or GetTime() < validateAt then return end
+
+local function settleTick()
+    if GetTime() < validateAt then return end
     validateAt = 0
+    timerFrame:SetScript("OnUpdate", nil)
 
     -- Snapshot the API now that it should be stable.
     local inInst, iType = IsInInstance()
@@ -123,7 +136,14 @@ timerFrame:SetScript("OnUpdate", function()
     if addon.Raid      and addon.Raid.onStateReady      then addon.Raid.onStateReady()      end
     if addon.Particles and addon.Particles.onStateReady then addon.Particles.onStateReady() end
     if addon.TTK       and addon.TTK.onStateReady       then addon.TTK.onStateReady()       end
-end)
+end
+
+local function scheduleValidate(reason)
+    ready       = false
+    validateAt  = GetTime() + SETTLE_DELAY
+    timerFrame:SetScript("OnUpdate", settleTick)
+    dbg(format("SETTLE ARMED (+%.1fs) [%s]", SETTLE_DELAY, reason or "?"))
+end
 
 -- ── event handler ─────────────────────────────────────────────────────────────
 local eventFrame = CreateFrame("Frame")

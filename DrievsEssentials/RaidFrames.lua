@@ -405,7 +405,6 @@ addon.RaidFrames = {
     enterMoveMode    = enterMoveMode,
     leaveMoveMode    = leaveMoveMode,
     savePosition     = savePosition,
-    snapToContainer  = snapToContainer,
     applyAll         = applyAll,
     setScale         = setScale,
     minScale         = MIN_SCALE,

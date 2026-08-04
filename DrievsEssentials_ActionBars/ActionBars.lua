@@ -191,6 +191,10 @@ do
     -- hotkey text shows them. On by default so an existing keybind setup keeps
     -- working the moment the module is enabled.
     defaults.blizzBindings = true
+    -- Show Blizzard's decorative border / slot art on the stance & pet buttons.
+    -- Off by default (we strip it for a clean look); the "Blizzard Art" tab flips
+    -- it back on for players who prefer the stock button frames.
+    defaults.blizzardArt = false
     -- ── General (addon-wide) keybind-text settings, applied to any action bar
     -- whose per-bar `useGeneral` is on. ──
     -- false → whole button reddens when out of range (Blizzard default);
@@ -568,6 +572,39 @@ end
 -- Own secure buttons from Blizzard's StanceButtonTemplate (the same approach
 -- BT4 uses), driven by the shapeshift API. Blizzard's own stance bar is parked
 -- on the hidden frame so it can't fight us.
+-- Hides (or, when the "Blizzard Art" option is on, restores) Blizzard's decorative
+-- art on a StanceButtonTemplate button so by default only the icon (plus our
+-- checked/highlight) shows. Re-applied from updateStanceButton as well as at
+-- creation, since the template can re-populate these as forms change.
+--   • NormalTexture is the border ring — Masque re-textures it when skinning, so
+--     we only touch it ourselves when Masque is absent. Its original look is
+--     captured once so it can be put back if the option is turned on.
+--   • SlotBackground / SlotArt are 1.15.9 template additions Masque does NOT
+--     manage, so they are toggled either way.
+-- IconMask and any Border/highlight regions are deliberately left alone: blanking
+-- the IconMask makes the icon itself invisible, and those are Masque's to skin.
+local function stripStanceArt(btn)
+    local show = isReady() and getGlobalData().blizzardArt == true
+    local nt = btn:GetNormalTexture()
+    if nt and btn._artCap == nil then   -- remember the border's stock look once
+        btn._artCap = { atlas = nt.GetAtlas and nt:GetAtlas() or nil, tex = nt:GetTexture() }
+    end
+    if show then
+        if nt and not btn._masque then
+            local cap = btn._artCap
+            if cap and cap.atlas then nt:SetAtlas(cap.atlas)
+            elseif cap and cap.tex then nt:SetTexture(cap.tex) end
+            nt:SetAlpha(1); nt:Show()
+        end
+        if btn.SlotBackground then btn.SlotBackground:Show() end
+        if btn.SlotArt        then btn.SlotArt:Show()        end
+    else
+        if nt and not btn._masque then nt:SetTexture(nil); nt:SetAlpha(0); nt:Hide() end
+        if btn.SlotBackground then btn.SlotBackground:Hide() end
+        if btn.SlotArt        then btn.SlotArt:Hide()        end
+    end
+end
+
 local function updateStanceButton(btn)
     local id = btn:GetID()
     local texture, isActive, isCastable = GetShapeshiftFormInfo(id)
@@ -580,6 +617,7 @@ local function updateStanceButton(btn)
     if btn.icon then
         if isCastable then btn.icon:SetVertexColor(1, 1, 1) else btn.icon:SetVertexColor(0.4, 0.4, 0.4) end
     end
+    stripStanceArt(btn)   -- keep Blizzard art suppressed across form changes
 end
 
 local function createStanceButton(bar, id)
@@ -588,19 +626,22 @@ local function createStanceButton(bar, id)
     btn:SetID(id)
     btn.icon     = _G[name .. "Icon"]
     btn.cooldown = _G[name .. "Cooldown"]
-    local nt = btn:GetNormalTexture()
-    if nt then nt:SetTexture("") end
-    -- 1.15.9 modernized templates add SlotBackground/SlotArt regions that render
-    -- oversized when the button isn't Masque-skinned (see the same fix in the
-    -- Trinkets module). Nil-checked no-ops if this template lacks them.
-    if not bar.MasqueGroup then
-        if btn.SlotBackground then btn.SlotBackground:Hide() end
-        if btn.SlotArt        then btn.SlotArt:Hide()        end
-    end
+
+    -- Silence the template's own OnEvent (and unregister its events) so Blizzard's
+    -- StanceButton logic can't re-show its border/slot art on a later ACTIONBAR_* /
+    -- shapeshift event — the cause of the "Blizzard art around the stances stays
+    -- visible" reports. We drive icon/cooldown/checked ourselves (updateStanceButton
+    -- via bar._eventFrame) and casting stays on the secure OnClick, so the button
+    -- needs no events of its own. Same treatment the pet buttons already get.
+    btn:UnregisterAllEvents()
+    btn:SetScript("OnEvent", nil)
+
+    btn._masque = bar.MasqueGroup and true or false
     if bar.MasqueGroup then
         btn.MasqueButtonData = { Button = btn }
         bar.MasqueGroup:AddButton(btn, btn.MasqueButtonData, "Action")
     end
+    stripStanceArt(btn)
     return btn
 end
 
@@ -676,6 +717,15 @@ end
 -- SetAlpha (not Hide, which is protected in combat). The whole bar's visibility
 -- follows pet presence through a secure [pet]show;hide state driver so it works
 -- even when a pet is summoned mid-combat (see applyVisibility).
+-- Toggles Blizzard's slot art on a pet button per the "Blizzard Art" option
+-- (hidden by default). Masque-skinned buttons are left to Masque.
+local function stripPetArt(btn)
+    if btn._masque then return end
+    local show = isReady() and getGlobalData().blizzardArt == true
+    if btn.SlotBackground then btn.SlotBackground:SetShown(show) end
+    if btn.SlotArt        then btn.SlotArt:SetShown(show) end
+end
+
 local function updatePetButton(btn)
     local id = btn.id
     local name, texture, isToken, isActive, autoCastAllowed, autoCastEnabled = GetPetActionInfo(id)
@@ -700,6 +750,7 @@ local function updatePetButton(btn)
         local start, duration, enable = GetPetActionCooldown(id)
         CooldownFrame_Set(btn.cooldown, start, duration, enable)
     end
+    stripPetArt(btn)   -- keep the art state in sync across pet changes
 end
 
 local function createPetButton(bar, id)
@@ -716,12 +767,10 @@ local function createPetButton(bar, id)
     -- We drive updates from our own event frame; silence the template's own.
     btn:UnregisterAllEvents()
     btn:SetScript("OnEvent", nil)
+    btn._masque = bar.MasqueGroup and true or false
     -- 1.15.9 modernized templates add SlotBackground/SlotArt that render oversized
-    -- without Masque (see the Trinkets module). Nil-checked no-ops if absent.
-    if not bar.MasqueGroup then
-        if btn.SlotBackground then btn.SlotBackground:Hide() end
-        if btn.SlotArt        then btn.SlotArt:Hide()        end
-    end
+    -- without Masque (see the Trinkets module); hidden unless "Blizzard Art" is on.
+    stripPetArt(btn)
     -- Pick up / drop pet actions by dragging (out of combat only).
     btn:SetScript("OnDragStart", function(self)
         if not InCombatLockdown() then PickupPetAction(self.id); updatePetButton(self) end
@@ -1111,6 +1160,12 @@ end
 -- lets the hover be detected in the first place. `_moFrame` is a plain (non-
 -- secure) driver frame that only runs its OnUpdate while mouseover is on.
 local MO_FADE_RATE = 4   -- alpha per second while fading (~0.25s for a full fade)
+-- Below 1/255, so a difference this small can't be rendered. Used to decide the
+-- bar has finished settling on its target, after which the driver stops writing
+-- alpha entirely (see applyMouseover) instead of re-setting the same value every
+-- frame. Comparing with an epsilon rather than `==` keeps that from being
+-- defeated by float drift through the SetAlpha/GetAlpha round-trip.
+local ALPHA_EPSILON = 0.003
 
 local function barHovered(bar)
     if MouseIsOver(bar.header) then return true end
@@ -1138,17 +1193,38 @@ local function applyMouseover(bar)
     local d = getData(bar.def.key)
     if d.mouseover then
         if not bar._moFrame then bar._moFrame = CreateFrame("Frame") end
+        local header = bar.header
+        local key    = bar.def.key
         bar._moFrame:SetScript("OnUpdate", function(_, elapsed)
-            local target = mouseoverTarget(bar)
-            if getData(bar.def.key).mouseoverFade then
-                local cur = bar.header:GetAlpha()
+            -- One getData per tick, not two. It returns the live settings table
+            -- rather than a copy, so reading fields off it stays current without
+            -- re-looking it up — and this runs every frame for every mouseover
+            -- bar, of which there can be a dozen or more.
+            local cfg    = getData(key)
+            -- cfg.mouseover is necessarily true here: the enclosing branch
+            -- checked it, and any change to it re-runs applyMouseover, which
+            -- detaches this script.
+            local full   = cfg.alpha or 1
+            local target = barHovered(bar) and full or 0
+            local cur    = header:GetAlpha()
+
+            -- Settled: snap off any residual drift once, then do nothing on
+            -- every subsequent frame. SetAlpha walks the whole child button
+            -- tree, so not calling it is the entire point — the steady state
+            -- (cursor away, bar parked at 0) is the overwhelmingly common one.
+            if math.abs(cur - target) < ALPHA_EPSILON then
+                if cur ~= target then header:SetAlpha(target) end
+                return
+            end
+
+            if cfg.mouseoverFade then
                 if cur < target then
-                    bar.header:SetAlpha(math.min(target, cur + MO_FADE_RATE * elapsed))
-                elseif cur > target then
-                    bar.header:SetAlpha(math.max(target, cur - MO_FADE_RATE * elapsed))
+                    header:SetAlpha(math.min(target, cur + MO_FADE_RATE * elapsed))
+                else
+                    header:SetAlpha(math.max(target, cur - MO_FADE_RATE * elapsed))
                 end
             else
-                bar.header:SetAlpha(target)
+                header:SetAlpha(target)
             end
         end)
         -- Snap to the current target now so there's no fade-from-full flash when
@@ -1447,6 +1523,14 @@ local function applyActionBindings()
     end
 end
 
+-- Button art (stance + pet) — the blizzardArt toggle.
+local function applyButtonArt()
+    local s = bars["stance"]
+    if s then for _, b in ipairs(s._pool or s.buttons) do stripStanceArt(b) end end
+    local p = bars["pet"]
+    if p then for _, b in ipairs(p.buttons) do stripPetArt(b) end end
+end
+
 -- ── Refresh / lifecycle ──────────────────────────────────────────────────────
 local function refreshAll()
     if not isReady() then return end
@@ -1486,9 +1570,6 @@ addon.ActionBars = {
     getData         = getData,
     refresh         = refreshAll,
     applyBar        = guarded(applyBar),
-    -- Button count feeds the override bindings (hidden buttons don't get keys),
-    -- so a layout change has to re-derive them too.
-    applyLayout     = guarded(function(b) layoutBar(b); reassignActionBindings(b) end),
     applyScale      = guarded(applyScale),
     applyAlpha      = function(key) local b = bars[key]; if b then applyAlpha(b) end end,
     -- applyMouseover is combat-safe (SetScript/SetAlpha only), so it's ungated
@@ -1537,6 +1618,12 @@ addon.ActionBars = {
         getGlobalData().blizzBindings = v and true or false
         applyActionButtonConfig()
         applyActionBindings()
+    end,
+    -- "Blizzard Art" tab: stock border/slot art on the Stance and Pet buttons.
+    getBlizzardArt = function() return getGlobalData().blizzardArt == true end,
+    setBlizzardArt = function(v)
+        getGlobalData().blizzardArt = v and true or false
+        applyButtonArt()
     end,
     getDragModifier   = function() return getGlobalData().dragModifier or "SHIFT" end,
     setDragModifier   = function(v)

@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.1.5"
+addon.version = "1.2.0"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras. WeakAuras.ScanEvents
@@ -384,11 +384,23 @@ function addon.RefreshAllModules()
         if addon.Trinkets.applySoftQueueMod   then addon.Trinkets.applySoftQueueMod() end
         if addon.Trinkets.populateQueueSorts  then addon.Trinkets.populateQueueSorts() end
     end
+    -- Item Rack's buttons are frames we own outright and its whole layout is
+    -- re-derived from settings, so a profile switch can be applied live.
+    if addon.ItemRack and addon.ItemRack.Refresh then addon.ItemRack.Refresh() end
     if addon.Particles and addon.Particles.refresh then addon.Particles.refresh() end
     if addon.Tooltip  and addon.Tooltip.refresh  then addon.Tooltip.refresh() end
     if addon.Raid      and addon.Raid.refresh      then addon.Raid.refresh() end
     if addon.Minimap   and addon.Minimap.refresh   then addon.Minimap.refresh() end
     if addon.ActionBars and addon.ActionBars.refresh then addon.ActionBars.refresh() end
+    -- DataTexts bars are frames we own outright, and rebuildAll re-derives all of
+    -- them from settings, so unlike the rest of the Chat module (see the one-way
+    -- Blizzard changes noted above promptReloadIfNeeded) they genuinely can be
+    -- re-applied live. Worth doing rather than leaving to the reload prompt:
+    -- settings.dataTexts is a sibling of settings.chat, so it isn't one of the
+    -- subtrees that prompt compares, and without this a profile differing only in
+    -- its datatexts got neither a refresh nor a reload request. rebuildAll also
+    -- re-narrows which events and polls are live, so this keeps those honest too.
+    if addon.DataTexts and addon.DataTexts.refresh then addon.DataTexts.refresh() end
     -- Any currently-visible settings sub-panel refreshes its controls via its
     -- own OnShow handler; toggling the window's shown state cascades OnShow
     -- to whatever's actually on screen without needing a bespoke hook per tab.
@@ -543,7 +555,9 @@ local function deserialize(str)
     end
 
     local ok, result = pcall(readValue)
-    if not ok then return nil, "Corrupt or invalid profile string." end
+    -- Deliberately not "…profile string": the codec is shared with module data
+    -- (Item Rack's sets), so the message can't name one of its callers.
+    if not ok then return nil, "Corrupt or unreadable string." end
     return result
 end
 
@@ -591,14 +605,35 @@ end
 
 local EXPORT_PREFIX = "DrievEssentials1:"
 
+-- The codec above isn't profile-specific, so module addons with their own
+-- copy-pasteable data (Item Rack's per-character sets) share it rather than
+-- rolling a second one. `prefix` tags what kind of data the string carries, so
+-- pasting a set string into the profile box — or the other way round — is
+-- rejected outright instead of half-applied.
+function addon.EncodeTable(prefix, tbl)
+    local ok, payload = pcall(serialize, tbl)
+    if not ok then return nil, "Could not encode this data." end
+    return prefix .. base64Encode(payload)
+end
+
+function addon.DecodeTable(prefix, str)
+    str = str and str:match("^%s*(.-)%s*$") or ""
+    if str:sub(1, #prefix) ~= prefix then
+        return nil, "That doesn't look like the right kind of Driev's Essentials string."
+    end
+    local data, err = deserialize(base64Decode(str:sub(#prefix + 1)))
+    if type(data) ~= "table" then return nil, err or "Corrupt or invalid string." end
+    return data
+end
+
 -- Returns an opaque, copy-pasteable string encoding the named profile, or
 -- nil + an error message.
 function addon.ExportProfile(name)
     local prof = DrievSettingsDB.profiles[name]
     if not prof then return nil, "Profile not found." end
-    local ok, payload = pcall(serialize, prof)
-    if not ok then return nil, "Could not export this profile." end
-    return EXPORT_PREFIX .. base64Encode(payload)
+    local str = addon.EncodeTable(EXPORT_PREFIX, prof)
+    if not str then return nil, "Could not export this profile." end
+    return str
 end
 
 -- Creates a new profile called `name` from a string produced by ExportProfile.
@@ -608,14 +643,8 @@ function addon.ImportProfile(name, str)
     if name == "" then return nil, "Enter a profile name." end
     if DrievSettingsDB.profiles[name] then return nil, "A profile with that name already exists." end
 
-    str = str and str:match("^%s*(.-)%s*$") or ""
-    if str:sub(1, #EXPORT_PREFIX) ~= EXPORT_PREFIX then
-        return nil, "That doesn't look like a valid profile string."
-    end
-
-    local payload = base64Decode(str:sub(#EXPORT_PREFIX + 1))
-    local data, err = deserialize(payload)
-    if type(data) ~= "table" then
+    local data, err = addon.DecodeTable(EXPORT_PREFIX, str)
+    if not data then
         return nil, err or "That doesn't look like a valid profile string."
     end
 

@@ -46,7 +46,15 @@ function addon.CreateMinimapButton()
     button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 
     button:SetScript("OnClick", function(_, btnKey)
-        if btnKey == "RightButton" or btnKey == "LeftButton" then
+        if btnKey == "RightButton" then
+            -- Item Rack ships as an optional sub-addon, so only offer its editor
+            -- when that module is actually loaded.
+            if addon.ItemRack and addon.ItemRack.ToggleSetEditor then
+                addon.ItemRack.ToggleSetEditor()
+            else
+                addon.ToggleUI()
+            end
+        else
             addon.ToggleUI()
         end
     end)
@@ -61,7 +69,10 @@ function addon.CreateMinimapButton()
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine("|cfffb2c36Driev's|r |cffffffffEssentials|r")
-        GameTooltip:AddLine("|cffaaaaaaClick:|r Open settings", 1, 1, 1)
+        GameTooltip:AddLine("|cffaaaaaaLeft-click:|r Open settings", 1, 1, 1)
+        if addon.ItemRack and addon.ItemRack.ToggleSetEditor then
+            GameTooltip:AddLine("|cffaaaaaaRight-click:|r Open Item Rack sets", 1, 1, 1)
+        end
         GameTooltip:AddLine("|cffaaaaaaDrag:|r Move button", 1, 1, 1)
         GameTooltip:Show()
     end)

@@ -87,9 +87,15 @@ local function applyPosition()
     end
 end
 
+-- Defined further down (it needs eventFrame); applyVisibility is the single
+-- chokepoint every enable/disable path already goes through, so the UNIT_HEALTH
+-- registration is kept in sync from here.
+local syncHealthEvent
+
 local function applyVisibility()
     local f = getOrCreate()
     local s = ttkSettings()
+    if syncHealthEvent then syncHealthEvent() end
     if not s or not s.enabled then
         f:Hide()
         return
@@ -222,11 +228,37 @@ end
 
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-eventFrame:RegisterEvent("UNIT_HEALTH")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("ENCOUNTER_START")
 eventFrame:RegisterEvent("ENCOUNTER_END")
-eventFrame:SetScript("OnEvent", function(_, event, ...)
+
+-- UNIT_HEALTH is by far the highest-frequency event this module could listen to
+-- (it fires for every party/raid member and every visible nameplate), so it gets
+-- two layers of filtering that both live outside our Lua:
+--
+--   • RegisterUnitEvent restricts it to the "target" unit in C, so the other
+--     units never reach our handler at all. This replaces an `if unit ==
+--     "target"` test that used to run on every single fire.
+--   • It is only registered at all while the feature is switched on. updateTTK
+--     already no-ops when disabled, but that no-op still cost a Lua call per
+--     fire for users who never turned Time to Kill on.
+--
+-- syncHealthEvent is driven from applyVisibility, which every enable/disable
+-- path already calls.
+local healthRegistered = false
+function syncHealthEvent()   -- forward-declared local, see above
+    local s = ttkSettings()
+    local want = (s and s.enabled) and true or false
+    if want == healthRegistered then return end
+    healthRegistered = want
+    if want then
+        eventFrame:RegisterUnitEvent("UNIT_HEALTH", "target")
+    else
+        eventFrame:UnregisterEvent("UNIT_HEALTH")
+    end
+end
+
+eventFrame:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_ENTERING_WORLD" then
         applyFont()
         applyPosition()
@@ -234,8 +266,8 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         env.health0, env.time0, env.mhealth, env.mtime = nil, nil, nil, nil
 
     elseif event == "UNIT_HEALTH" then
-        local unit = ...
-        if unit == "target" then updateTTK() end
+        -- Only ever "target" — see RegisterUnitEvent above.
+        updateTTK()
 
     elseif event == "PLAYER_TARGET_CHANGED" then
         env.health0, env.time0, env.mhealth, env.mtime = nil, nil, nil, nil

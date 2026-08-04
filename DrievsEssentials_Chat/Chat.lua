@@ -29,13 +29,16 @@ addon.RegisterDefaults("chat", {
         -- fixed borderColor above is ignored.
         useChannelColor = true,
         height          = 24,
-        -- Width is opt-in: leaving it off keeps Blizzard's own anchoring, where
-        -- the box spans the full width of the chat frame.
-        customWidth     = false,
-        width           = 400,
     },
+    -- Blizzard's chatStyle CVar: "classic" opens the edit box on Enter and
+    -- closes it again, "im" leaves it on screen permanently. Defaulted here
+    -- because it is NOT part of any addon profile — it lives in the client's
+    -- per-WoW-account config, which is why two accounts running an identical
+    -- profile can still disagree about whether the edit box ever goes away.
+    chatStyle = "classic",
     copyArrow       = true,        -- clickable arrow at the start of each line
     copyButton      = true,        -- top-right button opening a copyable chat-log window
+    linkifyURLs     = true,        -- outline http(s) links and make them clickable-to-copy
     timestamps      = true,        -- [15:25:46] in front of each message
     timestampFormat = "%H:%M:%S",
     -- Proportional fonts don't give every digit the same advance width, so two
@@ -377,15 +380,8 @@ local function styleEditBox(eb)
     end
 
     -- Blizzard anchors the edit box TOPLEFT+TOPRIGHT to the chat frame, so its
-    -- height is always free to set. A custom WIDTH means dropping the right
-    -- anchor, so it's opt-in and re-asserted here rather than done once.
+    -- height is always free to set; width is left to that anchoring.
     eb:SetHeight(s.height or 24)
-    if s.customWidth then
-        local cf = eb:GetParent()
-        eb:ClearAllPoints()
-        eb:SetPoint("TOPLEFT", cf, "BOTTOMLEFT", 0, -1)
-        eb:SetWidth(s.width or 400)
-    end
 
     applyTextInsets(eb)
     ensureCharCount(eb)
@@ -665,6 +661,55 @@ local function applySticky()
     end
 end
 
+-- ── Chat style ──────────────────────────────────────────────────────────────
+-- Blizzard's chatStyle CVar, surfaced as a normal setting. In "classic" the
+-- edit box is opened by Enter and hidden again once the message is sent or
+-- Escape is pressed; in "im" it is handed to ChatEdit_SetLastActiveWindow and
+-- simply stays on screen for good.
+--
+-- The CVar is stored per WoW account (config-cache.wtf), not in the profile, so
+-- a permanently-visible edit box on one account and not another is this and not
+-- the skin. Only written while the module is on, and left as-is when it's off:
+-- the pre-existing value isn't recorded anywhere, so there's nothing to restore.
+local pendingStyle = false
+
+local function applyChatStyle()
+    local d = getData()
+    if d.enabled == false then return end
+
+    local want = (d.chatStyle == "im") and "im" or "classic"
+    -- refresh() runs off half a dozen Blizzard hooks; skipping the write when
+    -- the CVar already agrees keeps this free in the common case.
+    if GetCVar("chatStyle") == want then return end
+
+    -- SetCVar throws ADDON_ACTION_BLOCKED during combat lockdown; retry once
+    -- combat drops, same as Raid.lua does with its CVars.
+    if InCombatLockdown() then
+        pendingStyle = true
+        return
+    end
+    pendingStyle = false
+    SetCVar("chatStyle", want)
+
+    -- The CVar only decides what happens the next time a box is opened or
+    -- closed, so whatever is on screen right now has to be dealt with here or
+    -- switching appears to do nothing until the next /reload.
+    local eb = (ChatEdit_GetLastActiveWindow and ChatEdit_GetLastActiveWindow())
+            or (_G.ChatFrame1 and (_G.ChatFrame1.editBox or _G.ChatFrame1EditBox))
+    if not eb then return end
+
+    if want == "im" then
+        eb:Show()
+        -- A box shown without being activated has no channel prompt on it;
+        -- this fills it in, and re-tints our border through the same hook.
+        if eb.UpdateHeader then eb:UpdateHeader()
+        elseif ChatEdit_UpdateHeader then ChatEdit_UpdateHeader(eb) end
+    elseif not eb:HasFocus() then
+        -- Mid-message, leave it alone: Enter or Escape closes it from here on.
+        eb:Hide()
+    end
+end
+
 -- ── Message decorations: copy arrow and timestamps ──────────────────────────
 -- Both are prepended to the message text itself rather than drawn as separate
 -- frames. For the arrow that's ElvUI's approach and it matters: chat lines are
@@ -683,6 +728,11 @@ local ARROW_TEX    = "Interface\\ChatFrame\\ChatFrameExpandArrow"
 local ARROW_SIZE   = 12
 local LINK_PREFIX  = "dcpl" -- deliberately not ElvUI's "cpl", so both can coexist
 local STAMP_COLOR  = "|cff8f8f8f"
+-- Separate prefix from LINK_PREFIX above: that one carries a chatID (a
+-- position to look a line up from later), this one carries the URL itself
+-- directly, since there's nothing else to look up.
+local URL_LINK_PREFIX = "dcurl"
+local URL_COLOR       = "|cff66bbff"
 
 local function stripEscapes(s)
     if not s then return "" end
@@ -694,13 +744,19 @@ local function stripEscapes(s)
     return s
 end
 
--- Same as stripEscapes but leaves |c..|r colour codes alone. EditBoxes render
--- those the same way chat frames do, so the copy window can show each line in
--- its real chat colour. Links and textures still collapse — a raw |H..|h blob
--- or an inline icon isn't meaningful once copied out as plain text.
-local function stripEscapesKeepColor(s)
+-- For the copy window: colour codes are kept (EditBoxes render |c..|r the
+-- same way chat frames do) and, unlike stripEscapes, hyperlinks (|H..|h
+-- label |h) are left INTACT rather than collapsed to their plain label - the
+-- copy window's edit box has hyperlinks enabled (see getCopyWindow), so both
+-- native links (items, quests, players...) and this addon's own URL links
+-- render clickable there exactly as they do in the live chat.
+local function stripForCopyWindow(s)
     if not s then return "" end
-    s = s:gsub("|H.-|h(.-)|h", "%1")
+    -- Battle.net presence names are an opaque token that can't be rendered or
+    -- clicked meaningfully outside their own frame.
+    s = s:gsub("|K.-|k", "")
+    -- The arrow icon only means something anchored to a specific chat line;
+    -- floating alone in this window it's just noise.
     s = s:gsub("|T.-|t", "")
     s = s:gsub("|A.-|a", "")
     return s
@@ -716,6 +772,24 @@ end
 -- turned back into plain text, so those lines aren't copyable.
 local function messageIsProtected(msg)
     return msg and msg:find("|K", 1, true) ~= nil
+end
+
+-- ── Plain-URL detection ─────────────────────────────────────────────────────
+-- Chat doesn't linkify raw URLs on its own. Each http(s) URL found gets
+-- wrapped as a custom hyperlink type - same interception mechanism as the
+-- copy-arrow above (ItemRefTooltip.SetHyperlink, see hookItemRef), just a
+-- different prefix - so it reads as "[url]" and clicking it copies the bare
+-- URL into the edit box the same way clicking the arrow copies a whole line.
+local URL_PATTERN = "https?://[%w%-%._~:/?#%[%]@!$&'()*+,;=%%]+"
+
+local function linkifyURLs(msg)
+    return (msg:gsub(URL_PATTERN, function(url)
+        -- A trailing period/comma/etc. almost always belongs to the sentence,
+        -- not the URL - left attached, it'd be treated as part of the link
+        -- and copied along with it.
+        local core, trail = url:match("^(.-)([%.,;:!?]*)$")
+        return string.format("|H%s:%s|h%s[%s]|r|h%s", URL_LINK_PREFIX, core, URL_COLOR, core, trail)
+    end))
 end
 
 -- ── Equal-width timestamps ──────────────────────────────────────────────────
@@ -799,6 +873,25 @@ local function padStamp(cf, format, text)
     return text .. string.rep(" ", n)
 end
 
+-- Drops text into the edit box and selects it immediately, so Ctrl+C copies
+-- it with no extra click - used by both the copy-arrow and the URL link
+-- below. cf is whichever chat frame ChatFrame_OpenChat actually ends up
+-- opening (its own fallback when none is passed), replicated here so the
+-- right EditBox gets found afterward.
+local function openChatWithText(text, cf)
+    if not ChatFrame_OpenChat then return end
+    ChatFrame_OpenChat(text, cf)
+    local target = cf or SELECTED_CHAT_FRAME or DEFAULT_CHAT_FRAME
+    local eb = target and target.editBox
+    if not eb then return end
+    -- Deferred a frame: ChatFrame_OpenChat's own SetFocus() (and whatever
+    -- else runs later in the hyperlink-click call chain that led here, e.g.
+    -- ItemRefTooltip:Hide() right after this returns) can still reset the
+    -- cursor/selection if HighlightText() is called immediately - same
+    -- reason the copy window below defers its own post-open focus/highlight.
+    C_Timer.After(0, function() eb:HighlightText() end)
+end
+
 -- Resolves the clicked arrow back to its own line and loads that line's text
 -- into the edit box. The line index comes from the frame's own hit-testing
 -- rather than from the link, because a message's index shifts as new lines
@@ -819,7 +912,7 @@ local function copyLineAtCursor(data)
 
     msg = stripTimestamp(stripEscapes(msg))
     if msg == "" then return end
-    if ChatFrame_OpenChat then ChatFrame_OpenChat(msg) end
+    openChatWithText(msg)
 end
 
 -- ── Copy window ──────────────────────────────────────────────────────────────
@@ -828,12 +921,26 @@ end
 -- is captured per frame from the AddMessage hook (a capped, session-only ring
 -- buffer — not persisted), so nothing is stored on disk.
 local MAX_COPY_LOG = 500
+-- How far the buffer is allowed to overshoot MAX_COPY_LOG before it's compacted.
+-- table.remove(log, 1) trims in the obvious way but shifts all 500 entries down
+-- on every single call — and this runs for every line of chat, forever, which in
+-- a busy city or a raid is a lot of copying to keep a buffer the user may never
+-- open. Overshooting and then dropping the excess in one pass amortises it to
+-- one shift per COPY_LOG_SLACK messages. Stays a plain array either way, so
+-- openCopyWindow's ipairs walk is unaffected.
+local COPY_LOG_SLACK = 100
 
 local function pushCopyLog(cf, msg)
     local log = cf.__drievCopyLog
     if not log then log = {}; cf.__drievCopyLog = log end
-    log[#log + 1] = msg
-    if #log > MAX_COPY_LOG then table.remove(log, 1) end
+    local n = #log + 1
+    log[n] = msg
+    if n > MAX_COPY_LOG + COPY_LOG_SLACK then
+        -- Keep the newest MAX_COPY_LOG entries, discard the oldest.
+        local drop = n - MAX_COPY_LOG
+        for i = 1, MAX_COPY_LOG do log[i] = log[i + drop] end
+        for i = MAX_COPY_LOG + 1, n do log[i] = nil end
+    end
 end
 
 local copyWindow
@@ -888,6 +995,11 @@ local function getCopyWindow()
     eb:SetFontObject("ChatFontNormal")
     eb:SetWidth(520)
     eb:EnableMouse(true)
+    -- Lets a click on a |H..|h hyperlink in the text (an item/quest/player
+    -- link, or one of this addon's own URL links) route through the normal
+    -- SetItemRef dispatch instead of just moving the cursor - guarded since
+    -- it's a newer API and may not exist on every client.
+    if eb.SetHyperlinksEnabled then eb:SetHyperlinksEnabled(true) end
     eb:SetScript("OnEscapePressed", function() f:Hide() end)
     scroll:SetScrollChild(eb)
 
@@ -897,19 +1009,44 @@ local function getCopyWindow()
     return f
 end
 
+-- WoW's EditBox has an undocumented ceiling on how much text SetText can
+-- actually render - past it, the box has been observed to just come up
+-- blank rather than erroring or truncating cleanly. MAX_COPY_LOG caps line
+-- COUNT, but 500 lines of raid warnings, long item/quest links, or addon
+-- comm spam can still add up to well past that ceiling, which is exactly
+-- what made the window "sometimes just be empty" on busier chat frames.
+-- Trimming from the oldest end keeps the most recent (most useful) history
+-- and stays safely under it every time.
+local MAX_COPY_CHARS = 8000
+
 local function openCopyWindow(cf)
     local f = getCopyWindow()
     local log = cf and cf.__drievCopyLog
+    -- pushCopyLog captures the raw, pre-decoration line (see hookAddMessage),
+    -- so URLs still need linkifying here to show up as clickable links same
+    -- as in the live chat - native hyperlinks (items, quests, players...)
+    -- are already part of that raw text and need no extra work.
+    local doLinkify = not isReady() or getData().linkifyURLs ~= false
     local lines = {}
     if log then
         for _, m in ipairs(log) do
-            -- Links collapse to their label and textures drop, but colour codes
-            -- stay so the window reads in the same colours as the chat itself.
-            local clean = stripEscapesKeepColor(m)
+            local clean = doLinkify and linkifyURLs(m) or m
+            clean = stripForCopyWindow(clean)
             if clean ~= "" then lines[#lines + 1] = clean end
         end
     end
-    f.editBox:SetText(table.concat(lines, "\n"))
+
+    local text = table.concat(lines, "\n")
+    if #text > MAX_COPY_CHARS then
+        text = text:sub(#text - MAX_COPY_CHARS + 1)
+        -- The cut almost certainly landed mid-line; drop that leftover
+        -- fragment so the window opens on a clean line instead of a
+        -- half-chopped one.
+        local firstNL = text:find("\n")
+        if firstNL then text = text:sub(firstNL + 1) end
+    end
+
+    f.editBox:SetText(text)
     f:Show()
     f:Raise()
     -- Scroll to the newest lines and pre-select everything, so Ctrl+C grabs the
@@ -954,13 +1091,19 @@ local function hookAddMessage(cf)
         if type(msg) == "string" and isReady() then
             local d = getData()
             -- Skip blanks, and never decorate a line twice (chat history
-            -- replays re-add lines that already carry an arrow).
+            -- replays re-add lines that already carry an arrow and/or a
+            -- linkified URL).
             if d.enabled ~= false
                and not msg:match("^%s*$")
-               and not msg:find("|H" .. LINK_PREFIX .. ":", 1, true) then
+               and not msg:find("|H" .. LINK_PREFIX .. ":", 1, true)
+               and not msg:find("|H" .. URL_LINK_PREFIX .. ":", 1, true) then
 
                 -- Capture the raw line (pre-decoration) for the copy window.
                 if d.copyButton ~= false then pushCopyLog(self, msg) end
+
+                if d.linkifyURLs ~= false then
+                    msg = linkifyURLs(msg)
+                end
 
                 if d.timestamps then
                     local format = d.timestampFormat or "%H:%M:%S"
@@ -984,7 +1127,7 @@ local function hookAddMessage(cf)
 end
 
 -- Clicking any chat hyperlink routes through ItemRefTooltip:SetHyperlink.
--- Intercept only our own prefix; everything else (items, quests, achievements)
+-- Intercept only our own prefixes; everything else (items, quests, achievements)
 -- passes straight through untouched.
 local hookedItemRef = false
 local function hookItemRef()
@@ -998,6 +1141,15 @@ local function hookItemRef()
             -- Blizzard's SetItemRef shows the tooltip frame before dispatching
             -- an unrecognised link type; without this an empty tooltip is left
             -- hanging on screen after every copy.
+            self:Hide()
+            return
+        end
+        if type(data) == "string" and data:sub(1, #URL_LINK_PREFIX + 1) == URL_LINK_PREFIX .. ":" then
+            -- The URL is embedded directly in the link data (nothing to look
+            -- up, unlike the line-copy arrow above), so it's just a prefix
+            -- strip rather than a cursor/line lookup.
+            local url = data:sub(#URL_LINK_PREFIX + 2)
+            if url ~= "" then openChatWithText(url) end
             self:Hide()
             return
         end
@@ -1015,6 +1167,7 @@ local function refresh()
         hideSharedButtons()
     end
     applySticky()
+    applyChatStyle()
 
     eachChatFrame(function(cf, i)
         if on and d.hideButtons ~= false then
@@ -1140,10 +1293,14 @@ end
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("UPDATE_FLOATING_CHAT_WINDOWS")
+f:RegisterEvent("PLAYER_REGEN_ENABLED")
 f:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LOGIN" then
         init()
         f:UnregisterEvent("PLAYER_LOGIN")
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        -- Only the CVar can be deferred; the rest of refresh() already ran.
+        if pendingStyle then applyChatStyle() end
     else
         refresh()
     end

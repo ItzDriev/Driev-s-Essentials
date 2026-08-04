@@ -101,6 +101,16 @@ function addon.HideBlizzardActionBars()
     -- way and covers a rename between clients.
     hideBarFrame(_G.StanceBarFrame,      true)
     hideBarFrame(_G.ShapeshiftBarFrame,  true)
+    -- Same story as MainActionBar above: 1.15.9's Edit Mode moved the stance bar's
+    -- actual system frame off the legacy StanceBarFrame/ShapeshiftBarFrame onto a
+    -- separate "StanceBar" frame (inherits an EditMode*SystemTemplate, has its own
+    -- .system/.Selection). We already park the stance buttons on the hidden frame,
+    -- so without hiding this too, Edit Mode still shows StanceBar's own decorative
+    -- BackgroundArtLeft/BackgroundArtRight border art with nothing behind it —
+    -- reported as Blizzard stance-bar art getting stuck on screen after toggling
+    -- Blizzard's Edit Mode (other addons don't show this because they already hide
+    -- this same frame as part of their own takeover).
+    hideBarFrame(_G.StanceBar,           true)
     hideBarFrame(_G.PetActionBarFrame,   true)
     hideBarFrame(_G.PetActionBar,        true)
     -- Same story as MainActionBar: BagsBar inherits EditModeBagsSystemTemplate,

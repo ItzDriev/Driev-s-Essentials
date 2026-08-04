@@ -28,13 +28,20 @@ local flatButton      = W.flatButton
 -- simply leaves the (harmless) saved values untouched.
 addon.RegisterDefaults("particles", { enabled = false, classes = { WARRIOR = true } })
 
+-- Seconds a boss with no built-in linger starts at once the user ticks its
+-- linger box. Bosses that DO have one (boss.linger in core's Raids.lua) seed
+-- from that instead, so the old hardcoded timers survive untouched.
+local DEFAULT_LINGER_SECONDS = 10
+local MAX_LINGER_SECONDS     = 120
+
 -- Lazy: only writes into SavedVariables when the panel is actually built.
 -- On first init for a raid, pre-checks any boss with `default = true` (the
--- bosses that were hardcoded in the original WeakAura's encounter list).
--- `d.bosses` is healed separately from `d` itself (rather than only on fresh
--- creation) since older or imported profile data can have a particles entry
--- for a raid with no `bosses` sub-table at all — without this, indexing
--- data.bosses in buildRaidPanel below would error for that raid.
+-- bosses that were hardcoded in the original WeakAura's encounter list) and
+-- pre-arms linger for any boss with a built-in `linger` duration.
+-- `d.bosses` / `d.linger` / `d.lingerSecs` are healed separately from `d`
+-- itself (rather than only on fresh creation) since older or imported profile
+-- data can have a particles entry for a raid with no such sub-table at all —
+-- without this, indexing them in buildRaidPanel below would error for that raid.
 local function particlesData(raid)
     addon.db.settings.particles = addon.db.settings.particles or {}
     local d = addon.db.settings.particles[raid.key]
@@ -48,7 +55,22 @@ local function particlesData(raid)
             if boss.default then d.bosses[boss.name] = true end
         end
     end
+    if not d.linger then
+        d.linger, d.lingerSecs = {}, {}
+        for _, boss in ipairs(raid.bosses) do
+            if boss.linger then
+                d.linger[boss.name]     = true
+                d.lingerSecs[boss.name] = boss.linger
+            end
+        end
+    end
+    d.lingerSecs = d.lingerSecs or {}
     return d
+end
+
+local function lingerSeconds(raid, boss)
+    local secs = tonumber(particlesData(raid).lingerSecs[boss.name])
+    return secs or boss.linger or DEFAULT_LINGER_SECONDS
 end
 
 -- Boss-name colours per raid "wing" (Naxx). Bosses with no wing use the default
@@ -86,22 +108,34 @@ local function buildRaidPanel(parent, raid, onEnableChanged)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", headline, "BOTTOMLEFT", 0, -4)
-    desc:SetText("Selected bosses keep particle effects enabled during their encounter (raid baseline is off).")
+    desc:SetWidth(560); desc:SetJustifyH("LEFT")
+    desc:SetText("Selected bosses keep particle effects enabled during their encounter (raid baseline is off). Linger keeps them on for a few extra seconds after the encounter ends, for lingering ground effects (Viscidus slime, Ouro residue, etc).")
     desc:SetTextColor(unpack(C.textGrey))
 
-    -- Grid: cap of ROWS_PER_COL checkboxes per column; columns grow as needed.
-    -- Kept to 5 rows / ~225px columns so it fits the narrower detail area beside
-    -- the raid-selector column in Particles → Raids.
+    -- One row per boss: [enable] name … [linger] [seconds stepper]. A single
+    -- column (rather than the old 3-up grid) so the per-boss linger controls
+    -- line up in their own columns; the scroll panel takes care of the overflow
+    -- on the longer raids.
+    local NAME_W, LINGER_X, SECS_X = 250, 262, 320
+    local rowHeight = 24
+
+    local lingerHdr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    lingerHdr:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", LINGER_X - 4, -16)
+    lingerHdr:SetText("Linger")
+    lingerHdr:SetTextColor(unpack(C.textDim))
+
+    local secsHdr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    secsHdr:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", SECS_X, -16)
+    secsHdr:SetText("Seconds")
+    secsHdr:SetTextColor(unpack(C.textDim))
+
     local gridAnchor = CreateFrame("Frame", nil, panel)
     gridAnchor:SetSize(1, 1)
-    gridAnchor:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -14)
+    gridAnchor:SetPoint("TOPLEFT", lingerHdr, "BOTTOMLEFT", -(LINGER_X - 4), -6)
 
-    local ROWS_PER_COL = 5
-    local colWidth, rowHeight = 225, 22
-    local bossCBs = {}
+    local bossCBs, lingerCBs, lingerSteppers = {}, {}, {}
     for i, boss in ipairs(raid.bosses) do
-        local col = math.floor((i - 1) / ROWS_PER_COL)
-        local row = (i - 1) % ROWS_PER_COL
+        local y = -(i - 1) * rowHeight
 
         -- Colour the name by wing (Naxx); the "(!)" default/note marker stays red.
         local wingHex = boss.wing and WING_COLORS[boss.wing]
@@ -109,12 +143,40 @@ local function buildRaidPanel(parent, raid, onEnableChanged)
         local bossLabel = ((boss.default or boss.note) and raid.key ~= "debug")
             and (nameStr .. " |cfffb2c36(!)|r")
             or nameStr
-        local cb = createCheckbox(panel, bossLabel, colWidth - 10)
-        cb:SetPoint("TOPLEFT", gridAnchor, "TOPLEFT", col * colWidth, -row * rowHeight)
+        local cb = createCheckbox(panel, bossLabel, NAME_W)
+        cb:SetPoint("TOPLEFT", gridAnchor, "TOPLEFT", 0, y)
         cb.OnChange = function(_, checked)
             particlesData(raid).bosses[boss.name] = checked or nil
         end
         bossCBs[boss.name] = cb
+
+        -- Greys out the seconds box while linger is off, so the row reads as
+        -- "this number isn't doing anything right now" without hiding the value.
+        local stepper
+        local function paintStepper(on)
+            stepper.value:SetTextColor(unpack(on and C.red or C.textDim))
+        end
+
+        local lcb = createCheckbox(panel, "", 16)
+        lcb:SetPoint("TOPLEFT", gridAnchor, "TOPLEFT", LINGER_X, y)
+        lcb.OnChange = function(_, checked)
+            local d = particlesData(raid)
+            d.linger[boss.name] = checked or nil
+            -- Stamp the effective duration on enable so the stored value always
+            -- matches what the box shows.
+            if checked then d.lingerSecs[boss.name] = lingerSeconds(raid, boss) end
+            paintStepper(checked)
+        end
+        lingerCBs[boss.name] = lcb
+
+        stepper = buildStepper(panel, {
+            min = 1, max = MAX_LINGER_SECONDS, valueWidth = 30,
+            get = function() return lingerSeconds(raid, boss) end,
+            set = function(v) particlesData(raid).lingerSecs[boss.name] = v end,
+        })
+        stepper:SetPoint("TOPLEFT", gridAnchor, "TOPLEFT", SECS_X, y - 1)
+        stepper.Paint = paintStepper
+        lingerSteppers[boss.name] = stepper
     end
 
     local function refreshPanel()
@@ -122,6 +184,12 @@ local function buildRaidPanel(parent, raid, onEnableChanged)
         enable:SetChecked(d.enabled)
         for name, cb in pairs(bossCBs) do
             cb:SetChecked(d.bosses[name] == true)
+        end
+        for name, lcb in pairs(lingerCBs) do
+            local on = d.linger[name] == true
+            lcb:SetChecked(on)
+            lingerSteppers[name].Refresh()
+            lingerSteppers[name].Paint(on)
         end
     end
     shell:SetScript("OnShow", refreshPanel)

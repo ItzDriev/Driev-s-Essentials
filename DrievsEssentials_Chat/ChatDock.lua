@@ -38,6 +38,10 @@ addon.RegisterDefaults("chatDock", {
     -- [chatFrameID] = {x, y, w, h} (BOTTOMLEFT-anchored, absolute), for
     -- free-floating chats we've positioned ourselves.
     rects = {},
+    -- [panelIndex] = true once dockDefaultChat has been attempted for that
+    -- panel, so re-enabling it later (after the user turned it back off)
+    -- never auto-docks again - only the very first enable per profile does.
+    autoDocked = {},
 })
 
 local function isReady()
@@ -47,8 +51,9 @@ end
 local function getData()
     addon.db.settings.chatDock = addon.db.settings.chatDock or {}
     local d = addon.db.settings.chatDock
-    d.docked = d.docked or {}
-    d.rects  = d.rects  or {}
+    d.docked     = d.docked     or {}
+    d.rects      = d.rects      or {}
+    d.autoDocked = d.autoDocked or {}
     return d
 end
 
@@ -98,10 +103,48 @@ local function captureRect(cf)
     return { l, b, w, h }
 end
 
+-- ── Suppressing Blizzard's own repositioning ────────────────────────────────
+-- Reacting to Blizzard's Edit Mode reflow after the fact (re-asserting our
+-- own position on a short timer, once per triggering event) caused a visible
+-- flicker whenever several of those events fired close together - the chat
+-- visibly hopped to Blizzard's position and back to ours each time. Instead,
+-- DEFAULT_CHAT_FRAME's SetPoint/ClearAllPoints are replaced with no-ops for
+-- everyone - including Blizzard's own Edit Mode system - except this addon's
+-- own code, which calls through to the saved originals directly via
+-- rawSetPoint/rawClearAllPoints below, bypassing the no-op entirely. Real
+-- native tab-drag and Move Mode dragging aren't affected: StartMoving/
+-- StopMovingOrSizing manipulate the frame's anchor at the engine level and
+-- never go through the Lua SetPoint/ClearAllPoints methods.
+local origSetPoint, origClearAllPoints = {}, {}
+
+local function rawSetPoint(cf, ...)
+    (origSetPoint[cf] or cf.SetPoint)(cf, ...)
+end
+
+local function rawClearAllPoints(cf)
+    (origClearAllPoints[cf] or cf.ClearAllPoints)(cf)
+end
+
+local function setChatMovementSuppressed(cf, suppressed)
+    if suppressed then
+        if origSetPoint[cf] then return end -- already suppressed
+        origSetPoint[cf]       = cf.SetPoint
+        origClearAllPoints[cf] = cf.ClearAllPoints
+        cf.SetPoint       = function() end
+        cf.ClearAllPoints = function() end
+    else
+        if not origSetPoint[cf] then return end
+        cf.SetPoint            = origSetPoint[cf]
+        cf.ClearAllPoints      = origClearAllPoints[cf]
+        origSetPoint[cf]       = nil
+        origClearAllPoints[cf] = nil
+    end
+end
+
 local function applyRect(cf, rect)
     if not rect then return end
-    cf:ClearAllPoints()
-    cf:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", rect[1], rect[2])
+    rawClearAllPoints(cf)
+    rawSetPoint(cf, "BOTTOMLEFT", UIParent, "BOTTOMLEFT", rect[1], rect[2])
     cf:SetSize(rect[3], rect[4])
 end
 
@@ -120,8 +163,8 @@ local function dockTo(cf, index)
     -- FCF_SavePositionAndDimensions records absolute coordinates, so anchoring
     -- to the panel would be silently converted anyway — and a real anchor would
     -- mean Blizzard and we both believe we own the frame's position.
-    cf:ClearAllPoints()
-    cf:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", l + PAD, b + PAD)
+    rawClearAllPoints(cf)
+    rawSetPoint(cf, "BOTTOMLEFT", UIParent, "BOTTOMLEFT", l + PAD, b + PAD)
     cf:SetSize(w, h)
 
     if FCF_SavePositionAndDimensions then
@@ -238,6 +281,12 @@ local function suppressBlizzardChatEditMode()
         cf.defaultHideSelection = on or nil
         if on and cf.SetMovable then cf:SetMovable(true) end
     end)
+    -- Only ChatFrame1/DEFAULT_CHAT_FRAME is wired to Edit Mode's own system
+    -- anchor updates (see the comment above), so that's the only frame that
+    -- needs its repositioning suppressed - turned off again the instant the
+    -- Chat module itself is disabled, same as the rest of this function.
+    local defaultCF = DEFAULT_CHAT_FRAME or _G["ChatFrame1"]
+    if defaultCF then setChatMovementSuppressed(defaultCF, on and true or false) end
 end
 
 local function refresh()
@@ -282,8 +331,8 @@ local function getOrCreateMover(id)
     end
 
     function mover.setPosition(x, y)
-        cf:ClearAllPoints()
-        cf:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
+        rawClearAllPoints(cf)
+        rawSetPoint(cf, "BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
     end
 
     -- Backstop for the position-editor's typed X/Y path (setPosition doesn't
@@ -383,17 +432,17 @@ local function init()
     end
 end
 
--- A Blizzard Edit Mode PRESET ("Modern"/"Classic", as opposed to a custom
--- layout you've saved yourself) snaps every system — chat included — back to
--- its own fixed position not just on a loading screen but the instant Edit
--- Mode itself is opened, which is when it re-anchors everything to show you
--- where the active layout puts it. A custom layout doesn't carry a stored
--- position of its own the same way, which is why this only ever showed up on
--- a preset. EditMode.Enter/.Exit are the same EventRegistry callbacks the
--- action bars and raid frames already hook for Blizzard's Edit Mode; see
--- ActionBars.lua's hookBlizzardEditMode for the identical registration
--- pattern (this addon doesn't need an unlock/lock pair here — the chat
--- frame is already draggable via its own tab — just a re-assert).
+-- Blizzard's Edit Mode HighlightSystem() (run on entering Edit Mode) calls
+-- self:SetMovable(false) on ChatFrame1, and only SelectSystem() (clicking the
+-- system inside Blizzard's OWN Edit Mode UI) sets it back to true - so once
+-- Blizzard's Edit Mode has been opened this session, our own StartMoving()
+-- calls in the movers below would silently do nothing without this. (Its
+-- other historical job - re-fighting Edit Mode preset position resets on
+-- Enter/Exit - is now handled structurally by setChatMovementSuppressed
+-- above instead, but refresh() is still cheap to call here regardless.)
+-- EditMode.Enter/.Exit are the same EventRegistry callbacks the action bars
+-- and raid frames already hook for Blizzard's Edit Mode; see ActionBars.lua's
+-- hookBlizzardEditMode for the identical registration pattern.
 local editModeHooked = false
 local function hookBlizzardEditMode()
     if editModeHooked or not (EventRegistry and EditModeManagerFrame) then return end
@@ -404,39 +453,17 @@ end
 
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
--- Also PLAYER_ENTERING_WORLD (not unregistered, unlike PLAYER_LOGIN): a preset
--- re-applies its own fixed system positions on every loading screen too, not
--- just once at login, so this needs to keep re-winning on every zone change.
+-- Also PLAYER_ENTERING_WORLD (not unregistered, unlike PLAYER_LOGIN): purely a
+-- retry opportunity for hookBlizzardEditMode below, in case EditModeManagerFrame
+-- isn't loaded yet at PLAYER_LOGIN - harmless once it's already hooked, since
+-- hookBlizzardEditMode no-ops after its first success.
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
--- A preset also reflows the default chat frame's position whenever the active
--- action bar page changes (Bar 1's own paging, a stance/vehicle swap, or
--- Blizzard's native "next/previous action bar" keybind all change this) — the
--- same "how much space does the bottom bar need" logic a preset applies on
--- every loading screen, just re-triggered by a page change instead. Fires
--- regardless of whether this addon's ActionBars module or Blizzard's own bars
--- are what's currently showing, since it's the action page itself that
--- changed (see LibActionButton-1.0.lua's own use of this same pair of events).
-f:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
-f:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
 f:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LOGIN" then
         init()
         f:UnregisterEvent("PLAYER_LOGIN")
     end
-    -- EditModeManagerFrame only exists once Blizzard's own UI has loaded —
-    -- safe to try on every firing here since hookBlizzardEditMode no-ops
-    -- once it's actually hooked.
     hookBlizzardEditMode()
-    if event == "ACTIONBAR_PAGE_CHANGED" or event == "UPDATE_BONUS_ACTIONBAR" then
-        -- No loading screen involved here, so no need for the longer settling
-        -- delay below — just enough to run after Blizzard's own reflow this
-        -- frame.
-        C_Timer.After(0, refresh)
-    else
-        -- Same settling delay as the original login-only re-assert, needed
-        -- every time since a preset's own re-apply runs on this same event too.
-        C_Timer.After(1, refresh)
-    end
 end)
 
 addon.ChatDock = {
@@ -444,6 +471,24 @@ addon.ChatDock = {
     reapply   = reapply,
     setLocked = setLocked,
     isLocked  = function() return isReady() and getData().locked or false end,
+    -- Docks the default chat frame onto a panel immediately, rather than
+    -- waiting for the user to drag it there themselves - called when a panel
+    -- is switched on from settings. Only ever attempted once per panel per
+    -- profile (re-toggling a panel off/on later doesn't repeat it), and only
+    -- actually docks if the chat is currently sitting over THIS panel - the
+    -- same panelUnder hit-test a manual drag-and-drop uses - so enabling a
+    -- second panel can't steal a chat window already docked to the first.
+    dockDefaultChat = function(index)
+        if not isReady() then return end
+        local d = getData()
+        if d.autoDocked[index] then return end
+        d.autoDocked[index] = true
+
+        local cf = DEFAULT_CHAT_FRAME or _G["ChatFrame1"]
+        if cf and panelUnder(cf) == index then
+            dockTo(cf, index)
+        end
+    end,
     undockAll = function()
         if not isReady() then return end
         local d = getData()

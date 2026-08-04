@@ -16,6 +16,9 @@ local C  = UI.colors
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 
 local BAR_DEFAULTS = {
+    -- Lets a bar be switched off without deleting it - its config, texts and
+    -- order are all kept, it just stops showing.
+    enabled         = true,
     height          = 24,
     minWidth        = 40,
     -- Inset from the bar's left and right edges, applied to both sides. This is
@@ -63,8 +66,13 @@ local DEFAULT_BAR = {
 
 addon.RegisterDefaults("dataTexts", {
     enabled   = true,
-    bars      = { ["1"] = DEFAULT_BAR }, -- [id] = table shaped like BAR_DEFAULTS + { name }
-    nextBarID = 1,
+    -- Deliberately NOT pre-seeded with DEFAULT_BAR here: applyDefaults (Core.lua)
+    -- deep-merges missing keys back in on every login/profile-normalize, which
+    -- would treat an unchecked stat (texts[key] set to nil) as "never set" and
+    -- silently re-enable it. The starter bar is seeded once, for real first-run
+    -- only, in init() below.
+    bars      = {}, -- [id] = table shaped like BAR_DEFAULTS + { name }
+    nextBarID = 0,
     -- User-created datatexts: [id] = { label, code, poll }. id is a string
     -- counter key, bumped by nextCustomID each time one is added. Whether a
     -- given datatext is SHOWN is per-bar (bar.texts), not stored here.
@@ -77,6 +85,9 @@ addon.RegisterDefaults("dataTexts", {
     -- Character names kept out of the gold tooltip. Array rather than a set so
     -- the settings list has a stable order to display.
     goldBlacklist = {},
+    -- Applied to just the VALUE half of every stat except the ones in
+    -- NO_VALUE_COLOR below, which already colour their own value dynamically.
+    valueColor = { 1.00, 0.15, 0.15 },
 })
 
 -- addon.db only exists once Core has applied the active profile at
@@ -269,33 +280,81 @@ local function isBlacklisted(key)
     return false
 end
 
+-- Sort order for faction groups (both the character list's section headers
+-- and the per-faction total lines): Alliance then Horde if present, then
+-- anything else (Neutral, or a character recorded before this field existed)
+-- alphabetically after.
+local FACTION_RANK  = { Alliance = 1, Horde = 2 }
+local FACTION_COLOR = {
+    Alliance = { 0.30, 0.55, 1.00 },
+    Horde    = { 0.90, 0.20, 0.20 },
+}
+-- Standard Blizzard faction crests, also used for this exact purpose (a small
+-- inline faction icon next to a name) in the default Who/Friends list.
+local FACTION_ICON = {
+    Alliance = "Interface\\FriendsFrame\\PlusManz-Alliance",
+    Horde    = "Interface\\FriendsFrame\\PlusManz-Horde",
+}
+
+local function sortedFactions(set)
+    local order = {}
+    for faction in pairs(set) do order[#order + 1] = faction end
+    table.sort(order, function(a, b)
+        local ra, rb = FACTION_RANK[a] or 3, FACTION_RANK[b] or 3
+        if ra ~= rb then return ra < rb end
+        return a < b
+    end)
+    return order
+end
+
 local function goldTooltip(tt)
-    local rows, total = {}, 0
+    local byFaction, totals, seen = {}, {}, {}
     for key, info in pairs(goldStore()) do
-        -- Blacklisted characters are left out of the total as well as the list:
-        -- an excluded character that still moved the total would be confusing.
+        -- Blacklisted characters are left out of the lists and totals: an
+        -- excluded character that still moved a total would be confusing.
         if not isBlacklisted(key) then
-            rows[#rows + 1] = { key = key, gold = info.gold or 0, class = info.class }
-            total = total + (info.gold or 0)
+            local faction = info.faction or "Unknown"
+            byFaction[faction] = byFaction[faction] or {}
+            local list = byFaction[faction]
+            list[#list + 1] = { key = key, gold = info.gold or 0, class = info.class }
+
+            totals[faction] = (totals[faction] or 0) + (info.gold or 0)
+            seen[faction] = true
         end
     end
 
-    if #rows == 0 then
+    if not next(seen) then
         tt:AddLine("No characters recorded yet.", 0.6, 0.6, 0.65)
         return
     end
 
-    table.sort(rows, function(a, b) return a.gold > b.gold end)
+    local factions = sortedFactions(seen)
 
-    for _, row in ipairs(rows) do
-        local c = row.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[row.class]
-        local r, g, b = 1, 1, 1
-        if c then r, g, b = c.r, c.g, c.b end
-        tt:AddDoubleLine(row.key, GetCoinTextureString(row.gold), r, g, b, 1, 1, 1)
+    for i, faction in ipairs(factions) do
+        if i > 1 then tt:AddLine(" ") end
+        local fc = FACTION_COLOR[faction] or { 0.8, 0.8, 0.8 }
+        tt:AddLine(faction, fc[1], fc[2], fc[3])
+
+        local rows = byFaction[faction]
+        table.sort(rows, function(a, b) return a.gold > b.gold end)
+
+        -- Embedded directly in the left-column text via the |T..|t escape -
+        -- AddDoubleLine takes plain strings, so an inline icon has to be part
+        -- of the string itself rather than a separate texture argument.
+        local icon = FACTION_ICON[faction]
+        local prefix = icon and ("|T" .. icon .. ":14|t ") or ""
+        for _, row in ipairs(rows) do
+            local c = row.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[row.class]
+            local r, g, b = 1, 1, 1
+            if c then r, g, b = c.r, c.g, c.b end
+            tt:AddDoubleLine(prefix .. row.key, GetCoinTextureString(row.gold), r, g, b, 1, 1, 1)
+        end
     end
 
     tt:AddLine(" ")
-    tt:AddDoubleLine("Total", GetCoinTextureString(total), 1, 0.82, 0, 1, 1, 1)
+    for _, faction in ipairs(factions) do
+        tt:AddDoubleLine("Total (" .. faction .. ")", GetCoinTextureString(totals[faction]), 1, 0.82, 0, 1, 1, 1)
+    end
 end
 
 -- Recorded from its own frame rather than from the gold datatext's getText, so
@@ -514,10 +573,6 @@ local function resetPrefix(key)
     prefixStore()[key] = nil
 end
 
-local function defaultPrefix(key)
-    return prefixDefaults[key] or ""
-end
-
 -- Every renameable label, in registration order. Not the same as the provider
 -- list: a datatext showing two values contributes two slots.
 local function listPrefixSlots()
@@ -529,13 +584,25 @@ local function listPrefixSlots()
 end
 
 -- ── Custom (user-created) providers ─────────────────────────────────────────
--- Compiled with load(code, name, "t") — "t" restricts it to a text chunk (no
--- precompiled bytecode blobs), which is a cheap, standard precaution even for
--- a snippet the user wrote for themselves. Otherwise this is a full Lua
--- environment, the same trust model WeakAuras' custom triggers use — this is
--- the user's own local addon, running only on their own client.
+-- Compiled with loadstring, a full Lua environment and the same trust model
+-- WeakAuras' custom triggers use — this is the user's own local addon,
+-- running only on their own client.
+-- Most users type a bare expression like "GetFramerate()" - matching the
+-- editor's own hint example minus the "return " - which compiles fine as a
+-- statement but produces nothing. Tried first as an expression; if that's not
+-- valid Lua (e.g. it's a real multi-line script with its own return), falls
+-- back to compiling it as a full chunk as-is.
+-- WoW's Lua sandbox doesn't expose `load` (Lua 5.2+) as a callable global -
+-- only `loadstring` (Lua 5.1's string-chunk compiler, no mode argument).
+local function compileCode(code, name)
+    code = code or ""
+    local exprFn = loadstring("return (" .. code .. ")", name)
+    if exprFn then return exprFn end
+    return loadstring(code, name)
+end
+
 local function compileCustom(id, entry)
-    local fn = load(entry.code or "return \"\"", "DataText:" .. (entry.label or id), "t")
+    local fn = compileCode(entry.code or "return \"\"", "DataText:" .. (entry.label or id))
     if not fn then
         return function() return "|cffff5555(script error)|r" end
     end
@@ -587,6 +654,10 @@ end
 -- barFrames[id] = { frame = <Frame>, segments = { [providerKey] = {btn,text} } }
 local barFrames = {}
 local rebuildBar -- forward declaration: the mover interface below calls it
+-- Forward declaration: rebuildBar/rebuildAll below narrow the event
+-- registrations to whatever is actually on a bar, but syncEvents can't be
+-- defined until eventFrame exists further down.
+local syncEvents
 
 local function getBar(id)
     local d = getData()
@@ -839,6 +910,16 @@ local function layoutBar(id)
     bf.frame:SetWidth(barW)
 end
 
+-- These three already colour their own value dynamically (a live gradient,
+-- or GetCoinTextureString's own coin icons) - the user-selectable value
+-- colour below would either fight that or make no visual sense on top of it.
+local NO_VALUE_COLOR = { fps = true, durability = true, gold = true }
+
+local function colorizeValue(text)
+    local c = getData().valueColor or { 1.00, 0.15, 0.15 }
+    return colorize(text, c[1], c[2], c[3])
+end
+
 local function updateSegment(id, key)
     local bf = barFrames[id]
     if not bf then return end
@@ -846,30 +927,56 @@ local function updateSegment(id, key)
     if not (seg and seg.btn:IsShown()) then return end
     local provider = providers[key]
     if not provider then return end
+    local final
     local ok, value = pcall(provider.getText)
     if ok then
-        seg.text:SetText(getPrefix(key) .. tostring(value or ""))
+        local text = tostring(value or "")
+        if not NO_VALUE_COLOR[key] then
+            text = colorizeValue(text)
+        end
+        final = getPrefix(key) .. text
     else
-        seg.text:SetText("")
+        final = ""
     end
+
+    -- Polled datatexts re-render several times a second but very often produce a
+    -- byte-identical string: coordinates while standing still, durability at
+    -- full, a framerate that rounds to the same integer. Both the SetText and
+    -- especially the layoutBar below are comparatively expensive — layoutBar
+    -- re-measures every visible segment on the bar via GetStringWidth and
+    -- allocates several tables doing it — so an unchanged value stops here.
+    --
+    -- rebuildBar clears lastText, so anything that changes the font, prefix,
+    -- colour or shown-set still forces a full write and re-measure.
+    if seg.lastText == final then return end
+    seg.lastText = final
+
+    seg.text:SetText(final)
     layoutBar(id)
 end
 
 rebuildBar = function(id)
     local bf   = getOrCreateBarFrame(id)
     local cfg  = getBar(id)
-    local show = getData().enabled ~= false and chatSystemEnabled()
+    local show = getData().enabled ~= false and chatSystemEnabled() and cfg.enabled ~= false
 
     for _, key in ipairs(providerOrder) do
         local seg = ensureSegment(id, key)
         applySegFont(seg.text)   -- re-apply the shared chat font before measuring
         seg.btn:SetShown(show and (cfg.texts or {})[key] == true)
+        -- Drop the rendered-text cache updateSegment keeps: the font, style and
+        -- shown-set have all just changed underneath it, so the next update must
+        -- write and re-measure even if the value string itself is identical.
+        seg.lastText = nil
     end
     applyBarStyle(id)
     layoutBar(id)
     for _, key in ipairs(providerOrder) do updateSegment(id, key) end
 
     if show then bf.frame:Show() else bf.frame:Hide() end
+    -- Which datatexts are on this bar may just have changed, which changes which
+    -- events and polls are worth running at all.
+    if syncEvents then syncEvents() end
 end
 
 -- Rebuilds every bar. Called on load and whenever settings change.
@@ -884,6 +991,9 @@ local function rebuildAll()
         end
     end
     for id in pairs(d.bars) do rebuildBar(id) end
+    -- Deleting the last bar leaves nothing for the loop above to rebuild, so the
+    -- registrations have to be re-narrowed here as well as in rebuildBar.
+    if syncEvents then syncEvents() end
 end
 
 -- ── Mover interface (one object per bar) ────────────────────────────────────
@@ -970,7 +1080,7 @@ local function addBar(name)
     d.nextBarID = (d.nextBarID or 0) + 1
     local id = tostring(d.nextBarID)
     local cfg = copyTable(BAR_DEFAULTS)
-    cfg.name = name or ("Bar " .. id)
+    cfg.name = name or "New Bar"
     d.bars[id] = cfg
     rebuildBar(id)
     return id
@@ -1027,43 +1137,127 @@ end
 local eventFrame = CreateFrame("Frame")
 local pollElapsed = {} -- providerKey -> seconds since last update
 
+-- event name -> array of provider keys that asked for it. Dispatch is a single
+-- hash lookup, where it used to be a scan over every provider crossed with every
+-- event that provider declared, on each individual fire.
+local eventMap = {}
+-- Providers that are both displayed somewhere and poll-driven, flattened. The
+-- OnUpdate walks this rather than filtering the whole provider list every frame.
+local pollList = {}
+-- Events we currently hold a registration for, so syncEvents applies a delta
+-- instead of tearing everything down and re-adding it.
+local registeredEvents = {}
+
+-- Every UNIT_* event these providers care about concerns the player and nobody
+-- else, so they are registered filtered. RegisterUnitEvent applies the unit test
+-- in C; unfiltered, UNIT_AURA alone fires for every member of a raid and every
+-- visible nameplate, and each of those would reach our handler just to be
+-- discarded.
+local UNIT_FILTERED = {
+    UNIT_AURA              = "player",
+    UNIT_STATS             = "player",
+    UNIT_ATTACK_SPEED      = "player",
+    UNIT_INVENTORY_CHANGED = "player",
+}
+
 local function updateKeyOnAllBars(key)
     for id in pairs(getData().bars) do updateSegment(id, key) end
 end
 
-local function registerEvents()
-    local seen = {}
-    for _, key in ipairs(providerOrder) do
-        for _, ev in ipairs(providers[key].events or {}) do
-            if not seen[ev] then
-                eventFrame:RegisterEvent(ev)
-                seen[ev] = true
+local function pollTick(_, elapsed)
+    for i = 1, #pollList do
+        local key      = pollList[i]
+        local interval = providers[key].poll
+        -- Seeding a missing accumulator at `interval` makes a newly-polled
+        -- datatext render on its first tick instead of waiting a full period.
+        local acc = (pollElapsed[key] or interval) + elapsed
+        if acc >= interval then
+            acc = 0
+            updateKeyOnAllBars(key)
+        end
+        pollElapsed[key] = acc
+    end
+end
+
+-- Works out which providers are actually displayed on a bar, then narrows the
+-- event registrations and the poll list to exactly those.
+--
+-- Every provider's events used to be registered unconditionally at login, so a
+-- user showing nothing but the clock still pulled every UNIT_AURA, BAG_UPDATE and
+-- UNIT_INVENTORY_CHANGED in the game into Lua only to find no segment wanted
+-- them. Driven from rebuildBar and rebuildAll, which every config change already
+-- funnels through.
+function syncEvents()   -- forward-declared local, see near barFrames
+    if not isReady() then return end
+
+    -- Mirrors rebuildBar's own `show` test. With the module or the parent chat
+    -- system switched off — or an individual bar disabled — those segments are
+    -- hidden and updateSegment would bail on them anyway, so there is nothing
+    -- worth listening for. Turning datatexts off now costs zero registrations
+    -- rather than the full set.
+    local live = getData().enabled ~= false and chatSystemEnabled()
+    local inUse = {}
+    if live then
+        for _, barCfg in pairs(getData().bars) do
+            if barCfg.enabled ~= false then
+                for key, on in pairs(barCfg.texts or {}) do
+                    if on and providers[key] then inUse[key] = true end
+                end
             end
         end
     end
+
+    wipe(eventMap)
+    wipe(pollList)
+    local want = {}
+    for _, key in ipairs(providerOrder) do
+        if inUse[key] then
+            local provider = providers[key]
+            for _, ev in ipairs(provider.events or {}) do
+                want[ev] = true
+                local list = eventMap[ev]
+                if not list then list = {}; eventMap[ev] = list end
+                list[#list + 1] = key
+            end
+            if provider.poll then pollList[#pollList + 1] = key end
+        end
+    end
+
+    for ev in pairs(want) do
+        if not registeredEvents[ev] then
+            registeredEvents[ev] = true
+            local unit = UNIT_FILTERED[ev]
+            if unit then
+                eventFrame:RegisterUnitEvent(ev, unit)
+            else
+                eventFrame:RegisterEvent(ev)
+            end
+        end
+    end
+    for ev in pairs(registeredEvents) do
+        if not want[ev] then
+            registeredEvents[ev] = nil
+            eventFrame:UnregisterEvent(ev)
+        end
+    end
+
+    -- Forget accumulators for anything no longer polled, so switching a datatext
+    -- back on starts from a clean period rather than a stale part-elapsed one.
+    for key in pairs(pollElapsed) do
+        if not inUse[key] then pollElapsed[key] = nil end
+    end
+
+    -- With nothing polled there is nothing for the OnUpdate to do, so it comes
+    -- off entirely instead of running every frame to walk an empty list. This is
+    -- the common case for a bar of purely event-driven stats.
+    eventFrame:SetScript("OnUpdate", (#pollList > 0) and pollTick or nil)
 end
 
 eventFrame:SetScript("OnEvent", function(_, event)
     if not isReady() then return end
-    for _, key in ipairs(providerOrder) do
-        for _, ev in ipairs(providers[key].events or {}) do
-            if ev == event then updateKeyOnAllBars(key); break end
-        end
-    end
-end)
-
-eventFrame:SetScript("OnUpdate", function(_, elapsed)
-    if not isReady() then return end
-    for _, key in ipairs(providerOrder) do
-        local provider = providers[key]
-        if provider.poll then
-            pollElapsed[key] = (pollElapsed[key] or provider.poll) + elapsed
-            if pollElapsed[key] >= provider.poll then
-                pollElapsed[key] = 0
-                updateKeyOnAllBars(key)
-            end
-        end
-    end
+    local keys = eventMap[event]
+    if not keys then return end
+    for i = 1, #keys do updateKeyOnAllBars(keys[i]) end
 end)
 
 -- ── Init ─────────────────────────────────────────────────────────────────────
@@ -1074,14 +1268,26 @@ local function init()
     for id, entry in pairs(d.custom) do
         registerCustomProvider(id, entry)
     end
-    -- First run (or upgrading from the single-bar version): give the user a
-    -- bar to work with, pre-filled with the common stats, rather than an empty
-    -- screen with no obvious starting point.
-    if not next(d.bars) then
-        local id = addBar("Bar 1")
-        local cfg = getBar(id)
-        for _, key in ipairs({ "gold", "bags", "durability", "coords", "fps", "date", "mail" }) do
-            cfg.texts[key] = true
+    -- First run only: give the user a bar to work with, pre-filled with the
+    -- common stats, rather than an empty screen with no obvious starting
+    -- point. Seeded directly from DEFAULT_BAR (a one-time copy) rather than
+    -- via the defaults-merge system, so later unchecking a stat on this bar
+    -- actually sticks - see the comment on RegisterDefaults above.
+    --
+    -- Deliberately keyed off d.seededDefaultBar, NOT "is d.bars empty" -
+    -- deleting the starter bar also leaves d.bars empty, and re-seeding it
+    -- on the next reload would make delete look like it silently didn't
+    -- work. d.seededDefaultBar isn't part of the registered defaults (so
+    -- applyDefaults never touches it); nextBarID being untouched (still its
+    -- registered default of 0) is what identifies a genuinely fresh profile
+    -- for anyone whose saved data predates this flag existing at all.
+    if not d.seededDefaultBar then
+        d.seededDefaultBar = true
+        if not next(d.bars) and (d.nextBarID or 0) == 0 then
+            d.nextBarID = (d.nextBarID or 0) + 1
+            local id = tostring(d.nextBarID)
+            d.bars[id] = copyTable(DEFAULT_BAR)
+            rebuildBar(id)
         end
     end
 
@@ -1101,7 +1307,8 @@ local function init()
         end
     end
 
-    registerEvents()
+    -- rebuildAll ends in syncEvents(), which is what establishes the initial
+    -- event registrations and poll list.
     rebuildAll()
 end
 
@@ -1127,19 +1334,9 @@ addon.DataTexts = {
     getPrefix       = getPrefix,
     setPrefix       = setPrefix,
     resetPrefix     = resetPrefix,
-    defaultPrefix   = defaultPrefix,
     listPrefixSlots = listPrefixSlots,
-    -- gold tracking
-    listGoldChars   = function()
-        local out = {}
-        for key, info in pairs(goldStore()) do
-            out[#out + 1] = { key = key, gold = info.gold or 0 }
-        end
-        table.sort(out, function(a, b) return a.gold > b.gold end)
-        return out
-    end,
-    forgetGoldChar  = function(key) goldStore()[key] = nil end,
     -- datatexts
+    compileCode     = compileCode,
     addCustom       = addCustomDataText,
     updateCustom    = updateCustomDataText,
     removeCustom    = removeCustomDataText,

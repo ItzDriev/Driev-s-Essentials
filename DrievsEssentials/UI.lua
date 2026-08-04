@@ -108,13 +108,15 @@ local function flatButton(parent, text, w, h, font)
 end
 
 -- A themed [-] [value] [+] stepper. Creates the two square buttons (with the
--- standard red hover border) and a centred value label between them, wired so
--- clicking adjusts opts.get()/opts.set() by opts.step (default 1), clamped to
--- [opts.min, opts.max], re-rendered through opts.format (default tostring), then
--- runs opts.onChange(v). Returns the minus button as the layout handle (the
--- caller SetPoints it), with `.value`/`.plus` exposed for anchoring a trailing
--- suffix and `.Refresh()` to re-read the stored value. opts.get must always
--- return a number (fall back to a default when the store isn't ready yet).
+-- standard red hover border) and, between them, an editable value box: clicking
+-- +/- adjusts opts.get()/opts.set() by opts.step (default 1), and the box itself
+-- can be typed into directly — Enter commits whatever number is in it (Escape or
+-- clicking away without a valid number reverts to the current value). Either
+-- path clamps to [opts.min, opts.max], re-renders through opts.format (default
+-- tostring), then runs opts.onChange(v). Returns the minus button as the layout
+-- handle (the caller SetPoints it), with `.value`/`.plus` exposed for anchoring
+-- a trailing suffix and `.Refresh()` to re-read the stored value. opts.get must
+-- always return a number (fall back to a default when the store isn't ready yet).
 local function buildStepper(parent, opts)
     local step = opts.step or 1
     local fmt  = opts.format or tostring
@@ -126,10 +128,19 @@ local function buildStepper(parent, opts)
     local ml = minus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     ml:SetPoint("CENTER"); ml:SetText("-"); ml:SetTextColor(unpack(C.textWhite))
 
-    local value = parent:CreateFontString(nil, "OVERLAY", opts.valueFont or "GameFontNormal")
+    -- Bordered like every other numeric input in this addon (the position
+    -- editor's X/Y boxes, the edit-sliders' value boxes), so it reads as
+    -- something you can click into rather than a plain label.
+    local value = CreateFrame("EditBox", nil, parent, "BackdropTemplate")
     value:SetPoint("LEFT", minus, "RIGHT", gap, 0)
-    value:SetWidth(opts.valueWidth or 24); value:SetJustifyH("CENTER")
+    value:SetSize(opts.valueWidth or 24, 20)
+    applyBackdrop(value, 1, C.panelDark, C.tabBorder)
+    value:SetAutoFocus(false)
+    value:SetJustifyH("CENTER")
+    value:SetFontObject(opts.valueFont or "GameFontNormal")
     value:SetTextColor(unpack(opts.valueColor or C.textWhite))
+    value:SetTextInsets(2, 2, 0, 0)
+    value:SetMaxLetters(10)
 
     local plus = CreateFrame("Button", nil, parent, "BackdropTemplate")
     plus:SetSize(22, 22)
@@ -138,20 +149,40 @@ local function buildStepper(parent, opts)
     local pl = plus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     pl:SetPoint("CENTER"); pl:SetText("+"); pl:SetTextColor(unpack(C.textWhite))
 
-    local function refresh() value:SetText(fmt(opts.get())) end
-    local function adjust(delta)
-        local v = math.min(opts.max, math.max(opts.min, opts.get() + delta))
+    -- Re-reads the stored value into the box, unless the user is mid-edit —
+    -- otherwise a background refresh (e.g. another control changing the same
+    -- setting) would yank the cursor out of what they're typing.
+    local function refresh()
+        if not value:HasFocus() then value:SetText(fmt(opts.get())) end
+    end
+    local function commit(v)
+        v = math.min(opts.max, math.max(opts.min, v))
         v = math.floor(v * 1000 + 0.5) / 1000   -- kill float drift on fractional steps
         opts.set(v)
         refresh()
         if opts.onChange then opts.onChange(v) end
     end
+    local function adjust(delta) commit(opts.get() + delta) end
     minus:SetScript("OnClick", function() adjust(-step) end)
     plus:SetScript("OnClick",  function() adjust(step) end)
     minus:SetScript("OnEnter", function() minus:SetBackdropBorderColor(unpack(C.red)) end)
     minus:SetScript("OnLeave", function() minus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
     plus:SetScript("OnEnter",  function() plus:SetBackdropBorderColor(unpack(C.red)) end)
     plus:SetScript("OnLeave",  function() plus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+
+    -- Invalid text (empty, non-numeric) just reverts to the current value rather
+    -- than erroring or silently zeroing the setting.
+    local function commitBox()
+        local n = tonumber(value:GetText())
+        if n then commit(n) else refresh() end
+        value:ClearFocus()
+    end
+    value:SetScript("OnEnterPressed",   commitBox)
+    value:SetScript("OnEditFocusLost",  commitBox)
+    value:SetScript("OnEscapePressed",  function() refresh(); value:ClearFocus() end)
+    value:SetScript("OnEditFocusGained", function() value:HighlightText() end)
+    value:SetScript("OnEnter", function() if not value:HasFocus() then value:SetBackdropBorderColor(unpack(C.red)) end end)
+    value:SetScript("OnLeave", function() if not value:HasFocus() then value:SetBackdropBorderColor(unpack(C.tabBorder)) end end)
 
     minus.plus, minus.value, minus.Refresh = plus, value, refresh
     refresh()
@@ -1477,7 +1508,12 @@ local function buildSizeStepper(parent, opts)
 
     local box = CreateFrame("EditBox", nil, boxWrap)
     box:SetSize(38, 16); box:SetPoint("CENTER")
-    box:SetAutoFocus(false); box:SetMaxLetters(4); box:SetNumeric(true)
+    -- Not SetNumeric(true): that WoW EditBox flag only allows digits 0-9,
+    -- silently stripping the "-" from any negative value (including one set
+    -- programmatically via SetText), which breaks any stepper whose range
+    -- dips below 0. tonumber() on commit below already rejects anything
+    -- that isn't a valid number, so free-form text is safe here.
+    box:SetAutoFocus(false); box:SetMaxLetters(5)
     box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormalSmall")
     box:SetTextColor(unpack(C.textWhite))
 
@@ -1876,51 +1912,77 @@ local function getTextPopup()
     return panel
 end
 
-local function showExportPopup(profileName)
-    local exportStr, err = addon.ExportProfile(profileName)
+-- The one big-text-box dialog, driven entirely by its caller so it covers both
+-- directions: showing a string to copy, and taking one to paste. Exposed to
+-- module addons through UI.widgets (Item Rack exports its sets with it).
+--
+-- opts = {
+--   title, hint, text, error,   -- what to display
+--   showName, name,             -- show (and prefill) the name row above the box
+--   actionText,                 -- label on the bottom button
+--   selectAll,                  -- focus the box and pre-select it, for exports
+--   onAction(name, text)        -- true to close, or nil + message to stay open
+-- }
+local function showTextPopup(opts)
     local panel = getTextPopup()
-    panel.title:SetText("Export Profile: " .. profileName)
-    panel.hint:SetText("Copy this string (Ctrl+A, Ctrl+C) and share it with someone else.")
-    panel.errText:SetText(exportStr and "" or (err or "Could not export this profile."))
-    panel.box:SetText(exportStr or "")
-    panel.actionLbl:SetText("Close")
-    panel.actionBtn:SetScript("OnClick", function() panel:Hide() end)
+    panel.title:SetText(opts.title or "")
+    panel.hint:SetText(opts.hint or "")
+    panel.errText:SetText(opts.error or "")
+    panel.box:SetText(opts.text or "")
+    panel.nameEdit:SetText(opts.name or "")
+    panel.actionLbl:SetText(opts.actionText or "Close")
+    panel.actionBtn:SetScript("OnClick", function()
+        if not opts.onAction then panel:Hide() return end
+        local ok, err = opts.onAction(panel.nameEdit:GetText(), panel.box:GetText())
+        if ok then
+            panel:Hide()
+        else
+            panel.errText:SetText(err or "That didn't work.")
+        end
+    end)
 
-    panel.nameRow:Hide()
+    -- Without the name row the box takes its place, so the dialog doesn't open
+    -- with a gap where it would have been.
+    panel.nameRow:SetShown(opts.showName and true or false)
     panel.scrollWrap:ClearAllPoints()
-    panel.scrollWrap:SetPoint("TOP", panel.hint, "BOTTOM", 0, -10)
+    panel.scrollWrap:SetPoint("TOP", opts.showName and panel.nameRow or panel.hint, "BOTTOM", 0, -10)
 
     panel:Show()
-    panel.box:SetFocus()
-    panel.box:HighlightText()
+    if opts.showName then
+        panel.nameEdit:SetFocus()
+    elseif opts.selectAll then
+        panel.box:SetFocus()
+        panel.box:HighlightText()
+    end
     panel.updateThumb()
+end
+UI.showTextPopup = showTextPopup
+
+local function showExportPopup(profileName)
+    local exportStr, err = addon.ExportProfile(profileName)
+    showTextPopup({
+        title      = "Export Profile: " .. profileName,
+        hint       = "Copy this string (Ctrl+A, Ctrl+C) and share it with someone else.",
+        text       = exportStr or "",
+        error      = exportStr and "" or (err or "Could not export this profile."),
+        actionText = "Close",
+        selectAll  = true,
+    })
 end
 
 local function showImportPopup(onImported)
-    local panel = getTextPopup()
-    panel.title:SetText("Import Profile")
-    panel.hint:SetText("Enter a name for the new profile, paste a string exported from Driev's Essentials below, then click Import.")
-    panel.errText:SetText("")
-    panel.box:SetText("")
-    panel.nameEdit:SetText("")
-    panel.actionLbl:SetText("Import")
-    panel.actionBtn:SetScript("OnClick", function()
-        local profName, err = addon.ImportProfile(panel.nameEdit:GetText(), panel.box:GetText())
-        if not profName then
-            panel.errText:SetText(err or "Import failed.")
-            return
-        end
-        panel:Hide()
-        if onImported then onImported(profName) end
-    end)
-
-    panel.nameRow:Show()
-    panel.scrollWrap:ClearAllPoints()
-    panel.scrollWrap:SetPoint("TOP", panel.nameRow, "BOTTOM", 0, -10)
-
-    panel:Show()
-    panel.nameEdit:SetFocus()
-    panel.updateThumb()
+    showTextPopup({
+        title      = "Import Profile",
+        hint       = "Enter a name for the new profile, paste a string exported from Driev's Essentials below, then click Import.",
+        showName   = true,
+        actionText = "Import",
+        onAction   = function(name, text)
+            local profName, err = addon.ImportProfile(name, text)
+            if not profName then return nil, err or "Import failed." end
+            if onImported then onImported(profName) end
+            return true
+        end,
+    })
 end
 
 -- ── Themed confirmation popup ────────────────────────────────────────────────
@@ -1970,6 +2032,14 @@ local function getConfirmPopup()
     cancelBtn:SetScript("OnClick", function() panel:Hide() end)
     panel.cancelBtn = cancelBtn
 
+    -- One place for "dismissed without confirming", so it covers the Cancel
+    -- button and anything else that hides the dialog alike.
+    panel:SetScript("OnHide", function(self)
+        local onCancel = self.onCancel
+        self.onCancel = nil
+        if onCancel then onCancel() end
+    end)
+
     local confirmBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
     confirmBtn:SetSize(120, 24)
     confirmBtn:SetPoint("BOTTOMRIGHT", panel, "BOTTOM", -6, 16)
@@ -1984,22 +2054,346 @@ local function getConfirmPopup()
     return panel
 end
 
--- opts = { title, message, confirmText, onConfirm }
+-- opts = { title, message, confirmText, onConfirm, onCancel }
+-- onCancel fires however the dialog is dismissed without confirming, so a
+-- caller that suspended something while it asked (Item Rack's key-binding mode)
+-- always gets control back.
 local function showConfirmPopup(opts)
     local panel = getConfirmPopup()
     panel.title:SetText(opts.title or "Confirm")
     panel.message:SetText(opts.message or "")
     panel.confirmLbl:SetText(opts.confirmText or "Confirm")
     panel.confirmBtn:SetScript("OnClick", function()
+        panel.onCancel = nil   -- consumed: OnHide below must not also fire it
         panel:Hide()
         if opts.onConfirm then opts.onConfirm() end
     end)
+    panel.onCancel = opts.onCancel
     panel:Show()
 end
 -- Exposed for module addons (Trinkets uses it for the modifier-conflict prompt)
 -- and for any panel defined above this point — a plain local isn't visible to
 -- code written before its definition.
 UI.showConfirmPopup = showConfirmPopup
+
+-- ── Themed check-list popup ──────────────────────────────────────────────────
+-- Same floating-panel look as the two dialogs above, but the body is a
+-- scrollable list of tickable rows: "pick which of these to act on". Item Rack
+-- uses it both for choosing which sets to export and for deciding, set by set,
+-- which incoming sets may overwrite one of the same name.
+--
+-- Rows are pooled on the shared panel and re-labelled per call, so reopening
+-- the dialog never leaks frames.
+
+local LIST_ROW_H = 22
+
+local function getListPopup()
+    if UI.listPopup then return UI.listPopup end
+
+    local panel = CreateFrame("Frame", "DrievListPopup", UIParent, "BackdropTemplate")
+    panel:SetSize(400, 440)
+    panel:SetPoint("CENTER")
+    panel:SetFrameStrata("TOOLTIP")
+    applyBackdrop(panel, 2, C.panelBG, C.red)
+    panel:SetClampedToScreen(true)
+    panel:EnableMouse(true)
+    panel:SetMovable(true)
+    panel:RegisterForDrag("LeftButton")
+    panel:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    panel:SetScript("OnDragStop",  function(self) self:StopMovingOrSizing() end)
+    panel:Hide()
+
+    local CONTENT_W = 360
+
+    local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOP", panel, "TOP", 0, -12)
+    title:SetWidth(CONTENT_W)
+    title:SetJustifyH("CENTER")
+    title:SetTextColor(unpack(C.red))
+    panel.title = title
+
+    local closeBtn = CreateFrame("Button", nil, panel)
+    closeBtn:SetSize(18, 18)
+    closeBtn:SetPoint("TOPRIGHT", -8, -8)
+    local closeLbl = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    closeLbl:SetPoint("CENTER"); closeLbl:SetText("X"); closeLbl:SetTextColor(unpack(C.red))
+    closeBtn:SetScript("OnEnter", function() closeLbl:SetTextColor(unpack(C.textWhite)) end)
+    closeBtn:SetScript("OnLeave", function() closeLbl:SetTextColor(unpack(C.red)) end)
+    closeBtn:SetScript("OnClick", function() panel:Hide() end)
+
+    local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hint:SetPoint("TOP", title, "BOTTOM", 0, -8)
+    hint:SetWidth(CONTENT_W)
+    hint:SetJustifyH("CENTER")
+    hint:SetTextColor(unpack(C.textGrey))
+    panel.hint = hint
+
+    -- Hung off the hint rather than a fixed offset from the top: the hint is a
+    -- fixed-width FontString, so it grows a line at a time with the caller's
+    -- text, and the list has to start below whatever height that came to.
+    -- Its BOTTOMLEFT is the left edge of the centred CONTENT_W block, which is
+    -- exactly where the list wants to be.
+    local listWrap = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+    listWrap:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -32)
+    listWrap:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -20, 66)
+    applyBackdrop(listWrap, 1, C.panelDark, C.tabBorder)
+    panel.listWrap = listWrap
+
+    -- Select-all / none sit above the list rather than beside the action
+    -- buttons: they change the list, so they read as part of it. Anchored off
+    -- the list itself so the whole block moves with one anchor change.
+    local allBtn = flatButton(panel, "Select All", 90, 20, "GameFontNormalSmall")
+    allBtn:SetPoint("BOTTOMLEFT", listWrap, "TOPLEFT", 0, 6)
+    panel.allBtn = allBtn
+
+    local noneBtn = flatButton(panel, "Select None", 90, 20, "GameFontNormalSmall")
+    noneBtn:SetPoint("LEFT", allBtn, "RIGHT", 8, 0)
+    panel.noneBtn = noneBtn
+
+    local countText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    countText:SetPoint("BOTTOMRIGHT", listWrap, "TOPRIGHT", -2, 9)
+    countText:SetTextColor(unpack(C.textGrey))
+    panel.countText = countText
+
+    local scroll = CreateFrame("ScrollFrame", nil, listWrap)
+    scroll:SetPoint("TOPLEFT", 6, -6)
+    scroll:SetPoint("BOTTOMRIGHT", -(SCROLLBAR_W + 8), 6)
+
+    local inner = CreateFrame("Frame", nil, scroll)
+    inner:SetSize(CONTENT_W - SCROLLBAR_W - 20, 1)
+    scroll:SetScrollChild(inner)
+    panel.scroll, panel.inner = scroll, inner
+
+    local _, updateTrack = attachScrollTrack(scroll, listWrap)
+    panel.updateTrack = updateTrack
+    scroll:SetScript("OnSizeChanged", function(self, w)
+        inner:SetWidth(w)
+        updateTrack()
+    end)
+
+    local emptyText = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    emptyText:SetPoint("TOPLEFT", 4, -8)
+    emptyText:SetWidth(CONTENT_W - SCROLLBAR_W - 28)
+    emptyText:SetJustifyH("LEFT")
+    emptyText:SetTextColor(unpack(C.textDim))
+    emptyText:Hide()
+    panel.emptyText = emptyText
+
+    local errText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    errText:SetPoint("BOTTOM", panel, "BOTTOM", 0, 46)
+    errText:SetWidth(CONTENT_W)
+    errText:SetJustifyH("CENTER")
+    errText:SetTextColor(unpack(C.red))
+    panel.errText = errText
+
+    -- Two buttons side by side when the caller wants a secondary action
+    -- ("Export All"), one centred when it doesn't — repositioned per call.
+    local actionBtn = flatButton(panel, "", 150, 24)
+    panel.actionBtn = actionBtn
+
+    local altBtn = flatButton(panel, "", 150, 24)
+    panel.altBtn = altBtn
+
+    panel.rows = {}
+
+    -- One place for "dismissed without acting", mirroring the confirm popup so
+    -- a caller mid-flow (Item Rack's import, which asks about conflicts before
+    -- writing anything) always learns the user backed out.
+    panel:SetScript("OnHide", function(self)
+        local onCancel = self.onCancel
+        self.onCancel = nil
+        if onCancel then onCancel() end
+    end)
+
+    UI.listPopup = panel
+    return panel
+end
+
+-- Builds/reuses row `index`, pointed at items[index].
+local function listPopupRow(panel, index)
+    local row = panel.rows[index]
+    if row then return row end
+
+    row = CreateFrame("Button", nil, panel.inner)
+    row:SetHeight(LIST_ROW_H)
+    row:SetPoint("TOPLEFT",  panel.inner, "TOPLEFT",  2, -((index - 1) * LIST_ROW_H))
+    row:SetPoint("TOPRIGHT", panel.inner, "TOPRIGHT", -2, -((index - 1) * LIST_ROW_H))
+
+    local hl = row:CreateTexture(nil, "BACKGROUND")
+    hl:SetAllPoints()
+    hl:SetTexture(WHITE)
+    hl:SetVertexColor(unpack(C.tabHover))
+    hl:SetAlpha(0.35)
+    hl:Hide()
+
+    local box = CreateFrame("Frame", nil, row, "BackdropTemplate")
+    box:SetSize(14, 14)
+    box:SetPoint("LEFT", 4, 0)
+    applyBackdrop(box, 1, C.checkBg, C.checkBorder)
+
+    local fill = box:CreateTexture(nil, "ARTWORK")
+    fill:SetTexture(WHITE)
+    fill:SetPoint("TOPLEFT", 2, -2)
+    fill:SetPoint("BOTTOMRIGHT", -2, 2)
+    fill:SetVertexColor(unpack(C.red))
+    fill:Hide()
+
+    local icon = row:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(16, 16)
+    icon:SetPoint("LEFT", box, "RIGHT", 6, 0)
+    icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    icon:Hide()
+
+    local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    text:SetPoint("LEFT", box, "RIGHT", 6, 0)
+    text:SetPoint("RIGHT", row, "RIGHT", -6, 0)
+    text:SetJustifyH("LEFT")
+    text:SetTextColor(unpack(C.textWhite))
+
+    row.box, row.fill, row.icon, row.text = box, fill, icon, text
+
+    row:SetScript("OnEnter", function(self)
+        hl:Show()
+        box:SetBackdropBorderColor(unpack(C.red))
+    end)
+    row:SetScript("OnLeave", function()
+        hl:Hide()
+        box:SetBackdropBorderColor(unpack(C.checkBorder))
+    end)
+    row:SetScript("OnClick", function(self)
+        if not self.item then return end
+        self.item.checked = not self.item.checked
+        self:Reflect()
+        panel.refreshCount()
+    end)
+
+    function row:Reflect()
+        if self.item and self.item.checked then fill:Show() else fill:Hide() end
+    end
+
+    panel.rows[index] = row
+    return row
+end
+
+-- opts = {
+--   title, hint, emptyText,
+--   items = { { key, label, icon, checked }, ... },   -- `key` defaults to label
+--   actionText, onAction(keys, items)  -- true closes, nil + message stays open
+--   altText,    onAlt()                -- optional second button (e.g. Export All)
+--   onCancel,                          -- fires on any dismissal without acting
+-- }
+-- Item `checked` flags are mutated in place, so a caller holding onto `items`
+-- can read the final state itself instead of the key array.
+local function showCheckListPopup(opts)
+    local panel = getListPopup()
+    local items = opts.items or {}
+
+    -- One shared panel, so a second caller arriving while it's open would
+    -- otherwise take it over and strand the first one's onCancel. Hiding first
+    -- lets that fire and the previous flow unwind properly.
+    if panel:IsShown() then panel:Hide() end
+
+    panel.title:SetText(opts.title or "")
+    panel.hint:SetText(opts.hint or "")
+    panel.errText:SetText(opts.error or "")
+
+    local function refreshCount()
+        local n = 0
+        for _, item in ipairs(items) do if item.checked then n = n + 1 end end
+        panel.countText:SetText(n .. " / " .. #items)
+    end
+    panel.refreshCount = refreshCount
+
+    for i, item in ipairs(items) do
+        local row = listPopupRow(panel, i)
+        row.item = item
+        row.text:SetText(item.label or tostring(item.key))
+        -- Re-anchored (not just re-textured) per call: the same pooled row can
+        -- serve an icon-less list next time, and the label must close the gap.
+        row.text:ClearAllPoints()
+        row.text:SetPoint("RIGHT", row, "RIGHT", -6, 0)
+        if item.icon then
+            row.icon:SetTexture(item.icon)
+            row.icon:Show()
+            row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+        else
+            row.icon:Hide()
+            row.text:SetPoint("LEFT", row.box, "RIGHT", 6, 0)
+        end
+        row:Reflect()
+        row:Show()
+    end
+    for i = #items + 1, #panel.rows do
+        panel.rows[i].item = nil
+        panel.rows[i]:Hide()
+    end
+
+    panel.emptyText:SetText(opts.emptyText or "Nothing to show.")
+    panel.emptyText:SetShown(#items == 0)
+    -- Scroll child height must reflect only the rows in use, or the list
+    -- scrolls down into blank space left by a previous, longer call. The
+    -- offset resets with it: a dialog should open at the top of its list, not
+    -- wherever the last one was left scrolled to.
+    panel.inner:SetHeight(math.max(1, #items * LIST_ROW_H))
+    panel.scroll:SetVerticalScroll(0)
+    panel.updateTrack()
+
+    local function setAll(v)
+        for _, item in ipairs(items) do item.checked = v end
+        for _, row in ipairs(panel.rows) do if row.item then row:Reflect() end end
+        refreshCount()
+    end
+    panel.allBtn:SetScript("OnClick",  function() setAll(true)  end)
+    panel.noneBtn:SetScript("OnClick", function() setAll(false) end)
+    refreshCount()
+
+    local function selectedKeys()
+        local keys = {}
+        for _, item in ipairs(items) do
+            if item.checked then keys[#keys + 1] = item.key or item.label end
+        end
+        return keys
+    end
+
+    panel.actionBtn.label:SetText(opts.actionText or "OK")
+    panel.actionBtn:SetScript("OnClick", function()
+        if not opts.onAction then panel:Hide() return end
+        local ok, err = opts.onAction(selectedKeys(), items)
+        if ok then
+            panel.onCancel = nil   -- consumed: acting isn't cancelling
+            panel:Hide()
+        else
+            panel.errText:SetText(err or "That didn't work.")
+        end
+    end)
+
+    panel.actionBtn:ClearAllPoints()
+    panel.altBtn:ClearAllPoints()
+    if opts.altText then
+        panel.altBtn.label:SetText(opts.altText)
+        panel.altBtn:SetPoint("BOTTOMRIGHT", panel, "BOTTOM", -6, 14)
+        panel.actionBtn:SetPoint("BOTTOMLEFT", panel, "BOTTOM", 6, 14)
+        panel.altBtn:SetScript("OnClick", function()
+            if not opts.onAlt then panel:Hide() return end
+            local ok, err = opts.onAlt(items)
+            if ok then
+                panel.onCancel = nil
+                panel:Hide()
+            else
+                panel.errText:SetText(err or "That didn't work.")
+            end
+        end)
+        panel.altBtn:Show()
+    else
+        panel.actionBtn:SetPoint("BOTTOM", panel, "BOTTOM", 0, 14)
+        panel.altBtn:Hide()
+    end
+
+    panel.onCancel = opts.onCancel
+    panel:Show()
+    panel.updateTrack()
+end
+UI.showCheckListPopup = showCheckListPopup
 
 -- ── Profiles tab ─────────────────────────────────────────────────────────────
 
@@ -2973,4 +3367,6 @@ UI.widgets = {
     buildSizeStepper    = buildSizeStepper,
     -- dialogs
     showConfirmPopup    = showConfirmPopup,
+    showTextPopup       = showTextPopup,
+    showCheckListPopup  = showCheckListPopup,
 }

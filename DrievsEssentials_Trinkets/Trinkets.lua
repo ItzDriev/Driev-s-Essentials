@@ -2254,8 +2254,6 @@ end
 
 -- ── Events + periodic tick ───────────────────────────────────────────────────
 
-local tickElapsed = 0
-
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -2394,10 +2392,10 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     end
 end)
 
-eventFrame:SetScript("OnUpdate", function(_, elapsed)
-    tickElapsed = tickElapsed + elapsed
-    if tickElapsed < 1.0 then return end
-    tickElapsed = 0
+-- The queue/notify work below is a once-per-second poll, so it runs on a ticker
+-- rather than an OnUpdate that fired ~60x a second purely to add up `elapsed`
+-- and return early on all but one of those calls.
+C_Timer.NewTicker(1.0, function()
     processSoftQueue(0)
     processSoftQueue(1)
     processQueue(0)
@@ -2416,7 +2414,6 @@ addon.Trinkets = {
     getPosition        = getPosition,
     setPosition        = setPosition,
     getData            = getData,
-    scanBags           = scanBags,
     buildMenu          = buildMenu,
     applyScale         = applyScale,
     applyDisplayScale  = applyDisplayScale,

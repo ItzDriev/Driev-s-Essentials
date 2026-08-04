@@ -110,7 +110,12 @@ local function makeForm(panel)
         applyBackdrop(wrap, 1, C.panelDark, C.tabBorder)
         local box = CreateFrame("EditBox", nil, wrap)
         box:SetSize(38, 18); box:SetPoint("CENTER")
-        box:SetAutoFocus(false); box:SetNumeric(true); box:SetMaxLetters(4)
+        -- Not SetNumeric(true): that WoW EditBox flag only allows digits 0-9,
+        -- silently stripping the "-" from any negative value (including one
+        -- set programmatically via SetText), which breaks any stepper whose
+        -- range dips below 0. commitBox's tonumber() already rejects
+        -- anything that isn't a valid number, so free-form text is safe here.
+        box:SetAutoFocus(false); box:SetMaxLetters(5)
         box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormal")
         box:SetTextColor(unpack(C.textWhite))
 
@@ -609,6 +614,21 @@ local function buildGlobalPanel(parent)
     return shell
 end
 
+-- ── Blizzard Art tab: toggle the stock button art ───────────────────────────
+local function buildBlizzardArtPanel(parent)
+    local shell, panel = makeScrollPanel(parent)
+    local F = makeForm(panel)
+
+    F.check("Show Blizzard button art",
+        function() return AB() and AB().getBlizzardArt() end,
+        function(c) if AB() then AB().setBlizzardArt(c) end end)
+    F.text("Restores Blizzard's decorative border / slot art on the Stance and Pet " ..
+           "buttons. Off by default for a clean look.")
+
+    shell:SetScript("OnShow", F.refresh)
+    return shell
+end
+
 -- ── Top-level Action Bars tab (sidebar: General + each bar) ──────────────────
 local function buildActionBarsTab(parent)
     local panel = CreateFrame("Frame", nil, parent)
@@ -703,8 +723,11 @@ local function buildActionBarsTab(parent)
         activateTab(panel.barTabs, panel.barPanels, key)
     end
 
-    -- Nav entries: the General panel plus every bar def.
-    local nav = { { key = "general", label = "General", general = true } }
+    -- Nav entries: the General panel, the Blizzard Art panel, then every bar def.
+    local nav = {
+        { key = "general",  label = "General",      general  = true },
+        { key = "blizzart", label = "Blizzard Art", blizzart = true },
+    }
     for _, def in ipairs(AB().bars) do nav[#nav + 1] = def end
 
     local prevNav
@@ -723,8 +746,8 @@ local function buildActionBarsTab(parent)
         end
         tab:SetScript("OnClick", function() selectBar(ndef.key) end)
         -- Status dot: green when this bar is enabled, gray when not. The General
-        -- entry isn't a bar, so it gets no dot.
-        if not ndef.general then
+        -- and Blizzard Art entries aren't bars, so they get no dot.
+        if not ndef.general and not ndef.blizzart then
             local dot = tab:CreateTexture(nil, "OVERLAY")
             dot:SetSize(8, 8)
             dot:SetPoint("RIGHT", tab, "RIGHT", -8, 0)
@@ -733,6 +756,8 @@ local function buildActionBarsTab(parent)
         panel.barTabs[ndef.key] = tab
         if ndef.general then
             panel.barPanels[ndef.key] = buildGlobalPanel(content)
+        elseif ndef.blizzart then
+            panel.barPanels[ndef.key] = buildBlizzardArtPanel(content)
         else
             panel.barPanels[ndef.key] = buildBarPanel(content, ndef)
         end

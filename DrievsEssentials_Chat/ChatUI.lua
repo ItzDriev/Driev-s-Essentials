@@ -67,7 +67,12 @@ local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onCh
 
     local box = CreateFrame("EditBox", nil, boxWrap)
     box:SetSize(38, 16); box:SetPoint("CENTER")
-    box:SetAutoFocus(false); box:SetMaxLetters(4); box:SetNumeric(true)
+    -- Not SetNumeric(true): that WoW EditBox flag only allows digits 0-9,
+    -- silently stripping the "-" from any negative value (including one set
+    -- programmatically via SetText) - fatal for steppers like the X/Y offset
+    -- rows that need negative numbers. tonumber() on commit already rejects
+    -- anything that isn't a valid number, so free-form text is safe here.
+    box:SetAutoFocus(false); box:SetMaxLetters(5)
     box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormalSmall")
     box:SetTextColor(unpack(C.textWhite))
 
@@ -342,9 +347,36 @@ local function buildChatSettingsPanel(parent)
     editBoxHint:SetText("Replaces the box you type in with a flat themed one, its border tinted by the channel you're talking in, plus a remaining-character count. Unticking needs a /reload.")
     editBoxHint:SetTextColor(unpack(C.textDim))
 
+    -- Blizzard's chatStyle CVar rather than a setting of our own. It's stored
+    -- per WoW account instead of in the profile, so it's the usual explanation
+    -- for the edit box behaving differently on two accounts sharing a profile.
+    local chatStyleRow = CreateFrame("Frame", nil, panel)
+    chatStyleRow:SetSize(420, 24)
+    chatStyleRow:SetPoint("TOPLEFT", editBoxHint, "BOTTOMLEFT", -20, -12)
+
+    local chatStyleLbl = chatStyleRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    chatStyleLbl:SetPoint("LEFT", 0, 0); chatStyleLbl:SetWidth(130); chatStyleLbl:SetJustifyH("LEFT")
+    chatStyleLbl:SetText("Edit box behaviour:"); chatStyleLbl:SetTextColor(unpack(C.textGrey))
+
+    local CHAT_STYLES = {
+        { value = "classic", label = "Classic" },
+        { value = "im",      label = "Instant Messenger" },
+    }
+    local chatStyleDD = createDropdown(chatStyleRow, 170, CHAT_STYLES,
+        function() return getChatData().chatStyle or "classic" end,
+        function(v) getChatData().chatStyle = v end,
+        function() if addon.Chat then addon.Chat.refresh() end end)
+    chatStyleDD:SetPoint("LEFT", chatStyleLbl, "RIGHT", 6, 0)
+
+    local chatStyleHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    chatStyleHint:SetPoint("TOPLEFT", chatStyleRow, "BOTTOMLEFT", 0, -4)
+    chatStyleHint:SetWidth(460); chatStyleHint:SetJustifyH("LEFT")
+    chatStyleHint:SetText("Classic opens the edit box when you press Enter and hides it again once you're done. Instant Messenger leaves it on screen permanently. This is Blizzard's own chatStyle option (Interface > Social), which is saved per WoW account and not in your profile — if the edit box is stuck visible on one character but not another, this is why.")
+    chatStyleHint:SetTextColor(unpack(C.textDim))
+
     -- Message decorations.
     local msgHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    msgHeader:SetPoint("TOPLEFT", editBoxHint, "BOTTOMLEFT", -20, -18)
+    msgHeader:SetPoint("TOPLEFT", chatStyleHint, "BOTTOMLEFT", 0, -18)
     msgHeader:SetText("Messages")
     msgHeader:SetTextColor(unpack(C.red))
 
@@ -374,8 +406,21 @@ local function buildChatSettingsPanel(parent)
     copyBtnHint:SetText("Adds a button to the chat's top-right that opens a window with the recent chat as selectable, copy-pasteable text.")
     copyBtnHint:SetTextColor(unpack(C.textDim))
 
+    local linkifyCB = createCheckbox(panel, "Detect links in messages", 320)
+    linkifyCB:SetPoint("TOPLEFT", copyBtnHint, "BOTTOMLEFT", -20, -10)
+    linkifyCB.OnChange = function(_, checked)
+        getChatData().linkifyURLs = checked
+        if addon.Chat then addon.Chat.refresh() end
+    end
+
+    local linkifyHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    linkifyHint:SetPoint("TOPLEFT", linkifyCB, "BOTTOMLEFT", 20, -4)
+    linkifyHint:SetWidth(460); linkifyHint:SetJustifyH("LEFT")
+    linkifyHint:SetText("Outlines any http(s) link as [link] and colours it. Clicking it drops the plain URL into the edit box, where you can read or copy it. Only affects messages printed from then on.")
+    linkifyHint:SetTextColor(unpack(C.textDim))
+
     local stampCB = createCheckbox(panel, "Show timestamps", 320)
-    stampCB:SetPoint("TOPLEFT", copyBtnHint, "BOTTOMLEFT", -20, -10)
+    stampCB:SetPoint("TOPLEFT", linkifyHint, "BOTTOMLEFT", -20, -10)
     stampCB.OnChange = function(_, checked)
         getChatData().timestamps = checked
         if addon.Chat then addon.Chat.refresh() end
@@ -484,24 +529,7 @@ local function buildChatSettingsPanel(parent)
         function() return style().height or 24 end,
         function(v) style().height = v end, onStyleChange, "px")
 
-    local customWCB = createCheckbox(panel, "Use a custom width", 300)
-    customWCB:SetPoint("TOPLEFT", heightRow, "BOTTOMLEFT", 0, -8)
-    customWCB.OnChange = function(_, checked)
-        style().customWidth = checked
-        onStyleChange()
-    end
-
-    local widthRow, widthStepper = addStepperRow(panel, customWCB, "Width:", 100, 1200,
-        function() return style().width or 400 end,
-        function(v) style().width = v end, onStyleChange, "px")
-
-    local widthHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    widthHint:SetPoint("TOPLEFT", widthRow, "BOTTOMLEFT", 0, -4)
-    widthHint:SetWidth(460); widthHint:SetJustifyH("LEFT")
-    widthHint:SetText("Without a custom width the box spans the chat window, as Blizzard anchors it. Turning this on needs a /reload to hand that anchoring back.")
-    widthHint:SetTextColor(unpack(C.textDim))
-
-    local borderRow, borderStepper = addStepperRow(panel, widthHint, "Border thickness:", 0, 10,
+    local borderRow, borderStepper = addStepperRow(panel, heightRow, "Border thickness:", 0, 10,
         function() return style().borderThickness or 1 end,
         function(v) style().borderThickness = v end, onStyleChange, "px")
 
@@ -550,9 +578,11 @@ local function buildChatSettingsPanel(parent)
         tabsCB:SetChecked(d.flatTabs ~= false)
         tabSwatch.Refresh(); tabSelSwatch.Refresh()
         editBoxCB:SetChecked(d.skinEditBox ~= false)
+        chatStyleDD:Refresh()
 
         arrowCB:SetChecked(d.copyArrow ~= false)
         copyBtnCB:SetChecked(d.copyButton ~= false)
+        linkifyCB:SetChecked(d.linkifyURLs ~= false)
         stampCB:SetChecked(d.timestamps or false)
         stampDD:Refresh()
         stampWidthCB:SetChecked(d.timestampEqualWidth or false)
@@ -561,9 +591,8 @@ local function buildChatSettingsPanel(parent)
         historyCB:SetChecked(d.chatHistory ~= false)
         historyStepper.Refresh()
 
-        customWCB:SetChecked(style().customWidth or false)
         channelCB:SetChecked(style().useChannelColor ~= false)
-        heightStepper.Refresh(); widthStepper.Refresh(); borderStepper.Refresh()
+        heightStepper.Refresh(); borderStepper.Refresh()
         bgSwatch.Refresh(); bgOpStepper.Refresh()
         bdSwatch.Refresh(); bdOpStepper.Refresh()
     end
@@ -620,7 +649,13 @@ local function buildPanelSection(panel, anchorAbove, index, xOffset)
 
     local enableCB = createCheckbox(panel, "Enable this panel", 260)
     enableCB:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
-    enableCB.OnChange = function(_, checked) get().enabled = checked; onChange() end
+    enableCB.OnChange = function(_, checked)
+        get().enabled = checked
+        onChange()
+        -- Snap the chat onto a panel the moment it's switched on, rather than
+        -- leaving the user to drag it there themselves.
+        if checked and addon.ChatDock then addon.ChatDock.dockDefaultChat(index) end
+    end
 
     local widthRow, widthStepper = addStepperRow(panel, enableCB, "Width:", 100, 1200,
         function() return get().width or 430 end,
@@ -877,7 +912,7 @@ local function openEditor(id)
         local label = panel.labelBox:GetText()
         local code  = panel.codeBox:GetText()
         if label == "" then panel.errText:SetText("Enter a label."); return end
-        local fn, err = load(code, "DataText:" .. label, "t")
+        local fn, err = addon.DataTexts.compileCode(code, "DataText:" .. label)
         if not fn then panel.errText:SetText("Lua error: " .. tostring(err)); return end
         if existing then
             addon.DataTexts.updateCustom(id, label, code, panel._pollValue)
@@ -1172,7 +1207,16 @@ local function buildDataTextsPanel(parent)
     end)
     nameBox:SetScript("OnEditFocusLost", commitName)
 
-    local heightRow, heightStepper = addStepperRow(createInner, nameRow, "Bar height:", 16, 60,
+    local enableBarCB = createCheckbox(createInner, "Enable this bar", 300)
+    enableBarCB:SetPoint("TOPLEFT", nameRow, "BOTTOMLEFT", 0, -10)
+    enableBarCB.OnChange = function(_, checked)
+        local c = getSelBar()
+        if not c then return end
+        c.enabled = checked
+        onBarChange()
+    end
+
+    local heightRow, heightStepper = addStepperRow(createInner, enableBarCB, "Bar height:", 16, 60,
         function() local c = getSelBar(); return c and c.height or 24 end,
         function(v) local c = getSelBar(); if c then c.height = v end end, onBarChange, "px")
 
@@ -1404,15 +1448,35 @@ local function buildDataTextsPanel(parent)
     -- Shown/hidden together when a bar is (de)selected. Spans both Create and
     -- Stats tabs, since both only make sense with a bar selected.
     local cfgWidgets = {
-        cfgTitle, moveBtn, delBtn, nameRow, heightRow, paddingRow, paddingHint,
+        cfgTitle, moveBtn, delBtn, nameRow, enableBarCB, heightRow, paddingRow, paddingHint,
         fixedWCB, fixedWHint, widthRow, minWRow, borderRow,
         bgColorRow, bgOpRow, bdColorRow, bdOpRow,
         textsHeader, orderHeader, orderHint,
     }
 
+    -- ══ Labels › General (stat value color) ═══════════════════════════════════
+    local valueColorHeader = genInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    valueColorHeader:SetPoint("TOPLEFT", 14, -14)
+    valueColorHeader:SetText("Stat Value Color")
+    valueColorHeader:SetTextColor(unpack(C.red))
+
+    local valueColorRow, valueColorSwatch = addColorRow(genInner, valueColorHeader, "Value color:",
+        function()
+            local c = getDTData().valueColor or { 1.00, 0.15, 0.15 }
+            return c[1], c[2], c[3]
+        end,
+        function(r, g, b) getDTData().valueColor = { r, g, b } end,
+        function() if addon.DataTexts then addon.DataTexts.refresh() end end)
+
+    local valueColorHint = genInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    valueColorHint:SetPoint("TOPLEFT", valueColorRow, "BOTTOMLEFT", 0, -4)
+    valueColorHint:SetWidth(460); valueColorHint:SetJustifyH("LEFT")
+    valueColorHint:SetText("Colours just the value on every stat, never its label - except FPS/Latency, Durability and Gold, which already colour themselves.")
+    valueColorHint:SetTextColor(unpack(C.textDim))
+
     -- ══ Labels › General (text prefixes) ══════════════════════════════════════
     local prefixHeader = genInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    prefixHeader:SetPoint("TOPLEFT", 14, -14)
+    prefixHeader:SetPoint("TOPLEFT", valueColorHint, "BOTTOMLEFT", 0, -18)
     prefixHeader:SetText("Labels")
     prefixHeader:SetTextColor(unpack(C.red))
 
@@ -1666,6 +1730,7 @@ local function buildDataTextsPanel(parent)
             local name = cfg.name or ("Bar " .. tostring(selectedBarID))
             cfgTitle:SetText(name)
             if not nameBox:HasFocus() then nameBox:SetText(name) end
+            enableBarCB:SetChecked(cfg.enabled ~= false)
             fixedWCB:SetChecked(cfg.fixedWidth or false)
             heightStepper.Refresh(); paddingStepper.Refresh()
             widthStepper.Refresh(); minWStepper.Refresh(); borderStepper.Refresh()
@@ -1674,6 +1739,7 @@ local function buildDataTextsPanel(parent)
             refreshTextChecks()
         end
         refreshOrderList()
+        valueColorSwatch.Refresh()
         refreshPrefixRows()
         refreshBlacklist()
         refreshCustomRows()

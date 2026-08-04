@@ -1,8 +1,12 @@
 local addonName, addon = ...
 
--- Bosses are { name, id, default? }. `id` is the WoW encounter ID emitted by
--- ENCOUNTER_START/ENCOUNTER_END. `default = true` means the checkbox is
--- pre-ticked on first init (matches the original WeakAura's encounter list).
+-- Bosses are { name, id, default?, linger? }. `id` is the WoW encounter ID
+-- emitted by ENCOUNTER_START/ENCOUNTER_END. `default = true` means the checkbox
+-- is pre-ticked on first init (matches the original WeakAura's encounter list).
+-- `linger = N` is the built-in "keep particles on for N seconds after the
+-- encounter ends" default (Viscidus slime puddle, Ouro residue, etc.); bosses
+-- without it default to no linger. Both are only starting values — Particles →
+-- Raids lets the user toggle and retime linger per boss.
 --
 -- IDs marked with -- ✓ are confirmed (came from the user's WeakAura or the
 -- Stockades list). The rest are best-guess at Classic Era encounter IDs —
@@ -28,7 +32,7 @@ addon.RAIDS = {
             { name = "Grobbulus",             id = 1111, default = true, wing = "construct" }, -- ✓
             { name = "Gluth",                 id = 1108, wing = "construct" },
             { name = "Thaddius",              id = 1120, wing = "construct" },
-            { name = "Sapphiron",             id = 1119, default = true, wing = "frostwyrm" }, -- ✓
+            { name = "Sapphiron",             id = 1119, default = true, linger = 10, wing = "frostwyrm" }, -- ✓
             { name = "Kel'Thuzad",            id = 1114, default = true, wing = "frostwyrm" }, -- ✓
         },
     },
@@ -41,10 +45,10 @@ addon.RAIDS = {
             { name = "Bug Trio",               id = 710,  default = true }, -- ✓
             { name = "Battleguard Sartura",    id = 711  },
             { name = "Fankriss the Unyielding",id = 712  },
-            { name = "Viscidus",               id = 713,  default = true }, -- ✓
+            { name = "Viscidus",               id = 713,  default = true, linger = 15 }, -- ✓
             { name = "Princess Huhuran",       id = 714  },
             { name = "Twin Emperors",          id = 715,  default = true }, -- ✓
-            { name = "Ouro",                   id = 716,  default = true }, -- ✓
+            { name = "Ouro",                   id = 716,  default = true, linger = 30 }, -- ✓
             { name = "C'Thun",                 id = 717,  default = true }, -- ✓
         },
     },
@@ -115,11 +119,11 @@ addon.RAIDS = {
         label = "Debug",
         name  = "The Stockades",
         bosses = {
-            { name = "Targorr the Dread", id = 2756, default = true }, -- ✓
-            { name = "Kam Deepfury",      id = 2757, default = true }, -- ✓
-            { name = "Hamhock",           id = 2758, default = true }, -- ✓
-            { name = "Dextren Ward",      id = 2759, default = true }, -- ✓
-            { name = "Bazil Thredd",      id = 2760, default = true }, -- ✓
+            { name = "Targorr the Dread", id = 2756, default = true, linger = 10 }, -- ✓
+            { name = "Kam Deepfury",      id = 2757, default = true, linger = 10 }, -- ✓
+            { name = "Hamhock",           id = 2758, default = true, linger = 10 }, -- ✓
+            { name = "Dextren Ward",      id = 2759, default = true, linger = 10 }, -- ✓
+            { name = "Bazil Thredd",      id = 2760, default = true, linger = 10 }, -- ✓
         },
     },
 }

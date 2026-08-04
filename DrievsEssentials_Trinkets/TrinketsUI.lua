@@ -533,7 +533,6 @@ local function buildSortList(parent, which)
     thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
 
     -- Move buttons (right side of list)
-    local btnX = LIST_W + 6
     local function makeBtn(label, y)
         local b = CreateFrame("Button", nil, container, "BackdropTemplate")
         b:SetSize(72, 22)

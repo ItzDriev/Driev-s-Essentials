@@ -10,9 +10,10 @@ if not addon then return end
 --   outside raid -> 3 (normal)
 --   inside  raid -> 0 (off, for FPS)
 --   managed encounter -> 3 (force on so mechanics are visible)
--- Linger durations keep particles ON for N seconds after the listed encounters
--- end (covers Viscidus slime puddle, Ouro residue, etc.). Linger list is
--- backend-only by design — not exposed in the UI.
+-- Linger durations keep particles ON for N seconds after an encounter ends
+-- (covers Viscidus slime puddle, Ouro residue, etc.). Every boss has a linger
+-- toggle + duration in Particles → Raids; the bosses that used to be hardcoded
+-- here carry their old timer as the `linger` default in core's Raids.lua.
 
 local OUTSIDE_DENSITY = 3
 local RAID_DENSITY    = 0
@@ -43,19 +44,10 @@ local function isClassEnabled()
     return classes[classToken] == true
 end
 
-local LINGER = {
-    [713]  = 15, -- Viscidus
-    [716]  = 30, -- Ouro
-    [1119] = 10, -- Sapphiron
-    [2756] = 10, -- Targorr the Dread
-    [2757] = 10, -- Kam Deepfury
-    [2758] = 10, -- Hamhock
-    [2759] = 10, -- Dextren Ward
-    [2760] = 10, -- Bazil Thredd
-}
-
--- encounterID -> { raidKey, name }, built lazily on first event so file load
--- stays cheap and we tolerate Raids.lua being reloaded.
+-- encounterID -> { raidKey, name, linger }, built lazily on first event so file
+-- load stays cheap and we tolerate Raids.lua being reloaded. `linger` is the
+-- built-in default (nil for bosses that never lingered), used only until the
+-- profile has per-boss linger data of its own.
 local encounterIndex
 local function getEncounterIndex()
     if encounterIndex then return encounterIndex end
@@ -63,7 +55,7 @@ local function getEncounterIndex()
     for _, raid in ipairs(addon.RAIDS or {}) do
         for _, boss in ipairs(raid.bosses) do
             if boss.id then
-                encounterIndex[boss.id] = { raidKey = raid.key, name = boss.name }
+                encounterIndex[boss.id] = { raidKey = raid.key, name = boss.name, linger = boss.linger }
             end
         end
     end
@@ -116,6 +108,27 @@ local function checkManaged(encounterID)
     return r.bosses and r.bosses[info.name] == true, info
 end
 
+-- Seconds to keep particles on after this encounter ends, or nil for none.
+-- A profile that predates the per-boss linger settings has no `linger` table
+-- for the raid, so it falls back to the boss's built-in default; once the UI
+-- has seeded that table the user's choice is authoritative (an unticked boss
+-- means no linger, even if it has a built-in default).
+local function getLingerSeconds(encounterID)
+    local info = getEncounterIndex()[encounterID]
+    if not info then return nil end
+    local s = settings()
+    local raidData = s and s[info.raidKey]
+    local secs
+    if raidData and raidData.linger then
+        if not raidData.linger[info.name] then return nil end
+        secs = raidData.lingerSecs and tonumber(raidData.lingerSecs[info.name]) or info.linger
+    else
+        secs = info.linger
+    end
+    if secs and secs > 0 then return secs end
+    return nil
+end
+
 local state = { currentEncounterID = nil, lingerTimer = nil }
 
 local function cancelLinger()
@@ -145,7 +158,7 @@ local function onEncounterEnd(encounterID, encounterName)
     if state.currentEncounterID ~= encounterID then return end
     state.currentEncounterID = nil
 
-    local linger = LINGER[encounterID]
+    local linger = getLingerSeconds(encounterID)
     if linger then
         dprint("  -> linger " .. linger .. "s, then baseline")
         state.lingerTimer = C_Timer.NewTimer(linger, function()

@@ -28,7 +28,7 @@ local PANEL_DEFAULTS = {
     borderThickness = 1,
     bgColor         = { 0, 0, 0 },
     bgOpacity       = 50,
-    borderColor     = { 0.30, 0.31, 0.42 },
+    borderColor     = { 0, 0, 0 },
     borderOpacity   = 100,
     -- px/py (saved position) are absent until moved; each panel then falls back
     -- to its own default corner.
@@ -37,7 +37,9 @@ local PANEL_DEFAULTS = {
     -- copied coordinate) so it keeps following the bar with no extra hook.
     dockBarID      = nil,
     dockOffsetX    = 0,
-    dockOffsetY    = 0,
+    -- -1, not 0: sits the panel 1px lower by default, snug against the bar's
+    -- top edge instead of leaving a hairline gap.
+    dockOffsetY    = -1,
     -- When docked, take on the bar's current width instead of the panel's own
     -- `width` - off by default since a panel might be sized deliberately
     -- differently from its bar.
@@ -284,7 +286,6 @@ end)
 
 addon.ChatPanels = {
     refresh   = refresh,
-    movers    = movers,
     -- Read by ChatDock.lua to work out which panel a dragged chat landed on.
     getFrame  = function(i) return frames[i] end,
     isEnabled = function(i) return isReady() and getPanel(i).enabled == true end,
