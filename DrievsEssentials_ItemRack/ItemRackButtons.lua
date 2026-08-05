@@ -734,7 +734,22 @@ function getOrCreateButton(id)
     -- layoutCluster; see applyClusterClamp for why it can't be per-button.
     btn:SetClampedToScreen(false)
     btn:RegisterForDrag("LeftButton", "RightButton")
-    btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    -- BOTH click phases, always — never just one.
+    --
+    -- Using an inventory item is protected, and the client honours it on ONE
+    -- physical phase only: whichever `ActionButtonUseKeyDown` names, for the
+    -- mouse just as much as for a keybind. A button registered for the other
+    -- phase still gets its OnClick, but the protected use inside is silently
+    -- refused — which is what left these buttons unable to activate anything by
+    -- mouse at all once that CVar was turned on. Registering both phases puts a
+    -- use on whichever one the client will accept, and the other no-ops (so
+    -- nothing fires twice). Same shape as the trinket buttons and the action
+    -- bars, so all three follow the one setting under General → Input.
+    --
+    -- The non-secure half of a click is a different matter: PostClick now
+    -- arrives twice per press, so IR.ButtonPostClick keeps only the phase the
+    -- CVar selects.
+    btn:RegisterForClicks("LeftButtonDown", "LeftButtonUp", "RightButtonDown", "RightButtonUp")
     styleSlotButton(btn, BTN_SIZE)
 
     if id < SET_BTN then
@@ -802,8 +817,8 @@ function getOrCreateButton(id)
         IR.BuildMenu(self:GetID())
     end)
     btn:SetScript("OnLeave", function() IR.ClearTooltip() end)
-    btn:SetScript("PostClick", function(self, mouseButton)
-        IR.ButtonPostClick(self, mouseButton)
+    btn:SetScript("PostClick", function(self, mouseButton, down)
+        IR.ButtonPostClick(self, mouseButton, down)
     end)
 
     IR.AddToMasque("buttons", btn)
@@ -1412,8 +1427,23 @@ end
 
 -- ── Button clicks ────────────────────────────────────────────────────────────
 
-function IR.ButtonPostClick(self, mouseButton)
+-- Which half of a click counts as the press. The buttons register both phases
+-- (see getOrCreateButton) so the protected item use always lands on the one the
+-- client will accept, but everything non-secure hanging off a click has to
+-- happen exactly once — otherwise a single right-click would open a menu and
+-- close it again, and one Alt+click would try to remove the button twice.
+--
+-- Tied to the same CVar rather than just picking a phase, so the whole button
+-- reacts at the moment the General tab says it should. `down` is nil on a
+-- client that doesn't pass it, which means only one phase is arriving anyway.
+local function isPressPhase(down)
+    if down == nil then return true end
+    return down == (GetCVarBool("ActionButtonUseKeyDown") and true or false)
+end
+
+function IR.ButtonPostClick(self, mouseButton, down)
     self:SetChecked(false)
+    if not isPressPhase(down) then return end
     local id = self:GetID()
     local d  = getData()
 
