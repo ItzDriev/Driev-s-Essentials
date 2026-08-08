@@ -71,16 +71,88 @@ local iconButtons = {}
 
 -- Working copy of the set being edited. `selected` is what makes a slot part of
 -- the set at all; `id` is the specific item chosen for it.
--- `allIcons` is the full list; `icons` is the (possibly search-filtered) view the
--- grid actually draws.
-local editor = { inv = {}, allIcons = {}, icons = {}, selectedIcon = nil, iconOffset = 0, iconSearch = "" }
+-- `headIcons` is the leading, addon-owned stretch of the icon list (see below);
+-- `filter` is nil for "show everything" or an array of indices into the full
+-- virtual list when a search is active.
+local editor = { inv = {}, headIcons = {}, filter = nil, selectedIcon = nil, iconOffset = 0, iconSearch = "" }
 for i = 0, 19 do editor.inv[i] = {} end
 
 -- ── Icon list ────────────────────────────────────────────────────────────────
 
--- The first 20 entries mirror the currently-chosen items, so a set can wear the
--- icon of one of its own pieces; everything after that is the macro icon list.
+-- The icon list is virtual: nothing holds a copy of it. Its first HEAD_ICONS
+-- entries are the addon's own — the 20 currently-chosen items, so a set can wear
+-- the icon of one of its own pieces, plus two banners — and every index behind
+-- those is resolved straight out of the client's macro icon list on demand.
+-- Since the grid only ever draws ICON_COLS × ICON_ROWS cells, opening the window
+-- and scrolling it touch a few dozen icons rather than the several thousand that
+-- exist.
+local HEAD_ICONS = 22
+
 local applyIconFilter
+-- Declared up here rather than beside the editor state below: the deferred
+-- source resolve draws its results through refreshIcons.
+local refreshInv, refreshIcons, validateButtons
+
+-- Where the icons behind the head come from, resolved once on first use.
+-- `count` is how many there are; `at(i)` is the texture for one of them.
+local iconSource
+
+local function resolveIconSource()
+    if iconSource then return iconSource end
+
+    -- Order matches what this module did before, so no client changes which list
+    -- it sees. The first branch can only hand the whole thing over at once, so
+    -- there's nothing to be lazy about there; the second is indexable, and it's
+    -- the one Classic Era takes (it has GetMacroIcons but no MACRO_ICON_FILENAMES,
+    -- so the first condition is false).
+    if _G.GetMacroIcons and _G.MACRO_ICON_FILENAMES then
+        if RefreshPlayerSpellIconInfo then RefreshPlayerSpellIconInfo() end
+        local list = GetMacroIcons(MACRO_ICON_FILENAMES)
+        iconSource = {
+            count = #list,
+            at = function(i)
+                local texture = GetSpellorMacroIconInfo and GetSpellorMacroIconInfo(i) or list[i]
+                if type(texture) == "number" then return texture end
+                return texture and ("Interface\\Icons\\" .. texture) or nil
+            end,
+        }
+    elseif IconDataProviderMixin then
+        local provider = CreateAndInitFromMixin(IconDataProviderMixin, IconDataProviderExtraType.Spell)
+        if provider then
+            -- Deliberately never Release()d: the provider IS the list now, and
+            -- re-initialising it per open is the cost this whole shape avoids.
+            iconSource = {
+                count = provider:GetNumIcons(),
+                at    = function(i) return provider:GetIconByIndex(i) end,
+            }
+        end
+    end
+
+    -- Neither API available: the head alone still gives a usable list.
+    iconSource = iconSource or { count = 0, at = function() return nil end }
+    return iconSource
+end
+
+-- Both read `iconSource` rather than resolving it, so the very first open can
+-- draw its head immediately and let the source arrive a frame later.
+local function totalIcons()
+    return HEAD_ICONS + (iconSource and iconSource.count or 0)
+end
+
+local function iconAt(i)
+    if i <= HEAD_ICONS then return editor.headIcons[i] end
+    return iconSource and iconSource.at(i - HEAD_ICONS) or nil
+end
+
+-- What the grid actually draws: the whole virtual list, or the search hits.
+local function viewCount()
+    return editor.filter and #editor.filter or totalIcons()
+end
+
+local function viewIconAt(n)
+    local index = editor.filter and editor.filter[n] or n
+    return index and iconAt(index) or nil
+end
 
 local function populateInvIcons()
     for i = 0, 19 do
@@ -90,7 +162,8 @@ local function populateInvIcons()
         else
             _, texture = GetInventorySlotInfo(IR.SlotInfo[i].name)
         end
-        editor.allIcons[i + 1] = texture
+        -- Never nil: a hole in the head would misalign every index behind it.
+        editor.headIcons[i + 1] = texture or "Interface\\Icons\\INV_Misc_QuestionMark"
     end
     applyIconFilter()
 end
@@ -103,54 +176,60 @@ local function iconSearchKey(texture)
     return string.lower(string.match(texture, "([^\\/]+)$") or texture)
 end
 
+-- Searching is the one thing that has to consider every icon, and it re-runs on
+-- every keystroke — so the keys behind the head get worked out once, the first
+-- time somebody actually types, and kept. Opening and scrolling never build it.
+local tailKeys
+
+local function tailSearchKeys()
+    if tailKeys then return tailKeys end
+    local source = resolveIconSource()
+    tailKeys = {}
+    for i = 1, source.count do
+        tailKeys[i] = iconSearchKey(source.at(i))
+    end
+    return tailKeys
+end
+
 function applyIconFilter()
     local term = string.lower(editor.iconSearch or "")
     if term == "" then
-        editor.icons = editor.allIcons
+        editor.filter = nil
         return
     end
+    -- Indices, not textures: the list they point into is virtual, and an index
+    -- is what viewIconAt needs to resolve one.
     local out = {}
-    for i = 1, #editor.allIcons do
-        local texture = editor.allIcons[i]
-        if string.find(iconSearchKey(texture), term, 1, true) then
-            table.insert(out, texture)
+    for i = 1, HEAD_ICONS do
+        if string.find(iconSearchKey(editor.headIcons[i]), term, 1, true) then
+            out[#out + 1] = i
         end
     end
-    editor.icons = out
+    local keys = tailSearchKeys()
+    for i = 1, #keys do
+        if string.find(keys[i], term, 1, true) then
+            out[#out + 1] = HEAD_ICONS + i
+        end
+    end
+    editor.filter = out
 end
 
 local function populateInitialIcons()
-    editor.allIcons = {}
-    for _ = 0, 19 do
-        table.insert(editor.allIcons, "Interface\\Icons\\INV_Misc_QuestionMark")
-    end
-    populateInvIcons()
-    table.insert(editor.allIcons, "Interface\\Icons\\INV_Banner_02")
-    table.insert(editor.allIcons, "Interface\\Icons\\INV_Banner_03")
+    editor.headIcons[21] = "Interface\\Icons\\INV_Banner_02"
+    editor.headIcons[22] = "Interface\\Icons\\INV_Banner_03"
+    populateInvIcons()   -- fills 1-20 from the live gear, then re-filters
 
-    -- Two client eras expose the macro icon list two different ways; either is
-    -- fine, and if neither exists the item icons above still give a usable list.
-    if _G.GetMacroIcons and _G.MACRO_ICON_FILENAMES then
-        if RefreshPlayerSpellIconInfo then RefreshPlayerSpellIconInfo() end
-        local icons = GetMacroIcons(MACRO_ICON_FILENAMES)
-        for i = 1, #icons do
-            local texture = GetSpellorMacroIconInfo and GetSpellorMacroIconInfo(i) or icons[i]
-            if type(texture) == "number" then
-                table.insert(editor.allIcons, texture)
-            elseif texture then
-                table.insert(editor.allIcons, "Interface\\Icons\\" .. texture)
-            end
-        end
-    elseif IconDataProviderMixin then
-        local provider = CreateAndInitFromMixin(IconDataProviderMixin, IconDataProviderExtraType.Spell)
-        if provider then
-            for i = 1, provider:GetNumIcons() do
-                table.insert(editor.allIcons, provider:GetIconByIndex(i))
-            end
-            provider:Release()
-        end
+    -- The client's list still has to be asked for once, and that call is the one
+    -- remaining lump of work — so it happens a frame after the window is up
+    -- rather than on the click that opened it. The head fills the first rows
+    -- meanwhile, and refreshIcons redraws once the rest is reachable.
+    if not iconSource then
+        C_Timer.After(0, function()
+            resolveIconSource()
+            applyIconFilter()
+            refreshIcons()
+        end)
     end
-    applyIconFilter()
 end
 
 -- ── Tri-state helm/cloak control ─────────────────────────────────────────────
@@ -224,8 +303,6 @@ local function setButtonEnabled(btn, enabled)
 end
 
 -- ── Editor state ─────────────────────────────────────────────────────────────
-
-local refreshInv, refreshIcons, validateButtons
 
 local function currentName()
     return frame and frame.nameBox:GetText() or ""
@@ -491,25 +568,27 @@ end
 -- How far the list can scroll, in rows. Shared by the wheel, the thumb drag and
 -- the redraw so they can never disagree about the limit.
 local function maxIconOffset()
-    local rows = math.max(1, math.ceil(#editor.icons / ICON_COLS))
+    local rows = math.max(1, math.ceil(viewCount() / ICON_COLS))
     return math.max(0, rows - ICON_ROWS)
 end
 
 function refreshIcons()
     if not frame then return end
-    local total  = #editor.icons
+    local total  = viewCount()
     local rows   = math.max(1, math.ceil(total / ICON_COLS))
     local maxOff = math.max(0, rows - ICON_ROWS)
     editor.iconOffset = math.max(0, math.min(editor.iconOffset, maxOff))
     frame.iconEmpty:SetShown(total == 0)
 
+    -- The only place icons are resolved at all: one lookup per visible cell.
     for i = 1, ICON_COLS * ICON_ROWS do
         local btn = iconButtons[i]
         local idx = editor.iconOffset * ICON_COLS + i
         if idx <= total then
-            btn.icon:SetTexture(editor.icons[idx])
+            local texture = viewIconAt(idx)
+            btn.icon:SetTexture(texture)
             btn.index = idx
-            btn.sel:SetShown(editor.icons[idx] == editor.selectedIcon)
+            btn.sel:SetShown(texture == editor.selectedIcon)
             btn:Show()
         else
             btn:Hide()
@@ -562,7 +641,7 @@ local function buildIconPicker(parent)
         btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
         btn:SetScript("OnClick", function(self)
             if not self.index then return end
-            editor.selectedIcon = editor.icons[self.index]
+            editor.selectedIcon = viewIconAt(self.index)
             frame.iconPreview:SetTexture(editor.selectedIcon)
             refreshIcons()
         end)
@@ -1622,11 +1701,19 @@ local function buildFrame()
 end
 
 function IR.ToggleSetEditor()
+    if not IR.RequireEnabled() then return end
     local f = frame or buildFrame()
     if f:IsShown() then f:Hide() else f:Show() end
 end
 
 function IR.ShowSetEditor()
+    if not IR.RequireEnabled() then return end
     local f = frame or buildFrame()
     f:Show()
+end
+
+-- Only touches the frame if it was ever built, so switching the module off on a
+-- character that never opened the editor doesn't construct it just to hide it.
+function IR.HideSetEditor()
+    if frame then frame:Hide() end
 end

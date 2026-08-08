@@ -373,8 +373,13 @@ local function buildParticlesRaidsPanel(parent)
             raidDots[raid.key] = dot
 
             shell.raidTabs[raid.key]   = btn
-            shell.raidPanels[raid.key] = buildRaidPanel(detail, raid,
-                function(checked) setDot(raid, checked) end)
+            -- Built on first selection (activateTab resolves the function) —
+            -- eight raids' worth of boss rows at once is a long enough stall to
+            -- risk the "script ran too long" watchdog on slower machines.
+            shell.raidPanels[raid.key] = function()
+                return buildRaidPanel(detail, raid,
+                    function(checked) setDot(raid, checked) end)
+            end
             prev = btn
         end
     end
@@ -419,22 +424,24 @@ local function buildParticlesPanel(parent)
     generalTab:SetPoint("LEFT", 4, 0)
     generalTab:SetScript("OnClick", function() selectSubTab(panel, "general") end)
     panel.subTabs["general"]   = generalTab
-    panel.subPanels["general"] = buildGeneralPanel(subContent)
+    panel.subPanels["general"] = function() return buildGeneralPanel(subContent) end
 
     local raidsTab = createTab(subBar, "Raids", 80)
     raidsTab:SetHeight(22)
     raidsTab:SetPoint("LEFT", generalTab, "RIGHT", 4, 0)
     raidsTab:SetScript("OnClick", function() selectSubTab(panel, "raids") end)
     panel.subTabs["raids"]   = raidsTab
-    panel.subPanels["raids"] = buildParticlesRaidsPanel(subContent)
+    panel.subPanels["raids"] = function() return buildParticlesRaidsPanel(subContent) end
 
     local debugTab = createTab(subBar, "Debug", 80)
     debugTab:SetHeight(22)
     debugTab:SetPoint("LEFT", raidsTab, "RIGHT", 4, 0)
     debugTab:SetScript("OnClick", function() selectSubTab(panel, "debug") end)
     panel.subTabs["debug"]   = debugTab
-    panel.subPanels["debug"] = debugRaid and buildRaidPanel(subContent, debugRaid)
-        or CreateFrame("Frame", nil, subContent)
+    panel.subPanels["debug"] = function()
+        return debugRaid and buildRaidPanel(subContent, debugRaid)
+            or CreateFrame("Frame", nil, subContent)
+    end
 
     selectSubTab(panel, "general")
     return panel

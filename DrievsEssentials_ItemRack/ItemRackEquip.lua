@@ -339,6 +339,11 @@ end
 -- Only the difference matters: a set the user picked themselves outranks
 -- whatever an event is currently holding (see IR.NoteManualEquip).
 function IR.EquipSet(setname, fromEvent)
+    -- The one funnel every swap goes through — macros, keybindings, the set
+    -- buttons and the events engine all land here — so this is where a disabled
+    -- module stops equipping. Silent for event-driven swaps: those aren't the
+    -- user asking, so they shouldn't produce chat spam.
+    if not IR.RequireEnabled(fromEvent) then return end
     local db = DB()
     if not setname or not db.sets[setname] then
         IR.Print("Set \"" .. tostring(setname) .. "\" doesn't exist.")
@@ -460,6 +465,10 @@ end
 -- Restores whatever was worn before `setname` was equipped, via the internal
 -- "~Unequip" staging set.
 function IR.UnequipSet(setname)
+    -- Silent: every user-facing route here (slash, ToggleSet, the set buttons,
+    -- the editor) already says its piece, and the events engine unwinding its
+    -- stack would otherwise print once per active event.
+    if not IR.RequireEnabled(true) then return end
     local db  = DB()
     local set = setname and db.sets[setname]
     if not (set and set.old) then return end
@@ -475,6 +484,9 @@ function IR.UnequipSet(setname)
 end
 
 function IR.ToggleSet(setname, exact)
+    -- Guarded here too, not just in EquipSet: the un-equip half of the toggle
+    -- reaches EquipSet only indirectly, and one message beats two.
+    if not IR.RequireEnabled() then return end
     if IR.IsSetEquipped(setname, exact) then
         IR.UnequipSet(setname)
     else
@@ -703,8 +715,11 @@ function IR.SetSetBindings()
     if InCombatLockdown() then return end
     -- SaveBindings() below rewrites the player's binding file, so don't touch it
     -- at all until the user has actually bound something (or until we have a
-    -- stale binding of our own left to clear).
-    if not anythingBound() and not next(appliedKeys) then return end
+    -- stale binding of our own left to clear). A disabled module wants nothing
+    -- bound at all, so for it only the stale half of that applies — otherwise
+    -- every call while it's off would rewrite the file to no effect.
+    local enabled = IR.IsEnabled()
+    if not next(appliedKeys) and not (enabled and anythingBound()) then return end
 
     local bindingSet = GetCurrentBindingSet()
     -- Classic doesn't ship Enum.BindingSet, so validate the value itself rather
@@ -721,8 +736,16 @@ function IR.SetSetBindings()
     appliedKeys = {}
     wipe(appliedButtons)
 
+    -- A disabled module applies nothing, which drops every key it owned into
+    -- `stale` below and unbinds it — otherwise the slot bindings in particular
+    -- keep working (they're secure `type=item` clicks, so there's no Lua hook to
+    -- refuse them at press time) and the module isn't really off. Re-enabling
+    -- runs IR.Refresh, which comes straight back here and rebinds the lot.
+    local sets     = enabled and DB().sets or {}
+    local slotKeys = enabled and IR.SlotKeys() or {}
+
     local index = 0
-    for setname, set in pairs(DB().sets) do
+    for setname, set in pairs(sets) do
         if set.key and not string.match(setname, "^~") then
             index = index + 1
             local buttonName = BIND_PREFIX .. index
@@ -753,7 +776,7 @@ function IR.SetSetBindings()
 
     -- Slot buttons. Their twins are named after the slot rather than counted,
     -- since unlike sets a slot id never moves.
-    for id, key in pairs(IR.SlotKeys()) do
+    for id, key in pairs(slotKeys) do
         local buttonName = SLOT_BIND_PREFIX .. id
         local button = _G[buttonName]
             or CreateFrame("Button", buttonName, nil, "SecureActionButtonTemplate")

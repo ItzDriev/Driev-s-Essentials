@@ -533,7 +533,7 @@ local function buildBarPanel(parent, def)
         end
         tab:SetScript("OnClick", function() select(t.key) end)
         tabs[t.key]   = tab
-        panels[t.key] = t.build(subContent, def)
+        panels[t.key] = function() return t.build(subContent, def) end
         prevTab = tab
     end
 
@@ -581,7 +581,7 @@ local function buildGlobalPanel(parent)
         lbl:SetText("Font"); lbl:SetTextColor(unpack(C.textWhite))
         fontDD = createScrollDropdown(r, 150, getFontList, function(name)
             setg("keybindFont", name ~= "Default" and name or nil)
-        end)
+        end, { preview = "font" })
         fontDD:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
     end)
 
@@ -754,12 +754,16 @@ local function buildActionBarsTab(parent)
             tab.dot = dot
         end
         panel.barTabs[ndef.key] = tab
+        -- Each entry's panel is built the first time it's selected (see
+        -- resolvePanel in core's UI.lua). Fifteen nav entries, each with its own
+        -- General/Visibility/Position/Paging sub-panels, is far too much work to
+        -- do in the single frame that opens the settings window.
         if ndef.general then
-            panel.barPanels[ndef.key] = buildGlobalPanel(content)
+            panel.barPanels[ndef.key] = function() return buildGlobalPanel(content) end
         elseif ndef.blizzart then
-            panel.barPanels[ndef.key] = buildBlizzardArtPanel(content)
+            panel.barPanels[ndef.key] = function() return buildBlizzardArtPanel(content) end
         else
-            panel.barPanels[ndef.key] = buildBarPanel(content, ndef)
+            panel.barPanels[ndef.key] = function() return buildBarPanel(content, ndef) end
         end
         prevNav = tab
     end
@@ -791,7 +795,7 @@ local function buildActionBarsTab(parent)
     return panel
 end
 
-UI.RegisterTab({ key = "actionbars", label = "Action Bars", order = 35, build = buildActionBarsTab,
+UI.RegisterTab({ key = "actionbars", label = "Action Bars", order = 60, build = buildActionBarsTab,
     status = function()
         local d = addon.db and addon.db.settings and addon.db.settings.actionBars
         return d and d.enabled or false

@@ -1,0 +1,13 @@
+## Interface: 11509
+## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Nameplates
+## Notes: Takes over nameplate handling (health/cast bars, threat colouring, per-NPC colours and renames) the way Plater does. Requires Driev's Essentials.
+## Version: 1.0.0
+## Author: Driev
+## Dependencies: DrievsEssentials
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+
+# LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 are provided by the core
+# addon, which is guaranteed loaded first via ## Dependencies above.
+NameplateData.lua
+Nameplates.lua
+NameplatesUI.lua

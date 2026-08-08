@@ -1170,11 +1170,24 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
     end
 
     -- ── Raid sidebar + panels ────────────────────────────────────────────────
+    local function runRefreshers()
+        for _, fn in ipairs(refreshers) do fn() end
+    end
+
     local raidTabs, raidPanels = {}, {}
     local prevSb, firstKey
     for _, raid in ipairs(addon.RAIDS or {}) do
         local key = raid.key
-        raidPanels[key] = buildRaidSection(raid)
+        -- Deferred to the first click on this raid: building all of them here is
+        -- ~60 bosses × five widgets each, which is what tripped the "script ran
+        -- too long" watchdog when the whole window was built eagerly. A section
+        -- created after the panel's own OnShow already ran needs its refreshers
+        -- fired by hand, or its boxes come up blank.
+        raidPanels[key] = function()
+            local section = buildRaidSection(raid)
+            runRefreshers()
+            return section
+        end
 
         local b = createSideTab(sideCol, raid.label, 24)
         b.text:SetFontObject("GameFontNormalSmall")   -- matches every other inner sidebar list
@@ -1195,9 +1208,7 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
     -- Refresh on every open of the sub-tab. Hook `shell` (what selectSubTab
     -- actually toggles), not the raid panels — those are shown at build time and
     -- don't re-fire their own OnShow when the parent re-opens.
-    shell:HookScript("OnShow", function()
-        for _, fn in ipairs(refreshers) do fn() end
-    end)
+    shell:HookScript("OnShow", runRefreshers)
 
     return shell
 end
@@ -2505,7 +2516,12 @@ local function buildTrinketsPanel(parent)
     panel.subTabs["autoqueue"] = createTab(subBar, "Auto Queue", 100)
     panel.subPanels["display"] = displayShell
     panel.subPanels["order"]   = menuOrderPanel
-    panel.subPanels["specific"] = buildSpecificAutoQueuePanel(subContent, getTData)
+    -- By far the heaviest panel in the addon (every raid × boss × four trinket
+    -- dropdowns), so it's built the first time the sub-tab is opened rather than
+    -- with the rest of the Trinkets tab. See resolvePanel in core's UI.lua.
+    panel.subPanels["specific"] = function()
+        return buildSpecificAutoQueuePanel(subContent, getTData)
+    end
     panel.subPanels["autoqueue"] = autoQueueShell
 
     -- Tab order: Display, Menu Order, Specific Auto Queue, Auto Queue

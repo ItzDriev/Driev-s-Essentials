@@ -191,6 +191,23 @@ end
 
 -- Generic tab/panel switcher; usable for both the top-level tabs and the
 -- in-Particles raid sub-tabs.
+--
+-- A panels[key] entry may be either a finished frame or a builder function.
+-- Builders are run on first activation and the result cached back into the
+-- table, so a tab nobody opens costs nothing. This matters: building every
+-- panel up front (every module tab × sub-tab × raid × boss × trinket dropdown)
+-- is tens of thousands of frames and backdrops in a single call, which stalls
+-- for a noticeable beat on a fast machine and trips Blizzard's "script ran too
+-- long" watchdog on a slow one — the whole window then fails to open.
+local function resolvePanel(panels, key)
+    local panel = panels[key]
+    if type(panel) == "function" then
+        panel = panel()
+        panels[key] = panel
+    end
+    return panel
+end
+
 local function activateTab(tabs, panels, key)
     for k, tab in pairs(tabs) do
         local active = (k == key)
@@ -205,9 +222,12 @@ local function activateTab(tabs, panels, key)
             tab.text:SetTextColor(unpack(C.textGrey))
         end
     end
+    -- Resolve before the loop: hiding the others must not force them to build.
+    local target = resolvePanel(panels, key)
     for k, panel in pairs(panels) do
-        panel:SetShown(k == key)
+        if k ~= key and type(panel) ~= "function" then panel:Hide() end
     end
+    if target then target:Show() end
 end
 
 local function selectTab(frame, key)
@@ -742,22 +762,61 @@ local function buildRaidTabPanel(parent)
     generalTab:SetPoint("LEFT", 4, 0)
     generalTab:SetScript("OnClick", function() selectSubTab(panel, "general") end)
     panel.subTabs["general"]   = generalTab
-    panel.subPanels["general"] = buildRaidSettingsPanel(subContent)
+    panel.subPanels["general"] = function() return buildRaidSettingsPanel(subContent) end
 
     local framesTab = createTab(subBar, "Raid Frames", 110)
     framesTab:SetHeight(22)
     framesTab:SetPoint("LEFT", generalTab, "RIGHT", 4, 0)
     framesTab:SetScript("OnClick", function() selectSubTab(panel, "raidframes") end)
     panel.subTabs["raidframes"]   = framesTab
-    panel.subPanels["raidframes"] = buildRaidFramesPanel(subContent)
+    panel.subPanels["raidframes"] = function() return buildRaidFramesPanel(subContent) end
 
     selectSubTab(panel, "general")
     return panel
 end
 
+-- ── Media previews for createScrollDropdown ─────────────────────────────────
+-- A list of font or texture NAMES tells you nothing about what you're picking,
+-- so a media dropdown draws each row as a sample of itself: font rows are
+-- lettered in their own font, statusbar rows show the bar texture behind the
+-- name. LibSharedMedia is looked up per call rather than cached, since a media
+-- pack can register more after this file has loaded.
+local PREVIEW_FONT_SIZE = 12
+-- Bar textures are near-white by design, so they're tinted down to keep the
+-- white row label legible on top of them.
+local PREVIEW_BAR_TINT  = { 0.33, 0.35, 0.48, 1 }
+
+local function fetchMedia(kind, name)
+    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
+    if not (LSM and name) then return nil end
+    return LSM:Fetch(kind, name, true)   -- noDefault: nil rather than a substitute
+end
+
+-- Falls back to `fallbackObject` when the font isn't installed any more, or when
+-- the client rejects the file — SetFont returns false there, and a FontString
+-- left holding an invalid font renders nothing at all. Entries that aren't
+-- LibSharedMedia fonts in the first place ("Default", "Blizzard Default") land
+-- here too, which is exactly right: they ARE the fallback font.
+local function applyFontPreview(label, name, fallbackObject)
+    local path = fetchMedia("font", name)
+    if path and label:SetFont(path, PREVIEW_FONT_SIZE, "") ~= false then return end
+    label:SetFontObject(fallbackObject)
+end
+
+local function applyBarPreview(texture, name)
+    local path = fetchMedia("statusbar", name)
+    texture:SetTexture(path or WHITE)
+    texture:SetVertexColor(unpack(PREVIEW_BAR_TINT))
+    texture:SetShown(path ~= nil)
+end
+
 -- Scrollable dropdown that anchors cleanly beneath (or above) its button.
 -- getItems() is called once on first open; onChange(name) fires on selection.
-local function createScrollDropdown(parent, width, getItems, onChange)
+--
+-- opts.preview turns the list into a media picker that shows what it's offering:
+--   "font"      — every row (and the closed button) is drawn IN the named font
+--   "statusbar" — the named bar texture is drawn behind the name
+local function createScrollDropdown(parent, width, getItems, onChange, opts)
     local ITEM_H    = 20
     local MAX_VIS   = 8
     local SB_W      = 10          -- scrollbar track width
@@ -778,6 +837,36 @@ local function createScrollDropdown(parent, width, getItems, onChange)
     arrowText:SetPoint("RIGHT", -5, 0)
     arrowText:SetText("v")
     arrowText:SetTextColor(unpack(C.textDim))
+
+    -- ARTWORK (not BACKGROUND) so the sample sits above the button's backdrop
+    -- fill but still below the OVERLAY label. Inset by the backdrop's 1px edge
+    -- so the border stays a border.
+    local preview = opts and opts.preview
+    -- Resting colour for an unselected row. Bar-preview rows sit ON a texture,
+    -- where the usual dim grey stops being readable.
+    local IDLE_COLOR = (preview == "statusbar") and C.textWhite or C.textGrey
+    local btnPreview
+    if preview == "statusbar" then
+        btnPreview = btn:CreateTexture(nil, "ARTWORK")
+        btnPreview:SetPoint("TOPLEFT", 1, -1)
+        btnPreview:SetPoint("BOTTOMRIGHT", -16, 1)   -- clear of the arrow
+        btnText:SetShadowOffset(1, -1)
+        btnText:SetShadowColor(0, 0, 0, 1)
+    end
+
+    -- Re-samples the closed button for whatever is currently selected. Called
+    -- from both places the button's text can change (a row click, and setValue).
+    local function applyButtonPreview(name)
+        if preview == "font" then
+            applyFontPreview(btnText, name, "GameFontNormal")
+            -- applyFontPreview's fallback path goes through SetFontObject, which
+            -- also drops the button's white text back to the font object's own
+            -- colour. Re-assert it either way rather than only on that branch.
+            btnText:SetTextColor(unpack(C.textWhite))
+        elseif btnPreview then
+            applyBarPreview(btnPreview, name)
+        end
+    end
 
     btn._value = nil
     btn._rows  = {}
@@ -813,19 +902,38 @@ local function createScrollDropdown(parent, width, getItems, onChange)
     applyBackdrop(thumb, 1, C.tabIdle, C.tabBorder)
     thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)  -- placeholder; overwritten by updateThumb
 
+    -- The one definition of how far this list can scroll. A ScrollFrame does NOT
+    -- clamp SetVerticalScroll for you, so every caller has to go through
+    -- setScroll below — the wheel handler used to clamp only the top, which let
+    -- it walk the rows straight past the bottom of the popup while the thumb
+    -- slid out of its track chasing a fraction greater than 1.
+    local function maxScroll()
+        return math.max(0, (btn._count - MAX_VIS) * ITEM_H)
+    end
+
     local function updateThumb()
         local n = btn._count
         if n <= MAX_VIS then track:Hide(); return end
         track:Show()
         local trackH = track:GetHeight()
         if trackH <= 0 then return end
-        local thumbH    = math.max(16, trackH * MAX_VIS / n)
-        local maxScroll = (n - MAX_VIS) * ITEM_H
-        local cur       = sf:GetVerticalScroll()
-        local frac      = maxScroll > 0 and (cur / maxScroll) or 0
+        local thumbH = math.max(16, trackH * MAX_VIS / n)
+        local maxS   = maxScroll()
+        local cur    = sf:GetVerticalScroll()
+        local frac   = maxS > 0 and (cur / maxS) or 0
+        -- Clamped as well as clamping the scroll itself: the list can shrink
+        -- under a scroll offset that was valid for the longer one (the media
+        -- lists are rebuilt from LibSharedMedia on every open), and the thumb
+        -- must not be the thing that notices.
+        frac = math.max(0, math.min(1, frac))
         thumb:SetHeight(thumbH)
         thumb:ClearAllPoints()
         thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -(frac * (trackH - thumbH)))
+    end
+
+    local function setScroll(v)
+        sf:SetVerticalScroll(math.max(0, math.min(v, maxScroll())))
+        updateThumb()
     end
 
     -- Thumb drag logic.
@@ -846,17 +954,12 @@ local function createScrollDropdown(parent, width, getItems, onChange)
     end)
     thumb:SetScript("OnUpdate", function()
         if not isDragging then return end
-        local curY      = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
-        local delta     = dragStartY - curY
-        local trackH    = track:GetHeight()
-        local thumbH    = thumb:GetHeight()
-        local maxScroll = math.max(0, (btn._count - MAX_VIS) * ITEM_H)
+        local curY   = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+        local delta  = dragStartY - curY
+        local trackH = track:GetHeight()
+        local thumbH = thumb:GetHeight()
         if trackH > thumbH then
-            sf:SetVerticalScroll(math.max(0, math.min(
-                dragStartScroll + delta * maxScroll / (trackH - thumbH),
-                maxScroll
-            )))
-            updateThumb()
+            setScroll(dragStartScroll + delta * maxScroll() / (trackH - thumbH))
         end
     end)
     thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
@@ -864,14 +967,15 @@ local function createScrollDropdown(parent, width, getItems, onChange)
 
     popup:EnableMouseWheel(true)
     popup:SetScript("OnMouseWheel", function(_, d)
-        sf:SetVerticalScroll(math.max(0, sf:GetVerticalScroll() - d * ITEM_H * 2))
-        updateThumb()
+        setScroll(sf:GetVerticalScroll() - d * ITEM_H * 2)
     end)
 
-    -- Full-screen catcher closes popup when clicking outside.
+    -- Full-screen catcher closes popup when clicking outside. It swallows right
+    -- clicks too (blocking mouse-turn), so let those close it as well.
     local catcher = CreateFrame("Button", nil, UIParent)
     catcher:SetAllPoints()
     catcher:SetFrameStrata("FULLSCREEN_DIALOG")
+    catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     catcher:Hide()
 
     local function close()
@@ -880,10 +984,16 @@ local function createScrollDropdown(parent, width, getItems, onChange)
     end
     catcher:SetScript("OnClick", close)
 
+    -- popup and catcher live on UIParent, so they survive the owning window
+    -- being hidden. OnHide fires on descendants when an ancestor hides, so this
+    -- tears the popup down with whatever panel the button belongs to —
+    -- otherwise the catcher stays up and eats every click on the world.
+    btn:SetScript("OnHide", close)
+
     local function refreshColors()
         for _, row in ipairs(btn._rows) do
             row.lbl:SetTextColor(unpack(
-                row._name == btn._value and C.red or C.textGrey
+                row._name == btn._value and C.red or IDLE_COLOR
             ))
         end
     end
@@ -901,10 +1011,20 @@ local function createScrollDropdown(parent, width, getItems, onChange)
                 row:SetSize(CONTENT_W, ITEM_H)
                 row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -(i - 1) * ITEM_H)
 
+                if preview == "statusbar" then
+                    row.bg = row:CreateTexture(nil, "BACKGROUND")
+                    row.bg:SetPoint("TOPLEFT", 0, -1)
+                    row.bg:SetPoint("BOTTOMRIGHT", 0, 1)
+                end
+
                 local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
                 lbl:SetPoint("LEFT", 4, 0)
                 lbl:SetPoint("RIGHT", -4, 0)
                 lbl:SetJustifyH("LEFT")
+                if row.bg then
+                    lbl:SetShadowOffset(1, -1)
+                    lbl:SetShadowColor(0, 0, 0, 1)
+                end
                 row.lbl = lbl
 
                 row:SetScript("OnEnter", function(self)
@@ -912,12 +1032,13 @@ local function createScrollDropdown(parent, width, getItems, onChange)
                 end)
                 row:SetScript("OnLeave", function(self)
                     self.lbl:SetTextColor(unpack(
-                        self._name == btn._value and C.red or C.textGrey
+                        self._name == btn._value and C.red or IDLE_COLOR
                     ))
                 end)
                 row:SetScript("OnClick", function(self)
                     btn._value = self._name
                     btnText:SetText(self._name)
+                    applyButtonPreview(self._name)
                     refreshColors()
                     close()
                     if onChange then onChange(self._name) end
@@ -927,7 +1048,15 @@ local function createScrollDropdown(parent, width, getItems, onChange)
             end
             row._name = name
             row.lbl:SetText(name)
-            row.lbl:SetTextColor(unpack(name == btn._value and C.red or C.textGrey))
+            -- Before SetTextColor, not after: the font fallback inside
+            -- applyFontPreview goes through SetFontObject, which resets the
+            -- colour to whatever that font object carries.
+            if preview == "font" then
+                applyFontPreview(row.lbl, name, "GameFontNormalSmall")
+            elseif row.bg then
+                applyBarPreview(row.bg, name)
+            end
+            row.lbl:SetTextColor(unpack(name == btn._value and C.red or IDLE_COLOR))
             row:Show()
         end
         for i = #items + 1, #btn._rows do btn._rows[i]:Hide() end
@@ -956,16 +1085,16 @@ local function createScrollDropdown(parent, width, getItems, onChange)
 
         popup:Show()
         catcher:Show()
-        updateThumb()
+        -- Reset before anything else: the popup keeps its scroll offset between
+        -- openings, and a list that has since got shorter would open scrolled
+        -- past its own end.
+        setScroll(0)
 
         -- Scroll so the selected item is centred in the visible window.
         if btn._value then
             for i = 1, btn._count do
                 if btn._rows[i]._name == btn._value then
-                    local maxScroll = math.max(0, (btn._count - MAX_VIS) * ITEM_H)
-                    local target    = math.max(0, (i - 1) * ITEM_H - math.floor(MAX_VIS / 2) * ITEM_H)
-                    sf:SetVerticalScroll(math.min(target, maxScroll))
-                    updateThumb()
+                    setScroll((i - 1) * ITEM_H - math.floor(MAX_VIS / 2) * ITEM_H)
                     break
                 end
             end
@@ -978,6 +1107,7 @@ local function createScrollDropdown(parent, width, getItems, onChange)
     function btn:setValue(v)
         self._value = v
         btnText:SetText(v or "")
+        applyButtonPreview(v)
         refreshColors()
     end
 
@@ -1106,7 +1236,7 @@ local function buildGeneralTabPanel(parent)
     local fontDropdown = createScrollDropdown(panel, 160, getFontList, function(name)
         getTTKData().fontName = name
         if addon.TTK then addon.TTK.applyFont() end
-    end)
+    end, { preview = "font" })
     fontDropdown:SetPoint("LEFT", fontLabel, "RIGHT", 10, 0)
 
     -- Size row
@@ -2797,8 +2927,11 @@ function UI.GetFrame()
         prevNav = tab
     end
 
+    -- Deferred: each tab's panel is built by activateTab the first time it's
+    -- selected (see resolvePanel), so opening the window only pays for the one
+    -- tab it lands on instead of every module's entire settings tree.
     for _, def in ipairs(defs) do
-        f.panels[def.key] = def.build(f.content)
+        f.panels[def.key] = function() return def.build(f.content) end
     end
 
     if defs[1] then selectTab(f, defs[1].key) end
@@ -2825,9 +2958,15 @@ function UI.RefreshTabDots()
     end
 end
 
--- Core's own tabs. The Particles (order 20) and Trinkets (order 40) module
--- addons register their own from their own files, so they slot into the gaps
--- below — and disappear entirely when those addons are disabled.
+-- Core's own tabs. Every module addon registers its own from its own file, so
+-- they slot into the gaps below — and disappear entirely when those addons are
+-- disabled. The sidebar order is fixed and lives across all of them:
+--
+--   10 General · 20 Particles · 30 Raid · 40 Trinkets · 50 Item Rack
+--   60 Action Bars · 65 Nameplates · 70 Chat · 90 Profiles
+--
+-- Spaced out rather than 1..9 so a module can be slipped in between two of them
+-- later without renumbering the rest.
 UI.RegisterTab({ key = "general",   label = "General",   order = 10, build = buildGeneralTabPanel })
 UI.RegisterTab({ key = "raid",      label = "Raid",      order = 30, build = buildRaidTabPanel,
     -- Raid Frames is the one toggleable module on this tab.

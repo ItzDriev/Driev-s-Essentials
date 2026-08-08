@@ -2531,6 +2531,9 @@ function IR.ApplyEnabled()
     if IR.ReflectEvents then IR.ReflectEvents() end
     if not getData().enabled then
         IR.HideMenu()
+        -- An editor left open from before the toggle flipped would otherwise sit
+        -- there fully usable while the module is off.
+        if IR.HideSetEditor then IR.HideSetEditor() end
         for _, btn in pairs(buttons) do btn:Hide() end
         return
     end

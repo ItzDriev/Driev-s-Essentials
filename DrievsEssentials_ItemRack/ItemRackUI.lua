@@ -106,9 +106,12 @@ local function buildGeneralPanel(parent)
     local checks = {}
 
     local enable = optionCheck(panel, checks, "Enable Item Rack", "enabled",
-        "Turn the whole module on or off. With it off no buttons or slot menus appear.",
+        "Turn the whole module on or off. With it off nothing works: no buttons, no slot menus, no set editor, no key bindings and no slash commands.",
         function()
-            IR.ApplyEnabled()
+            -- Refresh, not just ApplyEnabled: the key bindings have to be taken
+            -- back when the module goes off and handed out again when it comes
+            -- back on, and that's the pair that does both.
+            IR.Refresh()
             UI.RefreshTabDots()
         end)
     enable:SetPoint("TOPLEFT", INSET, -INSET)
@@ -501,7 +504,7 @@ local function buildLayoutPanel(parent)
     local fontDD = createScrollDropdown(panel, 170, hotkeyFontList, function(name)
         getData().hotkeyFont = name ~= DEFAULT_FONT and name or false
         IR.UpdateHotKeys()
-    end)
+    end, { preview = "font" })
     fontDD:SetPoint("LEFT", fontLbl, "RIGHT", 12, 0)
 
     local colorLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -862,9 +865,10 @@ local function buildItemRackPanel(parent)
     subContent:SetPoint("BOTTOMRIGHT", -4, 4)
     applyBackdrop(subContent, 1, C.panelDeep)
 
-    panel.subPanels["general"] = buildGeneralPanel(subContent)
-    panel.subPanels["layout"]  = buildLayoutPanel(subContent)
-    panel.subPanels["events"]  = buildEventsPanel(subContent)
+    -- Built on first selection (see resolvePanel in core's UI.lua).
+    panel.subPanels["general"] = function() return buildGeneralPanel(subContent) end
+    panel.subPanels["layout"]  = function() return buildLayoutPanel(subContent)  end
+    panel.subPanels["events"]  = function() return buildEventsPanel(subContent)  end
 
     panel.subTabs["general"] = createTab(subBar, "General", 90)
     panel.subTabs["general"]:SetHeight(22)
@@ -906,7 +910,7 @@ end
 UI.RegisterTab({
     key   = "itemrack",
     label = "Item Rack",
-    order = 45,
+    order = 50,
     build = buildItemRackPanel,
     status = function()
         local d = addon.db and addon.db.settings and addon.db.settings.itemRack

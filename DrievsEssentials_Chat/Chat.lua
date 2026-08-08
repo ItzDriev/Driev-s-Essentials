@@ -38,6 +38,10 @@ addon.RegisterDefaults("chat", {
     chatStyle = "classic",
     copyArrow       = true,        -- clickable arrow at the start of each line
     copyButton      = true,        -- top-right button opening a copyable chat-log window
+    -- Jumps a scrolled-back chat frame straight back to the newest message.
+    -- Blizzard's own version of this lives in the button frame that hideButtons
+    -- strips off, so this puts it back somewhere that isn't in the way.
+    scrollBottomButton = true,
     linkifyURLs     = true,        -- outline http(s) links and make them clickable-to-copy
     timestamps      = true,        -- [15:25:46] in front of each message
     timestampFormat = "%H:%M:%S",
@@ -46,6 +50,7 @@ addon.RegisterDefaults("chat", {
     -- though both are "[HH:MM:SS]". Off by default - see padStamp.
     timestampEqualWidth = false,
     noHoverFade     = true,        -- kill the chat's fade-in-on-mouseover
+    noTextFade      = true,        -- keep message text on screen instead of fading after inactivity
     flatTabs        = true,        -- flat tabs, names always legible
     stickyChat      = true,        -- reopen the edit box on the last channel used
     stickyWhispers  = true,        -- ...including whispers
@@ -405,7 +410,7 @@ end
 -- fade to act on.
 --
 -- Message text fading after inactivity is a SEPARATE Blizzard feature
--- (SetFading / shouldFadeAfterInactivity) and is deliberately left alone.
+-- (SetFading / SetTimeVisible) — see applyTextFade below.
 local fadeStripped = {}
 local function removeChatFade(cf)
     if fadeStripped[cf] then return end
@@ -427,6 +432,53 @@ local function removeChatFade(cf)
         if r and r.GetObjectType and r:GetObjectType() == "Texture" then
             kill(r)
         end
+    end
+end
+
+-- ── Message text fade ───────────────────────────────────────────────────────
+-- Unrelated to the hover fade above: a chat frame is a ScrollingMessageFrame,
+-- which fades its lines out once they've sat there for timeVisible seconds
+-- (120 by default) and brings them back on the next message or mouse wheel.
+-- SetFading(false) turns that off and keeps the backlog on screen.
+--
+-- The call itself is trivial; making it stick is not. Blizzard re-applies a
+-- window's settings on login, on /reload, when a temporary window is opened
+-- and whenever chat windows are re-laid-out, and each of those can set fading
+-- back to true — which is why refresh() alone isn't enough. The frame's own
+-- SetFading is wrapped instead, so whoever calls it, the answer stays false
+-- while the setting is on.
+local fadeHooked = {}
+local function applyTextFade(cf)
+    if not cf.SetFading then return end
+
+    local function suppressing()
+        if not isReady() then return false end
+        local d = getData()
+        return d.enabled ~= false and d.noTextFade ~= false
+    end
+
+    if not fadeHooked[cf] then
+        fadeHooked[cf] = true
+
+        -- Whatever the frame was doing before we touched it, so unticking the
+        -- setting restores that rather than assuming Blizzard's default.
+        local prev = cf.GetFading and cf:GetFading()
+        if prev == nil then prev = true end
+        cf.__drievFadeDefault = prev
+
+        local orig = cf.SetFading
+        cf.SetFading = function(self, fading, ...)
+            if suppressing() then fading = false end
+            return orig(self, fading, ...)
+        end
+    end
+
+    -- Both branches go through the wrapper, which is harmless: it only ever
+    -- forces false, and that's exactly what the first branch is asking for.
+    if suppressing() then
+        cf:SetFading(false)
+    else
+        cf:SetFading(cf.__drievFadeDefault)
     end
 end
 
@@ -1079,6 +1131,47 @@ local function ensureCopyButton(cf)
     return btn
 end
 
+-- Jump-to-present. Blizzard ships this as part of the chat's button frame, which
+-- hideButtonFrame strips off — so with this module's defaults the only way back
+-- down from a scrolled-up chat is to wheel there. This puts it back, tucked under
+-- the copy button rather than in the old floating column beside the chat.
+--
+-- ScrollToBottom is a ScrollingMessageFrame method, so it's on the chat frame
+-- itself; the pcall is for the client that has renamed it out from under us,
+-- where a dead button beats a Lua error on every click.
+local function ensureScrollBottomButton(cf)
+    if cf.__drievBottomBtn then return cf.__drievBottomBtn end
+    local btn = CreateFrame("Button", nil, cf)
+    btn:SetSize(18, 18)
+    btn:SetFrameLevel(cf:GetFrameLevel() + 10)
+    btn:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up")
+    btn:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Down")
+    btn:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up", "ADD")
+    btn:SetScript("OnClick", function()
+        if cf.ScrollToBottom then pcall(cf.ScrollToBottom, cf) end
+    end)
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Jump to the newest messages")
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    cf.__drievBottomBtn = btn
+    return btn
+end
+
+-- Re-anchored on every refresh rather than once at creation: it sits under the
+-- copy button, and the copy button is itself optional — with that one switched
+-- off this would otherwise float below a gap where nothing is drawn.
+local function anchorScrollBottomButton(cf, btn, belowCopy)
+    btn:ClearAllPoints()
+    if belowCopy then
+        btn:SetPoint("TOPRIGHT", cf.__drievCopyBtn, "BOTTOMRIGHT", 0, -2)
+    else
+        btn:SetPoint("TOPRIGHT", cf, "TOPRIGHT", -2, 0)
+    end
+end
+
 -- AddMessage is REPLACED rather than hooksecurefunc'd, because the whole point
 -- is to rewrite the message argument before Blizzard renders it.
 local hookedAddMessage = {}
@@ -1176,6 +1269,9 @@ local function refresh()
         if on and d.noHoverFade ~= false then
             removeChatFade(cf)
         end
+        -- Handles both directions itself (the setting is reversible without a
+        -- /reload, unlike the texture stripping above), so it isn't gated here.
+        applyTextFade(cf)
         if on and d.flatTabs ~= false then
             flattenTab(cf)
         end
@@ -1190,10 +1286,19 @@ local function refresh()
             applyTabFont(cf)    -- tab name
         end
 
-        if on and d.copyButton ~= false then
+        local showCopy = on and d.copyButton ~= false
+        if showCopy then
             ensureCopyButton(cf):Show()
         elseif cf.__drievCopyBtn then
             cf.__drievCopyBtn:Hide()
+        end
+
+        if on and d.scrollBottomButton ~= false then
+            local bottomBtn = ensureScrollBottomButton(cf)
+            anchorScrollBottomButton(cf, bottomBtn, showCopy)
+            bottomBtn:Show()
+        elseif cf.__drievBottomBtn then
+            cf.__drievBottomBtn:Hide()
         end
 
         local eb = cf.editBox or _G["ChatFrame" .. i .. "EditBox"]

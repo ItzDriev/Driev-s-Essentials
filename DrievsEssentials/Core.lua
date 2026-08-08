@@ -388,6 +388,10 @@ function addon.RefreshAllModules()
     -- re-derived from settings, so a profile switch can be applied live.
     if addon.ItemRack and addon.ItemRack.Refresh then addon.ItemRack.Refresh() end
     if addon.Particles and addon.Particles.refresh then addon.Particles.refresh() end
+    -- Nameplates re-derives every visible plate (and re-seeds the NPC list) from
+    -- the now-active profile, so a switch is applied live rather than at the
+    -- next pull.
+    if addon.Nameplates and addon.Nameplates.refresh then addon.Nameplates.refresh() end
     if addon.Tooltip  and addon.Tooltip.refresh  then addon.Tooltip.refresh() end
     if addon.Raid      and addon.Raid.refresh      then addon.Raid.refresh() end
     if addon.Minimap   and addon.Minimap.refresh   then addon.Minimap.refresh() end

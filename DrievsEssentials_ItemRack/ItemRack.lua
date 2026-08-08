@@ -115,6 +115,20 @@ function IR.IsEnabled()
     return getData().enabled and true or false
 end
 
+-- Gate for every entry point a user can reach without the module's own buttons:
+-- the slash commands, the set editor, the equip API (which is also published as
+-- globals for macros) and the set keybindings. With the master toggle off the
+-- module does nothing at all, rather than merely hiding its buttons while its
+-- other doors stay open. `silent` suppresses the chat line for internal callers
+-- that shouldn't nag (the events engine, mostly).
+function IR.RequireEnabled(silent)
+    if IR.IsEnabled() then return true end
+    if not silent then
+        IR.Print("Item Rack is turned off. Enable it on the Item Rack tab in /driev.")
+    end
+    return false
+end
+
 -- ── Per-character saved data ─────────────────────────────────────────────────
 -- SavedVariables are restored before this addon's Lua runs, but keep the lazy
 -- init anyway so a first-ever login (nil table) can't error.
@@ -1149,6 +1163,7 @@ end
 -- ── Slash command ────────────────────────────────────────────────────────────
 
 local function slashHandler(arg)
+    if not IR.RequireEnabled() then return end
     arg = arg or ""
     local setname = arg:match("^equip%s+(.+)$")
     if setname then IR.EquipSet(setname) return end

@@ -252,7 +252,7 @@ local function buildChatSettingsPanel(parent)
         getChatData().font = (name ~= "Default") and name or false
         if addon.Chat      then addon.Chat.refresh() end
         if addon.DataTexts then addon.DataTexts.refresh() end
-    end)
+    end, { preview = "font" })
     fontDD:SetPoint("LEFT", fontLbl, "RIGHT", 6, 0)
 
     local fontHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -297,11 +297,24 @@ local function buildChatSettingsPanel(parent)
     local fadeHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     fadeHint:SetPoint("TOPLEFT", fadeCB, "BOTTOMLEFT", 20, -4)
     fadeHint:SetWidth(460); fadeHint:SetJustifyH("LEFT")
-    fadeHint:SetText("Stops the chat background fading in when you mouse over it. Message text still fades after inactivity — that's a separate Blizzard option. Unticking needs a /reload.")
+    fadeHint:SetText("Stops the chat background fading in when you mouse over it. Unticking needs a /reload.")
     fadeHint:SetTextColor(unpack(C.textDim))
 
+    local textFadeCB = createCheckbox(panel, "Keep chat text visible", 320)
+    textFadeCB:SetPoint("TOPLEFT", fadeHint, "BOTTOMLEFT", -20, -10)
+    textFadeCB.OnChange = function(_, checked)
+        getChatData().noTextFade = checked
+        if addon.Chat then addon.Chat.refresh() end
+    end
+
+    local textFadeHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    textFadeHint:SetPoint("TOPLEFT", textFadeCB, "BOTTOMLEFT", 20, -4)
+    textFadeHint:SetWidth(460); textFadeHint:SetJustifyH("LEFT")
+    textFadeHint:SetText("Stops chat messages fading out after a couple of minutes of nothing happening, so the backlog stays readable without scrolling or hovering.")
+    textFadeHint:SetTextColor(unpack(C.textDim))
+
     local tabsCB = createCheckbox(panel, "Flat, always-visible chat tabs", 320)
-    tabsCB:SetPoint("TOPLEFT", fadeHint, "BOTTOMLEFT", -20, -10)
+    tabsCB:SetPoint("TOPLEFT", textFadeHint, "BOTTOMLEFT", -20, -10)
     tabsCB.OnChange = function(_, checked)
         getChatData().flatTabs = checked
         if addon.Chat then addon.Chat.refresh() end
@@ -406,8 +419,21 @@ local function buildChatSettingsPanel(parent)
     copyBtnHint:SetText("Adds a button to the chat's top-right that opens a window with the recent chat as selectable, copy-pasteable text.")
     copyBtnHint:SetTextColor(unpack(C.textDim))
 
+    local bottomBtnCB = createCheckbox(panel, "Jump-to-newest button on the chat", 320)
+    bottomBtnCB:SetPoint("TOPLEFT", copyBtnHint, "BOTTOMLEFT", -20, -10)
+    bottomBtnCB.OnChange = function(_, checked)
+        getChatData().scrollBottomButton = checked
+        if addon.Chat then addon.Chat.refresh() end
+    end
+
+    local bottomBtnHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    bottomBtnHint:SetPoint("TOPLEFT", bottomBtnCB, "BOTTOMLEFT", 20, -4)
+    bottomBtnHint:SetWidth(460); bottomBtnHint:SetJustifyH("LEFT")
+    bottomBtnHint:SetText("Sits just below the copy button and scrolls a scrolled-back chat frame straight back to the newest message. Blizzard's own version of this lives in the button column that \"Hide the chat's side buttons\" removes.")
+    bottomBtnHint:SetTextColor(unpack(C.textDim))
+
     local linkifyCB = createCheckbox(panel, "Detect links in messages", 320)
-    linkifyCB:SetPoint("TOPLEFT", copyBtnHint, "BOTTOMLEFT", -20, -10)
+    linkifyCB:SetPoint("TOPLEFT", bottomBtnHint, "BOTTOMLEFT", -20, -10)
     linkifyCB.OnChange = function(_, checked)
         getChatData().linkifyURLs = checked
         if addon.Chat then addon.Chat.refresh() end
@@ -575,6 +601,7 @@ local function buildChatSettingsPanel(parent)
         buttonsCB:SetChecked(d.hideButtons ~= false)
         moveCB:SetChecked(d.freeMovement ~= false)
         fadeCB:SetChecked(d.noHoverFade ~= false)
+        textFadeCB:SetChecked(d.noTextFade ~= false)
         tabsCB:SetChecked(d.flatTabs ~= false)
         tabSwatch.Refresh(); tabSelSwatch.Refresh()
         editBoxCB:SetChecked(d.skinEditBox ~= false)
@@ -582,6 +609,7 @@ local function buildChatSettingsPanel(parent)
 
         arrowCB:SetChecked(d.copyArrow ~= false)
         copyBtnCB:SetChecked(d.copyButton ~= false)
+        bottomBtnCB:SetChecked(d.scrollBottomButton ~= false)
         linkifyCB:SetChecked(d.linkifyURLs ~= false)
         stampCB:SetChecked(d.timestamps or false)
         stampDD:Refresh()
@@ -1860,31 +1888,31 @@ local function buildChatShell(parent)
     chatTab:SetHeight(22); chatTab:SetPoint("LEFT", 4, 0)
     chatTab:SetScript("OnClick", function() selectSubTab(panel, "chat") end)
     panel.subTabs["chat"]   = chatTab
-    panel.subPanels["chat"] = buildChatSettingsPanel(subContent)
+    panel.subPanels["chat"] = function() return buildChatSettingsPanel(subContent) end
 
     local panelsTab = createTab(subBar, "Panels", 80)
     panelsTab:SetHeight(22); panelsTab:SetPoint("LEFT", chatTab, "RIGHT", 4, 0)
     panelsTab:SetScript("OnClick", function() selectSubTab(panel, "panels") end)
     panel.subTabs["panels"]   = panelsTab
-    panel.subPanels["panels"] = buildPanelsPanel(subContent)
+    panel.subPanels["panels"] = function() return buildPanelsPanel(subContent) end
 
     local dtTab = createTab(subBar, "DataTexts", 100)
     dtTab:SetHeight(22); dtTab:SetPoint("LEFT", panelsTab, "RIGHT", 4, 0)
     dtTab:SetScript("OnClick", function() selectSubTab(panel, "datatexts") end)
     panel.subTabs["datatexts"]   = dtTab
-    panel.subPanels["datatexts"] = buildDataTextsPanel(subContent)
+    panel.subPanels["datatexts"] = function() return buildDataTextsPanel(subContent) end
 
     local alertsTab = createTab(subBar, "Alerts", 80)
     alertsTab:SetHeight(22); alertsTab:SetPoint("LEFT", dtTab, "RIGHT", 4, 0)
     alertsTab:SetScript("OnClick", function() selectSubTab(panel, "alerts") end)
     panel.subTabs["alerts"]   = alertsTab
-    panel.subPanels["alerts"] = buildAlertsPanel(subContent)
+    panel.subPanels["alerts"] = function() return buildAlertsPanel(subContent) end
 
     selectSubTab(panel, "chat")
     return panel
 end
 
-UI.RegisterTab({ key = "chat", label = "Chat", order = 25, build = buildChatShell,
+UI.RegisterTab({ key = "chat", label = "Chat", order = 70, build = buildChatShell,
     status = function()
         local d = addon.db and addon.db.settings and addon.db.settings.chat
         return d and d.enabled or false
