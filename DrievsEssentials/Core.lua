@@ -1,20 +1,16 @@
 local addonName, addon = ...
 
-addon.version = "1.2.0"
+addon.version = "1.2.4"
 addon.title   = "Driev's Essentials"
 
--- Public event bus for addons that don't use WeakAuras. WeakAuras.ScanEvents
--- (used by TTK.lua) is WeakAuras' own custom-trigger event system and only
--- reaches WeakAuras users; CallbackHandler-1.0 is a near-ubiquitous, bundled
--- library any addon can grab via LibStub to listen in without depending on
--- WeakAuras at all. Exposed globally so external addons can reach it without
--- needing a reference to our private namespace table.
+-- Public event bus for addons that don't use WeakAuras (TTK.lua uses
+-- WeakAuras.ScanEvents, which only reaches WeakAuras users). Global so external
+-- addons can reach it without our private namespace table.
 addon.callbacks = LibStub("CallbackHandler-1.0"):New(addon)
 _G.DrievEssentials = addon
 
--- Vanilla class roster used to filter when particle functionality is active
--- for the locally logged-in character. Token must match the classFileName
--- returned by UnitClass("player").
+-- Vanilla class roster for the particle per-class filter. Token must match
+-- UnitClass("player")'s classFileName.
 addon.CLASSES = {
     { token = "WARRIOR", label = "Warrior" },
     { token = "PALADIN", label = "Paladin" },
@@ -63,25 +59,24 @@ local defaults = {
         moveBgOpacity = 15,   -- % scaling the Move UI dimmed background + grid lines
         moveBgEnabled = true, -- whether the Move UI dimmed background + grid show at all
         uiScale       = 1,    -- settings window scale (the slider next to Edit Mode)
+        -- Palette overrides keyed by UI.lua's C table names, holding { r, g, b, a }.
+        -- Only changed entries are stored, so later palette tweaks still reach users.
+        uiColors      = {},
         editParked    = {},   -- module labels parked (unticked) in the Edit Mode Modules list
-        -- settingsWinW/settingsWinH (last dragged window size) are absent
-        -- until the user resizes; createMainFrame() falls back to a built-in
-        -- default size when unset.
+        editOffscreen = false,-- let elements be dragged (mostly) past the screen edge
+        -- settingsWinW/H (last dragged size) are absent until the user resizes;
+        -- createMainFrame() falls back to a built-in default.
     },
 }
 
--- Module addons (Particles, Trinkets) own their own settings block and register
--- it here at load time, so core doesn't need to know they exist. Every addon
--- finishes loading before PLAYER_LOGIN, which is when defaults are merged into
--- the active profile — so anything registered here is picked up. Settings for a
--- module that's currently disabled simply stay in the profile, untouched.
+-- Module addons register their own settings block here at load time, so core
+-- doesn't need to know they exist. Everything loads before PLAYER_LOGIN, which
+-- is when defaults are merged. A disabled module's settings stay untouched.
 function addon.RegisterDefaults(key, tbl)
     defaults.settings[key] = tbl
 end
 
--- Shared opacity for the translucent boxes shown around movable elements
--- while in edit/move mode (TTK display, raid frame anchor) — one value so
--- the in-game opacity slider controls every edit-mode box at once.
+-- Shared opacity for every edit-mode box, so one slider controls them all.
 function addon.GetEditAlpha()
     return (addon.db and addon.db.settings and addon.db.settings.editAlpha) or 0.4
 end
@@ -115,9 +110,8 @@ function addon.SetEditBorder(value)
     return value
 end
 
--- The Move UI dimmed backdrop + grid lines (owned by UI.lua) are a single
--- full-screen overlay, not a per-element box, so their settings live here
--- alongside the others but the live-refresh call is delegated to UI.lua.
+-- The Move UI backdrop + grid is one full-screen overlay, not a per-element box,
+-- so the setting lives here but the live refresh is delegated to UI.lua.
 function addon.GetMoveBgOpacity()
     return (addon.db and addon.db.settings and addon.db.settings.moveBgOpacity) or 15
 end
@@ -129,10 +123,8 @@ function addon.SetMoveBgOpacity(value)
     return value
 end
 
--- Scale of the whole Driev's Essentials settings window (the slider next to
--- Edit Mode in the top bar). Separate from editAlpha/editPad/editBorder,
--- which only affect the in-game edit-mode boxes, not the settings window
--- itself.
+-- Scale of the settings window itself (slider next to Edit Mode) — unrelated to
+-- editAlpha/editPad/editBorder, which only affect the in-game edit boxes.
 function addon.GetUIScale()
     return (addon.db and addon.db.settings and addon.db.settings.uiScale) or 1
 end
@@ -157,10 +149,54 @@ function addon.SetMoveBgEnabled(value)
     return value
 end
 
--- Which modules the user has parked (unticked) in the Edit Mode "Modules" tab,
--- keyed by the same label shown in that list (UI.MovableLabel). Persisted so a
--- module parked out of the way stays parked the next time Edit Mode opens,
--- instead of resetting to movable every session.
+-- ── Off-screen dragging ──────────────────────────────────────────────────────
+-- The client clamps a frame by its *clamp rectangle*, and SetClampRectInsets
+-- pulls that rectangle's edges inward from the frame's own, so shrinking it to a
+-- small patch lets the rest slide off screen. Never to nothing: what's left is
+-- the only thing there is to grab the frame by. Public because ItemRack shrinks
+-- a whole bar's bounding box by the same rule.
+function addon.OffscreenKeep(size)
+    -- ~20% of the frame, floored at 20px and capped at 60px. Frames under the floor
+    -- just stay fully on screen on that axis.
+    return math.min(size, math.max(20, math.min(60, size * 0.2)))
+end
+local offscreenKeep = addon.OffscreenKeep
+
+-- anchorTop keeps the surviving strip at the frame's top edge — for windows
+-- whose only drag handle is a title bar, which must stay reachable.
+function addon.ApplyOffscreenClamp(frame, allowed, anchorTop)
+    if not (frame and frame.SetClampRectInsets) then return end
+    frame:SetClampedToScreen(true)
+    if not allowed then
+        frame:SetClampRectInsets(0, 0, 0, 0)
+        return
+    end
+    local w, h = frame:GetWidth() or 0, frame:GetHeight() or 0
+    local x = math.max(0, (w - offscreenKeep(w)) / 2)
+    if anchorTop then
+        frame:SetClampRectInsets(x, -x, 0, math.max(0, h - offscreenKeep(h)))
+    else
+        local y = math.max(0, (h - offscreenKeep(h)) / 2)
+        frame:SetClampRectInsets(x, -x, -y, y)
+    end
+end
+
+-- Off by default: the settings window re-centres each session so it can't be
+-- lost, but positioned elements keep saved coordinates forever, and one left
+-- three quarters off screen is easy to cause and hard to notice.
+function addon.GetEditOffscreen()
+    return (addon.db and addon.db.settings and addon.db.settings.editOffscreen) and true or false
+end
+
+function addon.SetEditOffscreen(value)
+    value = value and true or false
+    if addon.db and addon.db.settings then addon.db.settings.editOffscreen = value end
+    if addon.UI and addon.UI.RefreshMovableClamps then addon.UI.RefreshMovableClamps() end
+    return value
+end
+
+-- Modules parked (unticked) in Edit Mode's "Modules" tab, keyed by the label
+-- shown there (UI.MovableLabel). Persisted so parking survives the session.
 function addon.IsEditParked(key)
     return (addon.db and addon.db.settings and addon.db.settings.editParked and addon.db.settings.editParked[key]) and true or false
 end
@@ -175,14 +211,126 @@ function addon.SetEditParked(key, parked)
     end
 end
 
+-- ── Shared media (LibSharedMedia-3.0) ─────────────────────────────────────────
+-- Bundled, but every lookup stays optional: a stripped Libs folder should cost
+-- a fallback font, not an error.
+
+local function getLSM()
+    return LibStub and LibStub("LibSharedMedia-3.0", true)
+end
+
+-- Path behind a registered media name, or nil. noDefault, so an unknown name
+-- comes back nil rather than LSM's substitute — callers have their own fallback.
+function addon.FetchMedia(kind, name)
+    local LSM = getLSM()
+    if not (LSM and name) then return nil end
+    return LSM:Fetch(kind, name, true)
+end
+
+-- Every media dropdown is built from this.
+--   opts.lead     — entry pinned to the front (e.g. "Default", not an LSM name)
+--   opts.fallback — the whole list when nothing else is available
+-- Always a fresh table; LSM:List returns its own, which callers must not keep.
+function addon.MediaList(kind, opts)
+    opts = opts or {}
+    local list = {}
+    if opts.lead then list[1] = opts.lead end
+    local LSM = getLSM()
+    if LSM then
+        for _, name in ipairs(LSM:List(kind) or {}) do list[#list + 1] = name end
+    end
+    if #list == 0 and opts.fallback then list[1] = opts.fallback end
+    return list
+end
+
+-- ── Shared slot-button styling ────────────────────────────────────────────────
+-- Item Rack (bars + set editor) and Trinkets all build ActionButtonTemplate
+-- buttons and bake the Blizzard Classic look onto them, so it lives here.
+--
+-- 1.15.9's modernized templates define their state textures as nine-sliced atlas
+-- frames. Slice margins, texcoord and tint live on the texture *region*, so they
+-- survive SetNormalTexture and stretch our plain texture into a huge, washed-out
+-- frame. Guarded — older clients lack these APIs and the bug. Only visible
+-- without Masque, which replaces every region.
+local function resetTemplateTexture(tex)
+    if not tex then return end
+    if tex.SetTextureSliceMargins then tex:SetTextureSliceMargins(0, 0, 0, 0) end
+    if tex.SetTexCoord    then tex:SetTexCoord(0, 1, 0, 1) end
+    if tex.SetVertexColor then tex:SetVertexColor(1, 1, 1) end
+    if tex.SetAlpha       then tex:SetAlpha(1) end
+end
+
+-- The classic art is drawn oversized relative to its icon; these are the 36px
+-- original's ratios, so any button size keeps the proportions.
+local ICON_REF     = 36
+local NORMAL_RATIO = 66 / ICON_REF
+local PUSHED_RATIO = 38 / ICON_REF
+
+-- opts.skipPushed: the set editor's slot buttons never showed a depress flash,
+-- and shouldn't start now.
+function addon.StyleSlotButton(btn, size, opts)
+    -- SlotBackground/SlotArt only make sense on a real type="action" slot; ours are
+    -- type="item", so nothing hides them and they frame our baked art.
+    if btn.SlotBackground then btn.SlotBackground:Hide() end
+    if btn.SlotArt        then btn.SlotArt:Hide()        end
+    -- Silence the inherited OnEvent so it can't re-show those regions later. Safe:
+    -- callers create these out of combat, we drive icon/cooldown/checked ourselves,
+    -- and the secure click runs off attributes, not this Lua-side OnEvent.
+    btn:UnregisterAllEvents()
+    btn:SetScript("OnEvent", nil)
+
+    btn:SetNormalTexture("Interface\\Buttons\\UI-Quickslot2")
+    local nt = btn:GetNormalTexture()
+    if nt then
+        resetTemplateTexture(nt)
+        nt:ClearAllPoints()
+        local w = size * NORMAL_RATIO
+        nt:SetSize(w, w)
+        nt:SetPoint("CENTER", btn, "CENTER", 0.5, -0.5)
+    end
+
+    if not (opts and opts.skipPushed) then
+        btn:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
+        local pt = btn:GetPushedTexture()
+        if pt then
+            resetTemplateTexture(pt)
+            pt:ClearAllPoints()
+            local w = size * PUSHED_RATIO
+            pt:SetSize(w, w)
+            pt:SetPoint("CENTER", btn, "CENTER", 0, 0)
+        end
+    end
+
+    btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+    local ht = btn:GetHighlightTexture()
+    if ht then resetTemplateTexture(ht); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
+end
+
+-- GetMouseFocus became GetMouseFoci (a list, front-most first) part way through
+-- 11.x; Classic Era still has the old one, some builds neither.
+function addon.GetMouseFocusFrame()
+    if GetMouseFoci then
+        local foci = GetMouseFoci()
+        return foci and foci[1]
+    end
+    return GetMouseFocus and GetMouseFocus()
+end
+
+-- ── Blizzard's Edit Mode ──────────────────────────────────────────────────────
+-- Returns whether registration actually happened — EditModeManagerFrame doesn't
+-- exist on every build, so callers store the result and retry on a later event.
+function addon.HookBlizzardEditMode(onEnter, onExit)
+    if not (EventRegistry and EditModeManagerFrame) then return false end
+    if onEnter then EventRegistry:RegisterCallback("EditMode.Enter", onEnter) end
+    if onExit  then EventRegistry:RegisterCallback("EditMode.Exit",  onExit)  end
+    return true
+end
+
 -- ── Shared edit-mode box ──────────────────────────────────────────────────────
--- One translucent, red-bordered box is drawn per movable element while in edit
--- mode. Centralising it here (instead of each module colouring its own frame's
--- backdrop) lets a single opacity / padding / border-thickness control style
--- every box at once, and lets padding grow the box *beyond* the element — which
--- a frame's own backdrop can't do. Each box is a sibling of UIParent anchored to
--- its target and kept one frame level below it, so it sits behind the element's
--- own content (icons / text) just like the old per-frame backdrop did.
+-- One box per movable element while in edit mode. Centralised so a single
+-- opacity/padding/border control styles every box, and so padding can grow the
+-- box *beyond* the element (a frame's own backdrop can't). Each is a UIParent
+-- sibling anchored to its target, one level below it.
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 local editBoxes = {}   -- [targetFrame] = overlay Frame
 
@@ -205,16 +353,9 @@ function addon.ShowEditBox(target)
     if not box then
         box = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
         box:EnableMouse(true)
-        -- Forwards mouse down/up to the target frame so the padding area is
-        -- both draggable AND click-to-open-position-editor, same as clicking
-        -- the target directly. Move-mode drives movement straight off
-        -- OnMouseDown/OnMouseUp (not RegisterForDrag/OnDragStart) so it starts
-        -- instantly instead of waiting on WoW's native drag-recognition
-        -- threshold — forwarding those same two events here keeps the padding
-        -- halo consistent with that. Looked up live (not captured once)
-        -- because each module assigns its own OnMouseDown/OnMouseUp on the
-        -- target *after* calling ShowEditBox, and may re-assign them across
-        -- edit sessions.
+        -- Forward mouse down/up to the target so the padding halo drags and click-opens
+        -- the position editor like the element itself. Looked up live: modules assign
+        -- their handlers after ShowEditBox and may reassign between sessions.
         box:SetScript("OnMouseDown", function(_, button)
             local fn = target:GetScript("OnMouseDown")
             if fn then fn(target, button) end
@@ -253,23 +394,18 @@ local function applyDefaults(src, dst)
 end
 
 -- ── Profiles ───────────────────────────────────────────────────────────────
--- DrievSettingsDB is a single ACCOUNT-WIDE SavedVariable (shared across every
--- character), so per-character profiles aren't automatic the way
--- SavedVariablesPerCharacter would give us — we track our own assignment map
--- (character key -> profile name) inside that shared DB instead. addon.db
--- always points at the active profile's table, which has the exact same
--- { minimap = {...}, settings = {...} } shape the addon used before profiles
--- existed, so every other file's addon.db.settings.X / addon.db.minimap.X
--- access keeps working unmodified — only which table addon.db points to changes.
+-- DrievSettingsDB is one ACCOUNT-WIDE SavedVariable, so per-character profiles
+-- aren't automatic — we keep our own character-key -> profile-name map inside it.
+-- addon.db points at the active profile and keeps the same { minimap, settings }
+-- shape as before profiles existed, so every other file's access is unchanged.
 local function getCharKey()
     local name  = UnitName("player") or "Unknown"
     local realm = GetRealmName() or "Unknown"
     return name .. " - " .. realm
 end
 
--- Pre-profiles installs have minimap/settings sitting at the DB's top level.
--- Move that into profiles.Default (once) so existing users keep their config
--- instead of silently resetting to defaults the first time this code runs.
+-- Pre-profiles installs kept minimap/settings at the DB's top level. Move that
+-- into profiles.Default once, so existing users don't silently reset.
 local function migrateToProfiles()
     if type(DrievSettingsDB) ~= "table" then DrievSettingsDB = {} end
     if not DrievSettingsDB.profiles then
@@ -291,16 +427,11 @@ local function migrateToProfiles()
     end
 end
 
--- 1.1.0 renamed this addon's folder, and WoW names each addon's SavedVariables
--- file after its folder — so an updating user's settings are sitting in a file
--- nothing loads any more. The "Driev's Essentials" bridge addon keeps that old
--- filename alive and stashes its contents in DrievEssentialsLegacyDB; here we
--- adopt them.
---
--- Deliberately conservative: this only fires when this install has no profiles
--- of its own, so a bridge folder left behind can never overwrite newer settings.
--- Runs before migrateToProfiles() so the adopted table goes through the same
--- normalisation a pre-existing one would.
+-- 1.1.0 renamed this addon's folder, and WoW names SavedVariables after the
+-- folder — so an updating user's settings sit in a file nothing loads. The bridge
+-- addon keeps the old filename alive in DrievEssentialsLegacyDB. Adopted only
+-- when this install has no profiles of its own, so a leftover bridge can't
+-- overwrite newer settings, and before migrateToProfiles() so it's normalised.
 local function migrateLegacyDB()
     local legacy = _G.DrievEssentialsLegacyDB
     if type(legacy) ~= "table" or type(legacy.profiles) ~= "table" then return end
@@ -315,12 +446,10 @@ local function migrateLegacyDB()
     addon.migratedFromLegacy = true
 end
 
--- Chat and Action Bars both make one-way changes to Blizzard's own frames on
--- login (killed native buttons, hidden bars, Edit Mode selection suppression
--- — see HideBlizzard.lua and Chat.lua) that RefreshAllModules() can't fully
--- undo or redo live. Switching to a profile with different chat/actionBars
--- settings needs a /reload to actually take effect cleanly, so this compares
--- old vs. new before/after a switch to decide whether to ask for one.
+-- Chat and Action Bars make one-way changes to Blizzard's frames on login (see
+-- HideBlizzard.lua and Chat.lua) that RefreshAllModules() can't undo live, so a
+-- profile switch that changes them needs a /reload. Compare old vs new to decide
+-- whether to ask for one.
 local function deepEquals(a, b)
     if a == b then return true end
     if type(a) ~= "table" or type(b) ~= "table" then return false end
@@ -363,16 +492,21 @@ function addon.GetProfileList()
     return list
 end
 
--- Re-applies every module's visuals/state from the (now-active) addon.db, and
--- refreshes the settings window if it's currently open. Called after any
--- profile switch; each module re-derives everything from its own getData(),
--- so this is just "call every module's existing apply-from-settings entry
--- point" rather than anything profile-specific.
+-- Re-applies every module from the now-active addon.db and refreshes the
+-- settings window if open. Each module re-derives everything from its own
+-- getData(), so this is just "call every apply-from-settings entry point".
 function addon.RefreshAllModules()
+    -- First: the palette is per-profile, and every panel refreshed below
+    -- repaints itself from it.
+    if addon.UI and addon.UI.ApplyPalette then addon.UI.ApplyPalette() end
+    if addon.UI and addon.UI.colorsPopup then addon.UI.colorsPopup:Refresh() end
     if addon.TTK then
         if addon.TTK.applyFont       then addon.TTK.applyFont() end
         if addon.TTK.applyPosition   then addon.TTK.applyPosition() end
         if addon.TTK.applyVisibility then addon.TTK.applyVisibility() end
+    end
+    if addon.SwingTimer and addon.SwingTimer.applyAll then
+        addon.SwingTimer.applyAll()
     end
     if addon.RaidFrames and addon.RaidFrames.applyAll then
         addon.RaidFrames.applyAll()
@@ -388,35 +522,35 @@ function addon.RefreshAllModules()
     -- re-derived from settings, so a profile switch can be applied live.
     if addon.ItemRack and addon.ItemRack.Refresh then addon.ItemRack.Refresh() end
     if addon.Particles and addon.Particles.refresh then addon.Particles.refresh() end
-    -- Nameplates re-derives every visible plate (and re-seeds the NPC list) from
-    -- the now-active profile, so a switch is applied live rather than at the
-    -- next pull.
+    -- Re-derives every visible plate and re-seeds the NPC list, so a switch
+    -- applies live rather than at the next pull.
     if addon.Nameplates and addon.Nameplates.refresh then addon.Nameplates.refresh() end
     if addon.Tooltip  and addon.Tooltip.refresh  then addon.Tooltip.refresh() end
     if addon.Raid      and addon.Raid.refresh      then addon.Raid.refresh() end
     if addon.Minimap   and addon.Minimap.refresh   then addon.Minimap.refresh() end
     if addon.ActionBars and addon.ActionBars.refresh then addon.ActionBars.refresh() end
-    -- DataTexts bars are frames we own outright, and rebuildAll re-derives all of
-    -- them from settings, so unlike the rest of the Chat module (see the one-way
-    -- Blizzard changes noted above promptReloadIfNeeded) they genuinely can be
-    -- re-applied live. Worth doing rather than leaving to the reload prompt:
-    -- settings.dataTexts is a sibling of settings.chat, so it isn't one of the
-    -- subtrees that prompt compares, and without this a profile differing only in
-    -- its datatexts got neither a refresh nor a reload request. rebuildAll also
-    -- re-narrows which events and polls are live, so this keeps those honest too.
+    -- DataTexts bars are frames we own and rebuildAll re-derives them, so unlike the
+    -- rest of Chat they can be re-applied live. Needed because settings.dataTexts is
+    -- a sibling of settings.chat and isn't one of the subtrees promptReloadIfNeeded
+    -- compares — without this, a datatexts-only profile got neither.
     if addon.DataTexts and addon.DataTexts.refresh then addon.DataTexts.refresh() end
-    -- Any currently-visible settings sub-panel refreshes its controls via its
-    -- own OnShow handler; toggling the window's shown state cascades OnShow
-    -- to whatever's actually on screen without needing a bespoke hook per tab.
+    -- Same reasoning as DataTexts: settings.chatChannels and settings.chatWindows
+    -- are siblings of settings.chat, so promptReloadIfNeeded never sees them
+    -- change, and both are re-runnable calls into Blizzard's own chat APIs rather
+    -- than one-way patches. Channels first — a window can't display a channel
+    -- this character hasn't joined.
+    if addon.ChatChannels and addon.ChatChannels.apply then addon.ChatChannels.apply() end
+    if addon.ChatWindows  and addon.ChatWindows.apply  then addon.ChatWindows.apply()  end
+    -- Visible sub-panels refresh via their own OnShow, so toggling the window's
+    -- shown state cascades to whatever is on screen without a per-tab hook.
     if addon.UI and addon.UI.frame and addon.UI.frame:IsShown() then
         addon.UI.frame:Hide()
         addon.UI.frame:Show()
     end
 end
 
--- Makes `name` the active profile for the CURRENT character and re-applies
--- everything. Fills in any settings keys added since the profile was last
--- used (e.g. after an addon update) the same way login does.
+-- Makes `name` active for the CURRENT character and re-applies everything,
+-- filling in any settings keys added since it was last used.
 function addon.SetActiveProfile(name)
     if not DrievSettingsDB.profiles[name] then return false, "Profile not found." end
     local oldSettings = addon.db and addon.db.settings
@@ -461,11 +595,9 @@ local function deepCopy(v)
     return out
 end
 
--- Overwrites the `toName` profile with a deep copy of every setting in
--- `fromName` (a fresh copy, so the two profiles don't share tables afterwards).
--- If `toName` is the profile currently in use on THIS character, the live
--- addon.db is re-pointed and every module re-applied so the change is visible
--- immediately, mirroring SetActiveProfile.
+-- Overwrites `toName` with a deep copy of `fromName` (fresh tables, so the two
+-- don't share afterwards). If `toName` is in use on THIS character, addon.db is
+-- re-pointed and modules re-applied, mirroring SetActiveProfile.
 function addon.CopyProfile(fromName, toName)
     if not (fromName and toName) then return false, "Pick both profiles." end
     if fromName == toName then return false, "Pick two different profiles." end
@@ -483,15 +615,11 @@ function addon.CopyProfile(fromName, toName)
 end
 
 -- ── Profile export/import ────────────────────────────────────────────────────
--- A profile is just nested booleans/numbers/strings/tables, so it's encoded
--- with a small hand-rolled serializer instead of loadstring() — a pasted
--- string comes from another player, and loadstring on untrusted input would
--- let it run arbitrary Lua. Each value is tagged with its type so the reader
--- never has to guess or execute anything: T/F for booleans, N<digits>; for
--- numbers, S<len>:<bytes> for strings (length-prefixed so string contents
--- never need escaping), and {...} for tables. The result is then base64-
--- encoded so it's a single line safe to paste anywhere (Discord, Pastebin,
--- in-game edit boxes) regardless of what bytes the profile happens to contain.
+-- Hand-rolled serializer rather than loadstring(): a pasted string comes from
+-- another player, and loadstring on untrusted input runs arbitrary Lua. Values
+-- are type-tagged so the reader never guesses or executes — T/F, N<digits>;,
+-- S<len>:<bytes> (length-prefixed, so contents never need escaping), {...}.
+-- Base64'd so it pastes anywhere as one line.
 
 local function serializeValue(v, buf)
     local t = type(v)
@@ -609,11 +737,9 @@ end
 
 local EXPORT_PREFIX = "DrievEssentials1:"
 
--- The codec above isn't profile-specific, so module addons with their own
--- copy-pasteable data (Item Rack's per-character sets) share it rather than
--- rolling a second one. `prefix` tags what kind of data the string carries, so
--- pasting a set string into the profile box — or the other way round — is
--- rejected outright instead of half-applied.
+-- The codec isn't profile-specific, so modules with their own copy-pasteable
+-- data (Item Rack's sets) share it. `prefix` tags what kind of data it is, so a
+-- set string pasted into the profile box is rejected rather than half-applied.
 function addon.EncodeTable(prefix, tbl)
     local ok, payload = pcall(serialize, tbl)
     if not ok then return nil, "Could not encode this data." end
@@ -630,12 +756,94 @@ function addon.DecodeTable(prefix, str)
     return data
 end
 
+-- ── Slimming an export ───────────────────────────────────────────────────────
+-- Two passes stand between a stored profile and its export string, because most
+-- of a profile is not worth sending. It holds what modules have WATCHED as well
+-- as what the user set, and every default it was merged with at login. Straight
+-- encoding ran ~193,000 characters — enough that filling the box locked the
+-- client for ~25 seconds, and so did pasting it into anything else.
+
+-- Modules whose settings block accumulates observed data (the nameplate
+-- module's learned-aura catalogue and its auto-detected NPC rows) register a
+-- pruner here. It's handed a throwaway copy of settings[key] and strips it in
+-- place: that data is a record of what this account has met, it rebuilds itself
+-- on whoever imports the string, and it was 84% of the export.
+local exportPruners = {}
+
+function addon.RegisterExportPruner(key, fn)
+    exportPruners[key] = fn
+end
+
+-- The other end of the same deal, run on a freshly imported profile once its
+-- defaults are merged: a pruner strips data the settings themselves imply, and
+-- this is where the module adds back what they imply. Nameplates appends the
+-- whitelists that travelled to its aura catalogue, so an imported profile's
+-- tracked auras are pickable on the Learned tab instead of the tab being empty
+-- until the importer meets each spell again.
+--
+-- Fillers only ever ADD. Nothing here may clear or overwrite what the profile
+-- arrived with — a filler runs against a profile that already holds everything
+-- the string carried, and the string is the authority on all of it.
+local importFillers = {}
+
+function addon.RegisterImportFiller(key, fn)
+    importFillers[key] = fn
+end
+
+-- Second pass: drop everything the profile shares with the defaults, since
+-- ImportProfile merges defaults back in and an unchanged value costs nothing to
+-- leave out. A key with no default behind it (a module the exporter runs and
+-- the importer doesn't) has nothing to fall back on, so it always travels.
+--
+-- Sub-tables the user emptied come back defaulted rather than empty — but so
+-- does the stored profile at every login, since applyDefaults refills exactly
+-- the same keys, so the round trip loses nothing that survives a /reload today.
+-- Returns nil, not an empty table, when `src` matches `def` outright — that's
+-- what lets a parent drop the whole branch instead of shipping empty scaffolding.
+local function diffDefaults(src, def)
+    local out
+    for k, v in pairs(src) do
+        -- Spelled out rather than `type(def) == "table" and def[k] or nil`,
+        -- which would read a stored `false` back as nil and keep it forever.
+        local d
+        if type(def) == "table" then d = def[k] end
+
+        local keep
+        if type(v) == "table" then
+            if type(d) == "table" then
+                keep = diffDefaults(v, d)
+            else
+                keep = v
+            end
+        elseif v ~= d then
+            keep = v
+        end
+
+        if keep ~= nil then
+            out = out or {}
+            out[k] = keep
+        end
+    end
+    return out
+end
+
 -- Returns an opaque, copy-pasteable string encoding the named profile, or
--- nil + an error message.
+-- nil + an error message. Older full-fat strings still import fine — the reader
+-- merges defaults either way, so a pruned payload and a complete one land in
+-- the same place.
 function addon.ExportProfile(name)
     local prof = DrievSettingsDB.profiles[name]
     if not prof then return nil, "Profile not found." end
-    local str = addon.EncodeTable(EXPORT_PREFIX, prof)
+
+    local slim = deepCopy(prof)
+    for key, prune in pairs(exportPruners) do
+        local block = slim.settings and slim.settings[key]
+        if type(block) == "table" then prune(block) end
+    end
+
+    -- `or {}` for the profile that matches the defaults exactly: nothing to
+    -- diff still has to encode as an empty table, not as nothing at all.
+    local str = addon.EncodeTable(EXPORT_PREFIX, diffDefaults(slim, defaults) or {})
     if not str then return nil, "Could not export this profile." end
     return str
 end
@@ -652,7 +860,15 @@ function addon.ImportProfile(name, str)
         return nil, err or "That doesn't look like a valid profile string."
     end
 
-    DrievSettingsDB.profiles[name] = applyDefaults(defaults, data)
+    local prof = applyDefaults(defaults, data)
+    -- After the merge, so a filler is handed a complete block rather than
+    -- whatever subset the string happened to carry.
+    for key, fill in pairs(importFillers) do
+        local block = prof.settings and prof.settings[key]
+        if type(block) == "table" then fill(block) end
+    end
+
+    DrievSettingsDB.profiles[name] = prof
     return name
 end
 
@@ -676,6 +892,11 @@ boot:SetScript("OnEvent", function(self, event, name)
         DrievSettingsDB.profiles[profileName] = applyDefaults(defaults, DrievSettingsDB.profiles[profileName])
         addon.db = DrievSettingsDB.profiles[profileName]
         addon.activeProfileName = profileName
+
+        -- Before any module builds a frame off the palette: core's files are
+        -- loaded and module PLAYER_LOGIN handlers register after this one, so
+        -- nothing is ever painted in shipped colours and then recoloured.
+        if addon.UI and addon.UI.ApplyPalette then addon.UI.ApplyPalette() end
 
         if addon.CreateMinimapButton then
             addon.CreateMinimapButton()

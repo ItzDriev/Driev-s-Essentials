@@ -3,30 +3,20 @@ if not addon then return end
 
 local UI = addon.UI
 
--- Snap-to-panel docking, a position lock, and — as of 1.15.9 — Move Mode
--- ownership of free-floating chat position too.
+-- Snap-to-panel docking, a position lock, and Move Mode ownership of
+-- free-floating chat position.
 --
--- Deliberately NOT ElvUI's model, which earlier attempts here tried to copy and
--- which repeatedly broke Blizzard's own tab dragging. Nothing is reparented,
--- GeneralDockManager is left completely alone, and no layout is re-asserted
--- every frame.
+-- Deliberately NOT ElvUI's model, which earlier attempts copied and which
+-- repeatedly broke tab dragging. Nothing is reparented, GeneralDockManager is
+-- left alone, and no layout is re-asserted every frame.
 --
--- Docking acts at ONE moment: when you finish dragging a chat window, if it
--- landed over a chat panel, its position and size are set to fit that panel
--- and handed back to Blizzard through FCF_SavePositionAndDimensions.
+-- Docking acts at ONE moment: when a drag ends over a panel, position and size
+-- are set to fit and handed back via FCF_SavePositionAndDimensions.
 --
--- Free (undocked) position used to be left entirely to that same Blizzard
--- call and its counterpart, FCF_RestorePositionAndDimensions. 1.15.9 broke
--- that: FCF_RestorePositionAndDimensions now unconditionally bails out for
--- DEFAULT_CHAT_FRAME ("Default chat frame is now controlled via edit mode" —
--- Blizzard's own comment), so a dragged default chat window silently resets
--- to wherever Edit Mode's layout puts it on the next reload. `rects` below is
--- this addon's own record of where a chat window was last dropped, applied
--- in reapply() AFTER Blizzard/Edit Mode's own restore has run — so our data
--- wins regardless of what Blizzard did or didn't restore. It's written both
--- by a plain native tab-drag (the FCF_StopDragging hook in init()) and by our
--- own Move Mode movers below, so either way of dragging a chat window now
--- persists across reloads.
+-- 1.15.9 made FCF_RestorePositionAndDimensions bail out unconditionally for
+-- DEFAULT_CHAT_FRAME, so a dragged window silently reset to Edit Mode's layout on
+-- reload. `rects` is our own record of where a window was last dropped, applied
+-- in reapply() AFTER Blizzard's restore, so our data wins.
 
 local PAD      = 5  -- gap between the panel's edge and the chat text
 local TAB_ROOM = 24 -- space kept at the panel's top for the tab strip
@@ -57,12 +47,7 @@ local function getData()
     return d
 end
 
-local function eachChatFrame(fn)
-    for i = 1, NUM_CHAT_WINDOWS or 10 do
-        local cf = _G["ChatFrame" .. i]
-        if cf then fn(cf, i) end
-    end
-end
+local eachChatFrame = addon.Chat.eachFrame
 
 -- ── Panel hit-testing ───────────────────────────────────────────────────────
 local function panelRect(i)
@@ -94,8 +79,8 @@ end
 
 -- ── Free (undocked) position ────────────────────────────────────────────────
 -- Our own record of a chat window's rect, independent of Blizzard's saved
--- position/dimensions — see the header comment for why that can't be trusted
--- for DEFAULT_CHAT_FRAME anymore.
+-- position — see the header for why that can't be trusted for
+-- DEFAULT_CHAT_FRAME any more.
 local function captureRect(cf)
     local l, b = cf:GetLeft(), cf:GetBottom()
     local w, h = cf:GetWidth(), cf:GetHeight()
@@ -104,17 +89,11 @@ local function captureRect(cf)
 end
 
 -- ── Suppressing Blizzard's own repositioning ────────────────────────────────
--- Reacting to Blizzard's Edit Mode reflow after the fact (re-asserting our
--- own position on a short timer, once per triggering event) caused a visible
--- flicker whenever several of those events fired close together - the chat
--- visibly hopped to Blizzard's position and back to ours each time. Instead,
--- DEFAULT_CHAT_FRAME's SetPoint/ClearAllPoints are replaced with no-ops for
--- everyone - including Blizzard's own Edit Mode system - except this addon's
--- own code, which calls through to the saved originals directly via
--- rawSetPoint/rawClearAllPoints below, bypassing the no-op entirely. Real
--- native tab-drag and Move Mode dragging aren't affected: StartMoving/
--- StopMovingOrSizing manipulate the frame's anchor at the engine level and
--- never go through the Lua SetPoint/ClearAllPoints methods.
+-- Re-asserting our position after each Edit Mode reflow made the chat visibly
+-- hop to Blizzard's position and back. Instead DEFAULT_CHAT_FRAME's
+-- SetPoint/ClearAllPoints become no-ops for everyone — Edit Mode included —
+-- except our own code, which calls the saved originals. Native tab-drag and Move
+-- Mode are unaffected: StartMoving moves the anchor at the engine level.
 local origSetPoint, origClearAllPoints = {}, {}
 
 local function rawSetPoint(cf, ...)
@@ -159,10 +138,10 @@ local function dockTo(cf, index)
     -- result would be an unreadable sliver.
     if w < 80 or h < 40 then return false end
 
-    -- Anchored to UIParent in absolute terms rather than to the panel itself.
-    -- FCF_SavePositionAndDimensions records absolute coordinates, so anchoring
-    -- to the panel would be silently converted anyway — and a real anchor would
-    -- mean Blizzard and we both believe we own the frame's position.
+    -- Anchored to UIParent in absolute terms rather than to the panel.
+    -- FCF_SavePositionAndDimensions records absolute coordinates, so a panel anchor
+    -- would be converted anyway — and would mean Blizzard and we both think we own
+    -- the frame's position.
     rawClearAllPoints(cf)
     rawSetPoint(cf, "BOTTOMLEFT", UIParent, "BOTTOMLEFT", l + PAD, b + PAD)
     cf:SetSize(w, h)
@@ -198,11 +177,9 @@ local function finishDrag(cf)
     if rect then getData().rects[cf:GetID()] = rect end
 end
 
--- Re-applies docking and remembered free positions for every chat we're
--- tracking. Called when a panel is moved or resized (so anything docked to it
--- follows) and once after login, where it's what makes a free-floating
--- default chat window stay where it was dropped instead of resetting to
--- wherever Edit Mode's own layout put it.
+-- Re-applies docking and remembered free positions for every tracked chat.
+-- Called when a panel moves or resizes (so docked chats follow) and once after
+-- login, which is what keeps a free-floating default chat where it was dropped.
 local function reapply()
     if not isReady() then return end
     local d = getData()
@@ -224,12 +201,19 @@ local function reapply()
             if cf then applyRect(cf, rect) end
         end
     end
+
+    -- Moving or resizing a chat frame moves what the combat log's filter bar
+    -- hangs off, and Blizzard only re-derives that from its own dock code. This
+    -- path never goes through Chat.refresh(), so it has to ask directly.
+    if addon.Chat and addon.Chat.updateCombatLogPosition then
+        addon.Chat.updateCombatLogPosition()
+    end
 end
 
 -- ── Lock ────────────────────────────────────────────────────────────────────
--- Uses Blizzard's own lock rather than blocking drags ourselves: FCFTab_OnDragStart
--- already checks chatFrame.isLocked, so setting it stops the drag at source
--- instead of letting one start and then undoing it.
+-- Uses Blizzard's own lock rather than blocking drags ourselves:
+-- FCFTab_OnDragStart already checks chatFrame.isLocked, so this stops the drag
+-- at source instead of undoing one that already started.
 local function applyLock()
     if not isReady() then return end
     -- Boolean, not 1/nil: FCF_SetLocked passes this straight to the
@@ -247,44 +231,28 @@ local function setLocked(v)
 end
 
 -- ── Blizzard Edit Mode suppression ──────────────────────────────────────────
--- ChatFrame1/DEFAULT_CHAT_FRAME is wired up as a full EditModeSystemMixin
--- system (PrimaryChatFrameMixin:OnLoad calls EditModeSystemMixin.OnSystemLoad)
--- — the same integration the action bars and bag bar have, and it causes the
--- same two problems here:
+-- ChatFrame1 is a full EditModeSystemMixin system, which causes two problems:
 --
--- 1. It gets its own Selection highlight box in Blizzard's native Edit Mode,
---    a second "move this" box alongside ours. defaultHideSelection is the
---    flag EditModeSystemMixin:OnEditModeEnter checks before calling
---    HighlightSystem() — setting it true skips that box entirely. (Not the
---    same mechanism used to suppress MainActionBar/BagsBar in HideBlizzard.lua
---    — those are fully hidden and reparented off-screen, which isn't an
---    option here since the chat window still needs to be visible.)
+-- 1. It gets its own Selection box, a second "move this" box beside ours.
+--    defaultHideSelection is the flag OnEditModeEnter checks before calling
+--    HighlightSystem(). (Not the reparent-off-screen trick HideBlizzard.lua
+--    uses — the chat still needs to be visible.)
 --
--- 2. HighlightSystem() is also where our own dragging broke: it calls
---    self:SetMovable(false), and only SelectSystem() (clicking the system
---    inside Blizzard's OWN Edit Mode UI) sets it back to true. If Blizzard's
---    Edit Mode was ever opened this session — even before this addon loaded —
---    ChatFrame1 is left permanently non-movable, so our StartMoving() calls
---    in the movers below silently do nothing.
+-- 2. HighlightSystem() calls SetMovable(false) and only SelectSystem() undoes
+--    it, so once Edit Mode has been opened this session ChatFrame1 is left
+--    permanently non-movable and our StartMoving() calls do nothing.
 --
--- Both only apply while the Chat module itself is enabled: with it off, this
--- addon isn't replacing anything, so Blizzard's own Edit Mode should behave
--- exactly as it would with the addon absent. Unlike the action bars'
--- HideBlizzardActionBars (a one-way hide/reparent), this is fully reversible
--- — defaultHideSelection is read fresh by Blizzard on every Edit Mode entry —
--- so toggling the module back off here genuinely restores Blizzard's own
--- selection box instead of just leaving it suppressed for the rest of the
--- session.
+-- Both apply only while the module is enabled and are fully reversible, since
+-- defaultHideSelection is re-read on every Edit Mode entry.
 local function suppressBlizzardChatEditMode()
     local on = addon.Chat and addon.Chat.isEnabled()
     eachChatFrame(function(cf)
         cf.defaultHideSelection = on or nil
         if on and cf.SetMovable then cf:SetMovable(true) end
     end)
-    -- Only ChatFrame1/DEFAULT_CHAT_FRAME is wired to Edit Mode's own system
-    -- anchor updates (see the comment above), so that's the only frame that
-    -- needs its repositioning suppressed - turned off again the instant the
-    -- Chat module itself is disabled, same as the rest of this function.
+    -- Only ChatFrame1 is wired to Edit Mode's system anchor updates, so it's the
+    -- only frame needing suppression — turned off again the instant the Chat module
+    -- is disabled, same as the rest of this function.
     local defaultCF = DEFAULT_CHAT_FRAME or _G["ChatFrame1"]
     if defaultCF then setChatMovementSuppressed(defaultCF, on and true or false) end
 end
@@ -297,19 +265,11 @@ local function refresh()
 end
 
 -- ── Move Mode ────────────────────────────────────────────────────────────────
--- One mover per currently shown top-level chat window, following the same
--- shape as every other movable (getFrame/enterMoveMode/leaveMoveMode/
--- savePosition/getPosition/setPosition/getLabel — see ChatPanels.lua's
--- makeMover for the reference shape).
---
--- Dragging goes straight onto the real ChatFrame rather than a stand-in proxy:
--- ChatFrameTemplate's own script list is only OnLoad/OnEvent/OnUpdate/
--- OnHyperlinkClick/OnHyperlinkEnter/OnHyperlinkLeave — no OnMouseDown or
--- OnMouseUp — so attaching and later clearing those two scripts here never
--- touches anything Blizzard relies on (hyperlink clicking runs through the
--- separate OnHyperlinkClick script and is untouched). EnableMouse is likewise
--- never turned off on leave — it's already on natively for hyperlink hover/
--- click, and this addon doesn't own that setting.
+-- One mover per shown top-level chat window, same shape as every other movable.
+-- Dragging goes onto the real ChatFrame, not a proxy: ChatFrameTemplate defines
+-- no OnMouseDown/OnMouseUp of its own, so attaching and clearing those never
+-- touches anything Blizzard relies on. EnableMouse is never turned off on leave
+-- — it's on natively for hyperlink hover, and this addon doesn't own it.
 local movers = {}
 
 local function getOrCreateMover(id)
@@ -335,16 +295,10 @@ local function getOrCreateMover(id)
         rawSetPoint(cf, "BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
     end
 
-    -- Backstop for the position-editor's typed X/Y path (setPosition doesn't
-    -- itself decide dock-vs-free — see below). A drag is already resolved the
-    -- instant it's released (enterMoveMode's OnMouseUp), specifically so
-    -- another movable's savePosition() running later in ExitMoveMode's loop
-    -- — ChatPanels' does, unconditionally, whenever ANY panel is enabled —
-    -- can't call reapply() against our still-stale docked/rects entry and
-    -- yank a freshly-freed chat window straight back onto the panel before
-    -- we've had a chance to update it. Only re-evaluates if the position
-    -- actually differs from Move Mode entry, so this is a no-op on exit for
-    -- a window that was already resolved by its own drag.
+    -- Backstop for the position-editor's typed X/Y path. A drag is already resolved
+    -- the instant it's released, specifically so another movable's savePosition()
+    -- later in ExitMoveMode's loop can't call reapply() against a stale entry and
+    -- yank a freshly-freed window back onto the panel.
     function mover.savePosition()
         local before = mover._enterRect
         local now = captureRect(cf)
@@ -362,10 +316,9 @@ local function getOrCreateMover(id)
         -- The Move Mode overlay sits at DIALOG strata; without this the chat
         -- frame would render underneath its dimmed background.
         cf:SetFrameStrata("TOOLTIP")
-        -- Belt-and-suspenders against Blizzard's EditModeSystemMixin leaving
-        -- this non-movable (see suppressBlizzardChatEditMode above) — cheap
-        -- to re-assert on every entry, and StartMoving() below is a silent
-        -- no-op without it.
+        -- Belt-and-suspenders against EditModeSystemMixin leaving this non-movable (see
+        -- suppressBlizzardChatEditMode) — cheap to re-assert, and StartMoving() below is
+        -- a silent no-op without it.
         if cf.SetMovable then cf:SetMovable(true) end
         addon.ShowEditBox(cf)
         cf:SetScript("OnMouseDown", function(self, button)
@@ -423,47 +376,35 @@ end
 local function init()
     refresh()
 
-    -- The one moment docking happens. hooksecurefunc runs after Blizzard has
-    -- finished its own drag handling (including any re-docking of tabs), so the
-    -- frame's final rect is settled by the time we look at it. Covers a plain
-    -- native tab drag, done without ever opening Move Mode.
+    -- The one moment docking happens. hooksecurefunc runs after Blizzard's own drag
+    -- handling, so the frame's final rect is settled. Covers a plain native tab
+    -- drag, done without ever opening Move Mode.
     if FCF_StopDragging then
         hooksecurefunc("FCF_StopDragging", finishDrag)
     end
 end
 
--- Blizzard's Edit Mode HighlightSystem() (run on entering Edit Mode) calls
--- self:SetMovable(false) on ChatFrame1, and only SelectSystem() (clicking the
--- system inside Blizzard's OWN Edit Mode UI) sets it back to true - so once
--- Blizzard's Edit Mode has been opened this session, our own StartMoving()
--- calls in the movers below would silently do nothing without this. (Its
--- other historical job - re-fighting Edit Mode preset position resets on
--- Enter/Exit - is now handled structurally by setChatMovementSuppressed
--- above instead, but refresh() is still cheap to call here regardless.)
--- EditMode.Enter/.Exit are the same EventRegistry callbacks the action bars
--- and raid frames already hook for Blizzard's Edit Mode; see ActionBars.lua's
--- hookBlizzardEditMode for the identical registration pattern.
+-- Blizzard's HighlightSystem() calls SetMovable(false) on ChatFrame1 and only
+-- SelectSystem() undoes it, so once Edit Mode has been opened this session our
+-- StartMoving() calls would do nothing without this. Deferred a frame because
+-- Edit Mode's own handlers run in the same pass and would overwrite us.
 local editModeHooked = false
-local function hookBlizzardEditMode()
-    if editModeHooked or not (EventRegistry and EditModeManagerFrame) then return end
-    editModeHooked = true
-    EventRegistry:RegisterCallback("EditMode.Enter", function() C_Timer.After(0, refresh) end)
-    EventRegistry:RegisterCallback("EditMode.Exit",  function() C_Timer.After(0, refresh) end)
-end
+local function onEditModeToggled() C_Timer.After(0, refresh) end
 
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 -- Also PLAYER_ENTERING_WORLD (not unregistered, unlike PLAYER_LOGIN): purely a
--- retry opportunity for hookBlizzardEditMode below, in case EditModeManagerFrame
--- isn't loaded yet at PLAYER_LOGIN - harmless once it's already hooked, since
--- hookBlizzardEditMode no-ops after its first success.
+-- retry opportunity for the Edit Mode hook below, in case EditModeManagerFrame
+-- isn't loaded yet at PLAYER_LOGIN.
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
 f:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_LOGIN" then
         init()
         f:UnregisterEvent("PLAYER_LOGIN")
     end
-    hookBlizzardEditMode()
+    if not editModeHooked then
+        editModeHooked = addon.HookBlizzardEditMode(onEditModeToggled, onEditModeToggled)
+    end
 end)
 
 addon.ChatDock = {
@@ -471,13 +412,9 @@ addon.ChatDock = {
     reapply   = reapply,
     setLocked = setLocked,
     isLocked  = function() return isReady() and getData().locked or false end,
-    -- Docks the default chat frame onto a panel immediately, rather than
-    -- waiting for the user to drag it there themselves - called when a panel
-    -- is switched on from settings. Only ever attempted once per panel per
-    -- profile (re-toggling a panel off/on later doesn't repeat it), and only
-    -- actually docks if the chat is currently sitting over THIS panel - the
-    -- same panelUnder hit-test a manual drag-and-drop uses - so enabling a
-    -- second panel can't steal a chat window already docked to the first.
+    -- Docks the default chat onto a panel when the panel is switched on, rather than
+    -- waiting for a manual drag. Once per panel per profile, and only if the chat
+    -- currently sits over THIS panel, so a second panel can't steal a docked window.
     dockDefaultChat = function(index)
         if not isReady() then return end
         local d = getData()

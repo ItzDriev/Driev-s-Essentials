@@ -1,25 +1,17 @@
 local addon = _G.DrievEssentials
 if not addon then return end
 
--- Sound alerts. Currently one trigger (incoming whisper); the structure is
--- built to take more.
+-- Sound alerts. One trigger so far (incoming whisper); structured to take more.
 --
--- Sounds come from LibSharedMedia-3.0, which the core addon already bundles and
--- already uses for the font picker. That's the standard way WoW addons share
--- media: anything registered by a sound pack the user has installed (or by
--- ElvUI, WeakAuras, etc.) shows up in the list automatically, without this
--- addon shipping audio of its own.
---
--- LSM ships exactly one sound out of the box ("None"), so a handful of
--- Blizzard's own files are registered below to give the dropdown something
--- useful on a fresh install. They're registered INTO LSM rather than kept in a
--- private list, so other addons get them too.
+-- Sounds come from LibSharedMedia-3.0, which core already bundles — so anything
+-- a sound pack (or ElvUI, WeakAuras, ...) registers shows up automatically. LSM
+-- ships only "None", so a few Blizzard files are registered below to give the
+-- dropdown something on a fresh install. Registered INTO LSM, so others get them.
 
 local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
 
--- The default sound is bundled with the addon (Media\Whisper.ogg) rather than
--- being one of Blizzard's, so it's guaranteed present and consistent. Its name
--- is used as the whisperSound default below, so the two must match.
+-- Bundled with the addon (Media\Whisper.ogg) rather than one of Blizzard's, so
+-- it's guaranteed present. Must match the whisperSound default below.
 local DEFAULT_SOUND = "Driev Whisper"
 
 -- LSM validates that sound paths end in .ogg or .mp3 and silently rejects
@@ -86,9 +78,8 @@ local function fireWhisperAlert()
     if not isReady() then return end
     local d = getData()
     if not d.whisperEnabled then return end
-    -- "Enable Chat System" (chat.enabled) is the parent switch for this whole
-    -- module — whisper alerts enabled on their own tab still shouldn't fire
-    -- while that's off.
+    -- chat.enabled is the parent switch for the whole module — alerts enabled on
+    -- their own tab still shouldn't fire while it's off.
     if addon.Chat and not addon.Chat.isEnabled() then return end
 
     local now = GetTime()

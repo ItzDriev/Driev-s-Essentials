@@ -1,6 +1,6 @@
 ## Interface: 11509
-## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Nameplates
-## Notes: Takes over nameplate handling (health/cast bars, threat coloring, per-NPC colors and renames) the way Plater does. Requires Driev's Essentials.
+## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Swing Timer
+## Notes: Mainhand and offhand swing timer bars, with queue coloring for Heroic Strike and Cleave. Requires Driev's Essentials.
 ## Version: 1.0.0
 ## Author: Driev
 ## Dependencies: DrievsEssentials
@@ -8,6 +8,5 @@
 
 # LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 are provided by the core
 # addon, which is guaranteed loaded first via ## Dependencies above.
-NameplateData.lua
-Nameplates.lua
-NameplatesUI.lua
+SwingTimer.lua
+SwingTimerUI.lua

@@ -1,10 +1,6 @@
--- Driev's Essentials — Item Rack module: settings tab.
---
--- Adds the "Item Rack" entry to core's settings sidebar, split into two
--- sub-tabs: General (what the module does) and Layout (how the on-screen bars
--- look, including a per-bar block for every cluster the user has spawned).
--- Because this lives in the module, disabling the addon removes the tab
--- entirely.
+-- Item Rack module: settings tab. Adds the "Item Rack" sidebar entry, split into
+-- General (what the module does), Layout (how the on-screen bars look) and
+-- Events. Living in the module means disabling the addon removes the tab.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -17,7 +13,6 @@ local W  = UI.widgets
 
 local applyBackdrop        = W.applyBackdrop
 local createCheckbox       = W.createCheckbox
-local createTab            = W.createTab
 local selectSubTab         = W.selectSubTab
 local buildStepper         = W.buildStepper
 local flatButton           = W.flatButton
@@ -44,11 +39,11 @@ local function sectionHeader(parent, text, anchorTo, gap)
         fs:SetPoint("TOPLEFT", INSET, -INSET)
     end
     fs:SetText(text)
-    fs:SetTextColor(unpack(C.red))
+    UI.tint(fs, C.red)
 
     local rule = parent:CreateTexture(nil, "ARTWORK")
     rule:SetTexture(UI.WHITE)
-    rule:SetVertexColor(unpack(C.tabBorder))
+    UI.tintTexture(rule, C.tabBorder)
     rule:SetPoint("TOPLEFT", fs, "BOTTOMLEFT", 0, -4)
     rule:SetSize(520, 1)
     return fs
@@ -80,19 +75,16 @@ local function labelledStepper(parent, anchorTo, gap, text, opts)
     local label = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     label:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -(gap or 12))
     label:SetText(text)
-    label:SetTextColor(unpack(C.textWhite))
+    UI.tint(label, C.textWhite)
 
     local stepper = buildStepper(parent, opts)
     stepper:SetPoint("LEFT", label, "RIGHT", 12, 0)
 
-    -- A FontString's natural height is just its text line — noticeably shorter
-    -- than the 22px stepper it sits beside, which SetPoint("LEFT", ..., "RIGHT")
-    -- vertically centers against it. Left alone, the label's BOTTOMLEFT (what
-    -- the next row anchors off) sits above the stepper's actual bottom edge, so
-    -- the next row starts before this one's +/-/value boxes have cleared —
-    -- their borders overlap. Fixing the label's height to match the stepper
-    -- makes BOTTOMLEFT describe the whole row; FontStrings centre their text
-    -- vertically by default, so the label itself doesn't move.
+    -- A FontString's natural height is just its text line, shorter than the 22px
+    -- stepper beside it — so its BOTTOMLEFT, which the next row anchors off, sits
+    -- above the stepper's real bottom edge and the rows overlap. Matching the
+    -- stepper's height makes BOTTOMLEFT describe the whole row; FontStrings centre
+    -- their text vertically, so the label itself doesn't move.
     label:SetHeight(STEPPER_ROW_H)
 
     label.stepper = stepper
@@ -120,7 +112,7 @@ local function buildGeneralPanel(parent)
     blurb:SetPoint("TOPLEFT", enable, "BOTTOMLEFT", 0, -8)
     blurb:SetWidth(520)
     blurb:SetJustifyH("LEFT")
-    blurb:SetTextColor(unpack(C.textGrey))
+    UI.tint(blurb, C.textGrey)
     blurb:SetText(
         "Hover a slot on the character sheet to pop out every item that fits it — click one to swap.\n"
         .. "|cffffffffAlt+click|r a character sheet slot to spawn a movable button for it (Alt+click the button to remove it).\n"
@@ -183,7 +175,7 @@ local function buildGeneralPanel(parent)
     setsNote:SetPoint("TOPLEFT", setsHdr, "BOTTOMLEFT", 0, -14)
     setsNote:SetWidth(520)
     setsNote:SetJustifyH("LEFT")
-    setsNote:SetTextColor(unpack(C.textGrey))
+    UI.tint(setsNote, C.textGrey)
     setsNote:SetText("Equipment sets belong to this character, not to the profile — a set naming gear "
         .. "another character doesn't own would be no use to them. Everything else here (bars, scale, "
         .. "padding, menus) is part of the profile. Move sets between characters with these:")
@@ -251,6 +243,16 @@ local function buildGeneralPanel(parent)
         function() IR.ReflectAltClick() end)
     disableAlt:SetPoint("TOPLEFT", equipOnPick, "BOTTOMLEFT", 0, -6)
 
+    local editorOnLeft = optionCheck(panel, checks, "Left click opens the set editor", "setEditorOnLeft",
+        "Left clicking the set button opens the set editor when there's no set to equip. "
+        .. "With a set equipped, left click still equips it.")
+    editorOnLeft:SetPoint("TOPLEFT", equipToggle, "TOPLEFT", COL_X, 0)
+
+    local editorOnRight = optionCheck(panel, checks, "Right click opens the set editor", "setEditorOnRight",
+        "Right clicking the set button opens the set editor.\n\n"
+        .. "Has no effect while \"Menus on right click\" is on — that claims the right click for the set menu.")
+    editorOnRight:SetPoint("TOPLEFT", editorOnLeft, "BOTTOMLEFT", 0, -6)
+
     -- ── Notifications & tooltips ─────────────────────────────────────────────
     local notifyHdr = sectionHeader(panel, "Notifications & Tooltips", disableAlt, 18)
 
@@ -300,66 +302,20 @@ end
 local DEFAULT_FONT = "Default"
 
 local function hotkeyFontList()
-    local list = { DEFAULT_FONT }
-    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
-    if LSM then
-        for _, name in ipairs(LSM:List("font")) do list[#list + 1] = name end
-    end
-    return list
+    return addon.MediaList("font", { lead = DEFAULT_FONT })
 end
 
--- A clickable colour swatch opening WoW's native picker, RGB only — same shape
--- the Chat and TTK panels use, including the fallback for Classic Era builds
--- that predate SetupColorPickerAndShow.
+-- Hover-highlighted variant of the shared swatch — the Layout panel puts these
+-- in dense rows, where a border that lights up is what tells you which one the
+-- cursor is actually on.
 local function colorSwatch(parent, getRGB, setRGB, onChange)
-    local sw = CreateFrame("Button", nil, parent, "BackdropTemplate")
-    sw:SetSize(20, 20)
-    applyBackdrop(sw, 1, { 1, 1, 1 }, C.tabBorder)
-
-    local function paint()
-        local r, g, b = getRGB()
-        sw:SetBackdropColor(r or 1, g or 1, b or 1, 1)
-    end
-
-    sw:SetScript("OnClick", function()
-        local r, g, b = getRGB()
-        local function apply()
-            local nr, ng, nb = ColorPickerFrame:GetColorRGB()
-            setRGB(nr, ng, nb); paint(); if onChange then onChange() end
-        end
-        local function cancel()
-            setRGB(r, g, b); paint(); if onChange then onChange() end
-        end
-        if ColorPickerFrame.SetupColorPickerAndShow then
-            ColorPickerFrame:SetupColorPickerAndShow({
-                r = r, g = g, b = b, hasOpacity = false,
-                swatchFunc = apply, cancelFunc = cancel,
-            })
-        else
-            ColorPickerFrame.hasOpacity = false
-            ColorPickerFrame.func       = apply
-            ColorPickerFrame.cancelFunc = cancel
-            ColorPickerFrame:SetColorRGB(r, g, b)
-            ColorPickerFrame:Hide() -- force OnShow to refire with these values
-            ColorPickerFrame:Show()
-        end
-    end)
-
-    sw:SetScript("OnEnter", function(s) s:SetBackdropBorderColor(unpack(C.red)) end)
-    sw:SetScript("OnLeave", function(s) s:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-
-    sw.Refresh = paint
-    paint()
-    return sw
+    return W.createColorSwatch(parent, getRGB, setRGB, onChange, { hover = true })
 end
 
--- createScrollDropdown treats its items as opaque, self-identifying strings, so
--- a bar has to be recognisable from its label alone. That used to mean pinning
--- the cluster's internal id onto the end of it ("… #3"), which showed the user a
--- number that means nothing to them. Instead the label lists every slot on the
--- bar: a slot can only be on one bar at a time, so no two labels can collide,
--- and the id stays where it belongs — out of sight. The map is rebuilt whenever
--- the list is, since bars come and go while the panel is open.
+-- createScrollDropdown items are opaque strings, so a bar must be recognisable
+-- from its label alone. Rather than exposing the internal id ("… #3"), the label
+-- lists the bar's slots — a slot is only ever on one bar, so labels can't
+-- collide. Rebuilt with the list, since bars come and go while the panel is open.
 local clusterByLabel = {}
 
 local function clusterDropdownLabel(cid)
@@ -377,7 +333,7 @@ local function buildLayoutPanel(parent)
     defNote:SetPoint("TOPLEFT", defHdr, "BOTTOMLEFT", 0, -14)
     defNote:SetWidth(520)
     defNote:SetJustifyH("LEFT")
-    defNote:SetTextColor(unpack(C.textGrey))
+    UI.tint(defNote, C.textGrey)
     defNote:SetText("These apply to bars created from here on. Existing bars keep their own settings below — "
         .. "a button docked onto a bar adopts that bar's scale and padding.")
 
@@ -483,22 +439,19 @@ local function buildLayoutPanel(parent)
     cd90:SetPoint("TOPLEFT", largeNumbers, "BOTTOMLEFT", 0, -6)
 
     -- ── Keybind text ─────────────────────────────────────────────────────────
-    -- Font, size and where the key sits on the button. Same set of controls the
-    -- Action Bars module offers for its own hotkey text, so the two can be made
-    -- to match.
+    -- Font, size and placement. Same controls the Action Bars module offers for its
+    -- hotkey text, so the two can be made to match.
     local keyHdr = sectionHeader(panel, "Keybind Text", cd90, 18)
-    -- cd90 is the last row of the RIGHT-hand column, and sectionHeader anchors to
-    -- its predecessor's left edge — which would start this header (and its rule,
-    -- and everything chained below it, down to "This Bar") halfway across the
-    -- panel. Take cd90's depth, since it's the lowest thing above, but put the
-    -- header back on the panel's own left margin.
+    -- cd90 is the last row of the RIGHT column, and sectionHeader anchors to its
+    -- predecessor's left edge — which would start this header halfway across the
+    -- panel. Take cd90's depth but put the header back on the left margin.
     keyHdr:ClearAllPoints()
     keyHdr:SetPoint("TOPLEFT", cd90, "BOTTOMLEFT", -COL_X, -18)
 
     local fontLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     fontLbl:SetPoint("TOPLEFT", keyHdr, "BOTTOMLEFT", 0, -14)
     fontLbl:SetText("Font")
-    fontLbl:SetTextColor(unpack(C.textWhite))
+    UI.tint(fontLbl, C.textWhite)
     fontLbl:SetHeight(STEPPER_ROW_H)
 
     local fontDD = createScrollDropdown(panel, 170, hotkeyFontList, function(name)
@@ -510,7 +463,7 @@ local function buildLayoutPanel(parent)
     local colorLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     colorLbl:SetPoint("TOPLEFT", fontLbl, "BOTTOMLEFT", 0, -10)
     colorLbl:SetText("Text colour")
-    colorLbl:SetTextColor(unpack(C.textWhite))
+    UI.tint(colorLbl, C.textWhite)
     colorLbl:SetHeight(STEPPER_ROW_H)
 
     local colorSw = colorSwatch(panel,
@@ -546,18 +499,16 @@ local function buildLayoutPanel(parent)
     })
 
     -- ── This Bar ─────────────────────────────────────────────────────────────
-    -- One dropdown to pick a bar by name, one block of steppers underneath that
-    -- edits whichever bar is currently picked. `selected` is this closure's own
-    -- notion of which cluster that is — separate from any button/character-sheet
-    -- state — so switching sub-tabs or profiles can't leave it pointing at a
-    -- bar that no longer exists.
+    -- A dropdown picks a bar; the steppers below edit whichever is picked.
+    -- `selected` is this closure's own notion of which cluster that is, so
+    -- switching sub-tabs or profiles can't leave it pointing at a deleted bar.
     local barsHdr = sectionHeader(panel, "This Bar", keyYLbl, 18)
 
     local emptyNote = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     emptyNote:SetPoint("TOPLEFT", barsHdr, "BOTTOMLEFT", 0, -14)
     emptyNote:SetWidth(520)
     emptyNote:SetJustifyH("LEFT")
-    emptyNote:SetTextColor(unpack(C.textDim))
+    UI.tint(emptyNote, C.textDim)
     emptyNote:SetText("No bars yet — Alt+click a slot on your character sheet to make one.")
 
     local selected   -- cid the block below is currently editing, or nil
@@ -587,13 +538,13 @@ local function buildLayoutPanel(parent)
 
     local hint = block:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("TOPRIGHT", -10, -8)
-    hint:SetTextColor(unpack(C.textDim))
+    UI.tint(hint, C.textDim)
 
     local function editorLabel(text, x, y, opts)
         local lbl = block:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         lbl:SetPoint("TOPLEFT", x, y)
         lbl:SetText(text)
-        lbl:SetTextColor(unpack(C.textGrey))
+        UI.tint(lbl, C.textGrey)
         local st = buildStepper(block, opts)
         st:SetPoint("LEFT", lbl, "RIGHT", 8, 0)
         return st
@@ -630,10 +581,9 @@ local function buildLayoutPanel(parent)
     end)
     resetMenu:HookScript("OnLeave", function() GameTooltip:Hide() end)
 
-    -- Re-syncs the dropdown label, hint text and steppers to whatever `selected`
-    -- currently is — called after picking a bar, and every time the tab is
-    -- (re-)shown, since bars can appear, disappear or get renumbered underneath
-    -- an already-open settings window.
+    -- Re-syncs dropdown label, hint and steppers to `selected` — after picking a
+    -- bar, and every time the tab is shown, since bars can appear, disappear or be
+    -- renumbered underneath an open settings window.
     function refreshBlock()
         local ids = IR.ClusterIDs()
         local stillValid = false
@@ -681,10 +631,9 @@ local function buildLayoutPanel(parent)
 end
 
 -- ── Events sub-tab ───────────────────────────────────────────────────────────
--- One row per event this character can use: switch it on, point it at a set,
--- and decide whether the gear it displaced goes back afterwards. The event
--- definitions themselves are fixed (see ItemRackEvents.lua) — this tab only
--- ever writes the three per-event settings.
+-- One row per event this character can use: switch it on, point it at a set, and
+-- decide whether displaced gear goes back. The definitions are fixed (see
+-- ItemRackEvents.lua); this tab only writes the three per-event settings.
 
 local NO_SET = "(no set)"
 
@@ -762,7 +711,7 @@ local function buildEventsPanel(parent)
     blurb:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, -14)
     blurb:SetWidth(520)
     blurb:SetJustifyH("LEFT")
-    blurb:SetTextColor(unpack(C.textGrey))
+    UI.tint(blurb, C.textGrey)
     blurb:SetText(
         "Equip a set by itself whenever something happens — mounting up, walking into a city, sitting "
         .. "down to drink. Point an event at one of your sets and it goes on while that lasts.\n"
@@ -786,7 +735,7 @@ local function buildEventsPanel(parent)
     local offHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     offHint:SetPoint("LEFT", master, "RIGHT", 8, 0)
     offHint:SetText("nothing below fires until this is on")
-    offHint:SetTextColor(unpack(C.red))
+    UI.tint(offHint, C.red)
 
     master.OnChange = function(_, checked)
         IR.SetEventsOn(checked)
@@ -797,7 +746,7 @@ local function buildEventsPanel(parent)
     local setCap = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     setCap:SetPoint("TOPLEFT", master, "BOTTOMLEFT", EV_SET_X, -14)
     setCap:SetText("Set to equip")
-    setCap:SetTextColor(unpack(C.textDim))
+    UI.tint(setCap, C.textDim)
 
     local rowHost = CreateFrame("Frame", nil, panel)
     rowHost:SetPoint("TOPLEFT", setCap, "BOTTOMLEFT", -EV_SET_X, -6)
@@ -819,7 +768,7 @@ local function buildEventsPanel(parent)
                 classHeader = rowHost:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
                 classHeader:SetPoint("TOPLEFT", 0, -(height + 8))
                 classHeader:SetText("Forms and stances")
-                classHeader:SetTextColor(unpack(C.red))
+                UI.tint(classHeader, C.red)
                 height = height + 8 + 16
             end
 
@@ -847,43 +796,11 @@ end
 -- ── Tab shell ────────────────────────────────────────────────────────────────
 
 local function buildItemRackPanel(parent)
-    local panel = CreateFrame("Frame", nil, parent)
-    panel:SetAllPoints()
-    panel:Hide()
-    panel.subTabs, panel.subPanels = {}, {}
+    local panel, subBar, _, addSubTab = W.makeSubTabPanel(parent, { hidden = true })
 
-    -- Same inset and framing the Trinkets and Chat tabs use, so every module's
-    -- sub-tab shell lines up rather than this one sitting flush to the edges.
-    local subBar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subBar:SetHeight(26)
-    subBar:SetPoint("TOPLEFT", 4, -4)
-    subBar:SetPoint("TOPRIGHT", -4, -4)
-    applyBackdrop(subBar, 1, C.panelDark)
-
-    local subContent = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subContent:SetPoint("TOPLEFT", subBar, "BOTTOMLEFT", 0, -2)
-    subContent:SetPoint("BOTTOMRIGHT", -4, 4)
-    applyBackdrop(subContent, 1, C.panelDeep)
-
-    -- Built on first selection (see resolvePanel in core's UI.lua).
-    panel.subPanels["general"] = function() return buildGeneralPanel(subContent) end
-    panel.subPanels["layout"]  = function() return buildLayoutPanel(subContent)  end
-    panel.subPanels["events"]  = function() return buildEventsPanel(subContent)  end
-
-    panel.subTabs["general"] = createTab(subBar, "General", 90)
-    panel.subTabs["general"]:SetHeight(22)
-    panel.subTabs["general"]:SetPoint("LEFT", 4, 0)
-    panel.subTabs["general"]:SetScript("OnClick", function() selectSubTab(panel, "general") end)
-
-    panel.subTabs["layout"] = createTab(subBar, "Layout", 90)
-    panel.subTabs["layout"]:SetHeight(22)
-    panel.subTabs["layout"]:SetPoint("LEFT", panel.subTabs["general"], "RIGHT", 4, 0)
-    panel.subTabs["layout"]:SetScript("OnClick", function() selectSubTab(panel, "layout") end)
-
-    panel.subTabs["events"] = createTab(subBar, "Events", 90)
-    panel.subTabs["events"]:SetHeight(22)
-    panel.subTabs["events"]:SetPoint("LEFT", panel.subTabs["layout"], "RIGHT", 4, 0)
-    panel.subTabs["events"]:SetScript("OnClick", function() selectSubTab(panel, "events") end)
+    addSubTab("general", "General", 90, buildGeneralPanel)
+    addSubTab("layout",  "Layout",  90, buildLayoutPanel)
+    addSubTab("events",  "Events",  90, buildEventsPanel)
 
     -- On the bar itself, not inside either sub-panel, so it stays visible and in
     -- the same spot no matter which of General/Layout is open — it used to live

@@ -62,15 +62,12 @@ local function applyFont()
     local s = ttkSettings()
     local name = (s and s.fontName) or "Friz Quadrata TT"
     local size = (s and s.fontSize) or 24
-    local LSM  = LibStub and LibStub("LibSharedMedia-3.0", true)
-    local path = (LSM and LSM:Fetch("font", name)) or "Fonts\\FRIZQT__.TTF"
+    local path = addon.FetchMedia("font", name) or "Fonts\\FRIZQT__.TTF"
     f.text:SetFont(path, size, "OUTLINE")
 
-    -- Size the frame (and therefore the edit-mode box, since the text fills
-    -- it via SetAllPoints) to fit this font. Measured against a worst-case
-    -- sample ("00:00") rather than whatever text happens to be showing
-    -- right now, so it doesn't shrink to nothing while no target is
-    -- tracked — the live text is restored immediately after measuring.
+    -- Size the frame (and so the edit-mode box, since the text fills it) to this
+    -- font, measured against a worst-case "00:00" rather than the live text — else
+    -- it shrinks to nothing while no target is tracked. Live text restored after.
     local current = f.text:GetText()
     f.text:SetText("00:00")
     local w, h = f.text:GetStringWidth(), f.text:GetStringHeight()
@@ -87,9 +84,8 @@ local function applyPosition()
     end
 end
 
--- Defined further down (it needs eventFrame); applyVisibility is the single
--- chokepoint every enable/disable path already goes through, so the UNIT_HEALTH
--- registration is kept in sync from here.
+-- Defined further down (needs eventFrame). applyVisibility is the one chokepoint
+-- every enable/disable path goes through, so registration is synced from there.
 local syncHealthEvent
 
 local function applyVisibility()
@@ -115,10 +111,9 @@ local function savePosition()
     s.px, s.py = x, y
 end
 
--- For the position-editor popup: read/write the live frame directly (same
--- CENTER/BOTTOMLEFT convention as applyPosition/savePosition) so typed
--- values and nudges are visible immediately, with Lock persisting whatever
--- the frame ends up at via the normal savePosition() path.
+-- For the position-editor popup: read/write the live frame (same CENTER/
+-- BOTTOMLEFT convention as applyPosition/savePosition) so typed values and
+-- nudges show immediately; Lock persists via the normal savePosition() path.
 local function getPosition()
     local x, y = getOrCreate():GetCenter()
     return x or 0, y or 0
@@ -140,11 +135,9 @@ local function enterMoveMode()
     f:SetFrameStrata("TOOLTIP")
     addon.ShowEditBox(f)
     f:EnableMouse(true)
-    -- Move-mode is driven directly off OnMouseDown/OnMouseUp instead of
-    -- RegisterForDrag/OnDragStart, so movement starts the instant the mouse
-    -- goes down instead of waiting on WoW's native drag-recognition threshold.
-    -- The same pair also does click-vs-drag detection (net movement < 4px =
-    -- a click, not a drag) to open the precise X/Y position editor.
+    -- Driven off OnMouseDown/OnMouseUp rather than OnDragStart, so movement starts
+    -- instantly instead of waiting on WoW's drag threshold. The same pair does
+    -- click-vs-drag detection (net move < 4px = click) to open the X/Y editor.
     f:SetScript("OnMouseDown", function(self, button)
         if button ~= "LeftButton" then return end
         self._clickX, self._clickY = GetCursorPosition()
@@ -173,10 +166,8 @@ local function leaveMoveMode()
     applyFont()
 end
 
--- TTK calculation — exact logic from the original WeakAura, translated to
--- event-driven Lua. env mirrors aura_env; both are module-level and persist
--- between calls. The WA code declared `local oldhealth` inside the function
--- (always nil, so the if-block always ran); here we simply run on each event.
+-- TTK calculation — the original WeakAura's logic, event-driven. env mirrors
+-- aura_env; both are module-level and persist between calls.
 local function updateTTK()
     local s = ttkSettings()
     if not s or not s.enabled then return end
@@ -232,19 +223,10 @@ eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("ENCOUNTER_START")
 eventFrame:RegisterEvent("ENCOUNTER_END")
 
--- UNIT_HEALTH is by far the highest-frequency event this module could listen to
--- (it fires for every party/raid member and every visible nameplate), so it gets
--- two layers of filtering that both live outside our Lua:
---
---   • RegisterUnitEvent restricts it to the "target" unit in C, so the other
---     units never reach our handler at all. This replaces an `if unit ==
---     "target"` test that used to run on every single fire.
---   • It is only registered at all while the feature is switched on. updateTTK
---     already no-ops when disabled, but that no-op still cost a Lua call per
---     fire for users who never turned Time to Kill on.
---
--- syncHealthEvent is driven from applyVisibility, which every enable/disable
--- path already calls.
+-- UNIT_HEALTH is the highest-frequency event this module could take, so it gets
+-- two layers of filtering outside our Lua: RegisterUnitEvent restricts it to
+-- "target" in C, and it's only registered while the feature is on. Kept in sync
+-- from applyVisibility, which every enable/disable path already calls.
 local healthRegistered = false
 function syncHealthEvent()   -- forward-declared local, see above
     local s = ttkSettings()
@@ -296,8 +278,6 @@ addon.TTK = {
     leaveMoveMode    = leaveMoveMode,
     getPosition      = getPosition,
     setPosition      = setPosition,
-    -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode — no
-    -- point offering to drag around a display the "Enable Time to Kill"
-    -- checkbox has turned off.
+    -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode.
     isEnabled        = function() local s = ttkSettings(); return s ~= nil and s.enabled end,
 }

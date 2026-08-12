@@ -1,9 +1,6 @@
--- Driev's Essentials — Item Rack module: core engine.
---
--- A faithful port of Gello's ItemRack (Classic 4.23) onto Driev's Essentials'
--- namespace/settings/profile conventions. `...` would hand us this addon's OWN
--- private table, so reach for core's shared namespace instead — the .toc's
--- ## Dependencies guarantees core has already loaded and set this global.
+-- Item Rack module: core engine. A faithful port of Gello's ItemRack (Classic
+-- 4.23) onto this addon's namespace/settings/profile conventions. `...` would
+-- give this addon's own private table, so use core's shared namespace instead.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -18,7 +15,6 @@ local _   -- scratch for the many multi-return item APIs below
 local GetContainerNumSlots      = C_Container.GetContainerNumSlots
 local GetContainerItemLink      = C_Container.GetContainerItemLink
 local GetContainerItemCooldown  = C_Container.GetContainerItemCooldown
-local PickupContainerItem       = C_Container.PickupContainerItem
 local ContainerIDToInventoryID  = C_Container.ContainerIDToInventoryID
 local GetItemCooldown           = C_Container.GetItemCooldown or _G.GetItemCooldown
 
@@ -35,11 +31,10 @@ end
 IR.GetContainerItemInfo = GetContainerItemInfo
 
 -- ── Settings ─────────────────────────────────────────────────────────────────
--- Behavioural toggles AND the on-screen bar layout live in the DE profile, so a
--- profile switch carries the whole look with it. The equipment sets themselves
--- stay per-character in DrievItemRackDB — gear is character-specific by nature,
--- and a set naming items a character doesn't own is worse than useless. Sets
--- move between characters through Export/Import instead (IR.ExportSets below).
+-- Behavioural toggles AND the bar layout live in the DE profile, so a switch
+-- carries the whole look. The sets stay per-character in DrievItemRackDB — gear
+-- is character-specific, and a set naming items a character doesn't own is worse
+-- than useless. Sets move via Export/Import.
 addon.RegisterDefaults("itemRack", {
     enabled             = false,
 
@@ -72,10 +67,9 @@ addon.RegisterDefaults("itemRack", {
     buttonScale         = 1,
     hideOOC             = false,
     showHotKeys         = true,   -- draw each button's key in its corner
-    -- Keybind text styling. `hotkeyFont` false means the game's own number font;
-    -- anything else is a LibSharedMedia name. The offsets are from the button's
-    -- top-right corner, and the size matches what the Action Bars module uses on
-    -- Classic, so the two read as one UI.
+    -- `hotkeyFont` false means the game's own number font; anything else is a
+    -- LibSharedMedia name. Offsets are from the button's top-right corner, and the
+    -- size matches the Action Bars module so the two read as one UI.
     hotkeyFont          = false,
     hotkeyFontSize      = 13,
     hotkeyOffsetX       = -2,
@@ -88,6 +82,11 @@ addon.RegisterDefaults("itemRack", {
     -- behaviour
     equipToggle         = false,  -- equipping an already-worn set unequips it
     equipOnSetPick      = false,  -- picking an item in the set editor equips it too
+    -- Opening the set editor off the set button, opt-in per mouse button. Left
+    -- only applies when there's no set to equip; right is dead while menuOnRight
+    -- has claimed that click for the set menu.
+    setEditorOnLeft     = false,
+    setEditorOnRight    = false,
     notify              = true,   -- announce when a used item comes off cooldown
     notifyThirty        = false,
     notifyChatAlso      = false,
@@ -115,26 +114,28 @@ function IR.IsEnabled()
     return getData().enabled and true or false
 end
 
--- Gate for every entry point a user can reach without the module's own buttons:
--- the slash commands, the set editor, the equip API (which is also published as
--- globals for macros) and the set keybindings. With the master toggle off the
--- module does nothing at all, rather than merely hiding its buttons while its
--- other doors stay open. `silent` suppresses the chat line for internal callers
--- that shouldn't nag (the events engine, mostly).
+-- Gate for every entry point reachable without the module's buttons: slash
+-- commands, the set editor, the equip API (also published as macro globals) and
+-- the set keybindings. `silent` suppresses the chat line for internal callers.
 function IR.RequireEnabled(silent)
     if IR.IsEnabled() then return true end
     if not silent then
         IR.Print("Item Rack is turned off. Enable it on the Item Rack tab in /driev.")
+        -- Turning the module off still leaves its addon loaded, which is a real
+        -- distinction to anyone running another gear manager alongside it: the
+        -- checkbox stops this module doing anything, but only unticking the addon
+        -- itself gets it fully out of the way. Worth saying here, because "I
+        -- turned it off and something still isn't right" is exactly the moment
+        -- someone reads this line.
+        IR.Print("Having issues with another gear addon? This one can be switched off completely "
+            .. "under |cffffffffEsc → AddOns → Driev's Essentials - Item Rack|r (needs a reload).")
     end
     return false
 end
 
 -- ── Per-character saved data ─────────────────────────────────────────────────
--- SavedVariables are restored before this addon's Lua runs, but keep the lazy
--- init anyway so a first-ever login (nil table) can't error.
---
--- Only gear-shaped data lives here: the sets, which menu entries are hidden and
--- the cooldown bookkeeping. The bar layout is profile data — see IR.Layout.
+-- Lazy init so a first-ever login can't error. Only gear-shaped data lives here;
+-- the bar layout is profile data — see IR.Layout.
 function IR.DB()
     DrievItemRackDB = DrievItemRackDB or {}
     local db = DrievItemRackDB
@@ -146,16 +147,12 @@ function IR.DB()
 end
 local DB = IR.DB
 
--- The one place set display order is decided: the set editor's picker and side
--- list, and the pop-out set menu, all read this so a drag in the side list moves
+-- The one place set display order is decided, so a drag in the side list moves
 -- the set everywhere at once.
 --
--- db.setOrder is the user's arrangement and is authoritative as far as it goes;
--- it's reconciled against db.sets on every read rather than kept in sync at
--- every mutation site, so sets added or deleted behind its back (imports, another
--- character's profile, a hand-edited SavedVariables) can't desync it. Anything
--- new lands at the end in alphabetical order, which is where a freshly saved set
--- is most useful.
+-- db.setOrder is the user's arrangement, but is reconciled against db.sets on
+-- every read rather than kept in sync at each mutation site, so imports or a
+-- hand-edited SavedVariables can't desync it. New sets land at the end.
 function IR.GetOrderedSetNames()
     local db      = DB()
     local seen    = {}
@@ -197,13 +194,9 @@ end
 
 -- ── Layout (profile) ─────────────────────────────────────────────────────────
 -- Buttons are grouped into CLUSTERS: one cluster is one bar of docked buttons,
--- and it owns the position, scale and padding for everything in it. A button
--- record therefore says which cluster it belongs to and (unless it's the head)
--- which button inside that cluster it hangs off — never a raw screen position,
--- which lives on the cluster instead.
---
--- All of that is part of "how my UI looks", so it belongs to the profile
--- alongside the behavioural toggles rather than to the character.
+-- owning the position, scale and padding for everything in it. A button record
+-- names its cluster and (unless it's the head) which button it hangs off — never
+-- a raw screen position, which lives on the cluster.
 
 -- Detached stand-in for calls that land before core has picked a profile, so
 -- they read as "no bars" instead of erroring. Never written back anywhere.
@@ -219,13 +212,12 @@ function IR.Layout()
 end
 local Layout = IR.Layout
 
--- Slot key bindings belong with the bars, not with the character: a binding
--- names a SLOT, and "the key for my trinket button" means the same thing on
--- every character sharing the profile. (A set's key is the opposite case — it
--- names gear only one character owns, so that stays per-character as set.key.)
+-- Slot key bindings belong with the bars, not the character: a binding names a
+-- SLOT, which means the same thing on every character sharing the profile. (A
+-- set's key is the opposite — it names gear only one character owns.)
 --
--- The client persists bindings itself, but only as an action string pointing at
--- a frame, so we keep our own record and re-assert it — see IR.SetSetBindings.
+-- The client persists bindings only as an action string pointing at a frame, so
+-- we keep our own record and re-assert it.
 local emptySlotKeys = {}
 
 function IR.SlotKeys()
@@ -235,10 +227,9 @@ function IR.SlotKeys()
     return d.slotKeys
 end
 
--- Until now the layout lived in the per-character DB. Hand it to the profile
--- once — but only to a profile that has no bars of its own, since several
--- characters can share one profile and the first to log in shouldn't get to
--- overwrite a layout another character already put there.
+-- The layout used to live in the per-character DB. Hand it over once, but only
+-- to a profile with no bars of its own — several characters can share one, and
+-- the first to log in shouldn't overwrite a layout another already put there.
 function IR.MigrateLayoutToProfile()
     DrievItemRackDB = DrievItemRackDB or {}
     local old = DrievItemRackDB
@@ -253,10 +244,9 @@ function IR.MigrateLayoutToProfile()
     old.buttons, old.clusters, old.nextCluster = nil, nil, nil
 end
 
--- Slot keys used to live in the per-character DB, back when they were written
--- alongside the sets. Hand them to the profile, filling only the slots it hasn't
--- already claimed — several characters can share a profile, and the second one
--- to log in should add to what's there rather than overwrite it.
+-- Slot keys used to live in the per-character DB. Hand them over, filling only
+-- slots the profile hasn't already claimed, so the second character to log in
+-- adds to what's there rather than overwriting it.
 function IR.MigrateSlotKeys()
     DrievItemRackDB = DrievItemRackDB or {}
     local old = DrievItemRackDB.slotKeys
@@ -271,9 +261,9 @@ function IR.MigrateSlotKeys()
 end
 
 -- Keybind text used to default to off, and core writes every default into a
--- profile when it's created — so a profile made before the default changed
--- already has the old `false` sitting in it and would never see the new one.
--- Flip it once, remembering that we did so a later deliberate "off" sticks.
+-- profile when it's created — so a profile made before the default changed still
+-- has the old `false` and would never see the new one. Flip it once, remembering
+-- that we did so a later deliberate "off" sticks.
 function IR.MigrateHotKeyDefault()
     local d = getData()
     if d == notReadyYet or d.hotKeyDefaultApplied then return end
@@ -396,12 +386,11 @@ end
 -- ── Item identity ────────────────────────────────────────────────────────────
 -- An "IR string" is the itemString minus its "item:" prefix, e.g.
 -- "19019:2564:0:0:0:0:0:0:60:0". It carries enchant/suffix data, so two copies
--- of the same base item with different enchants stay distinguishable — that's
--- the whole reason sets don't just store itemIDs.
+-- of one base item with different enchants stay distinguishable — the whole
+-- reason sets don't just store itemIDs.
 local PAT_REGULAR_TO_IR   = "item:(.-)\124h"
 local PAT_BASEID_FROM_IR  = "^(%-?%d+)"
 local PAT_BASEID_FROM_REG = "item:(%-?%d+)"
-local PAT_ENHANCEMENTS    = "^(%-?%d+):(%-?%d*):(%-?%d*):(%-?%d*):(%-?%d*)"
 
 -- itemLink/itemString -> IR string, or (baseid=true) IR string -> base itemID,
 -- or (baseid and regular both true) itemLink -> base itemID. Returns 0 on a
@@ -470,13 +459,6 @@ function IR.GetCountByID(id)
 end
 local GetCountByID = IR.GetCountByID
 
-function IR.GetEnhancements(id)
-    if not id or id == "" then return 0, 0, 0, 0, 0 end
-    local itemID, enchantID, g1, g2, g3 = id:match(PAT_ENHANCEMENTS)
-    return tonumber(itemID) or 0, tonumber(enchantID) or 0,
-           tonumber(g1) or 0, tonumber(g2) or 0, tonumber(g3) or 0
-end
-
 -- Icon for a slot button: the worn item's texture, or the slot's empty art.
 -- Slot 20 is the set button, which shows the current set's chosen icon.
 function IR.GetTextureBySlot(slot)
@@ -506,10 +488,9 @@ function IR.ValidBag(bagid)
 end
 local ValidBag = IR.ValidBag
 
--- Cache of "which location currently holds this exact IR string", rebuilt every
--- time item locks settle. One integer covers both storage kinds: a worn slot is
--- stored as -(slot+1) (the +1 keeps slot 0, the ammo slot, negative and so
--- distinguishable), a bag position as bag*100+slot.
+-- Cache of which location holds this exact IR string, rebuilt when item locks
+-- settle. One integer covers both kinds: a worn slot as -(slot+1) (the +1 keeps
+-- slot 0, ammo, negative), a bag position as bag*100+slot.
 function IR.PopulateKnownItems()
     local known = IR.KnownItems
     wipe(known)
@@ -659,8 +640,8 @@ end
 
 -- ── Hidden scanning tooltip ──────────────────────────────────────────────────
 -- Deciding whether an item is wearable means reading its tooltip for red
--- (requirement-failed) lines — there's no API for it. Scanning happens on a
--- private tooltip so the visible GameTooltip is never disturbed.
+-- requirement-failed lines — there's no API for it. Scanning uses a private
+-- tooltip so the visible GameTooltip is never disturbed.
 
 local scanTip = CreateFrame("GameTooltip", "DrievItemRackScanTooltip", nil, "GameTooltipTemplate")
 scanTip:SetOwner(WorldFrame, "ANCHOR_NONE")
@@ -807,9 +788,8 @@ local function cooldownTick()
 end
 
 -- ── Debounce helper ──────────────────────────────────────────────────────────
--- ITEM_LOCK_CHANGED fires in bursts during a swap; work has to run once after
--- the burst ends, so each event pushes the deadline forward instead of queueing
--- another timer.
+-- ITEM_LOCK_CHANGED fires in bursts during a swap, and the work has to run once
+-- after the burst ends, so each event pushes the deadline forward.
 local function makeDebounce(delay, fn)
     local deadline, frame = 0, CreateFrame("Frame")
     frame:Hide()
@@ -891,10 +871,9 @@ end
 -- place; it stops refreshing the moment the item has no cooldown left to show.
 local tooltipTicker
 
--- Stops the refresh WITHOUT hiding what's on screen. The distinction matters:
--- the pointer is still over the item, so the tooltip has to stay up — it's only
--- the once-a-second redraw that has nothing left to do. Hiding is OnLeave's job,
--- via IR.ClearTooltip (which does both).
+-- Stops the refresh WITHOUT hiding what's on screen: the pointer is still over
+-- the item, so the tooltip stays up and only the once-a-second redraw stops.
+-- Hiding is OnLeave's job, via IR.ClearTooltip.
 local function stopTooltipTicker()
     if tooltipTicker then tooltipTicker:Cancel(); tooltipTicker = nil end
 end
@@ -915,13 +894,11 @@ local function tooltipUpdate()
         GameTooltip:AddLine("Queued: " .. IR.tooltipQueued)
     end
     GameTooltip:Show()
-    -- Nothing counting down, so stop redrawing — but leave the tooltip itself
-    -- alone. This used to call IR.ClearTooltip(), which hides it as well, so
-    -- every item WITHOUT a cooldown (all ordinary gear) had its tooltip shown
-    -- and then hidden again on the same frame. Worn items dodged it by taking
-    -- IR.IDTooltip's non-ticking path, which is why some entries in a pop-out
-    -- menu had tooltips and others silently didn't — including the two
-    -- same-icon copies of an item you'd be trying to tell apart by enchant.
+    -- Nothing counting down, so stop redrawing — but leave the tooltip alone. This
+    -- used to call IR.ClearTooltip(), which hides it too, so every item without a
+    -- cooldown had its tooltip shown and hidden on the same frame. Worn items dodged
+    -- it via IR.IDTooltip's non-ticking path, which is why some pop-out menu entries
+    -- had tooltips and others silently didn't.
     local ticking = (cooldown or 0) ~= 0
     if not ticking then stopTooltipTicker() end
     return ticking
@@ -1013,6 +990,11 @@ end
 
 local setsHavingItem = {}
 local function listSetsHavingItem(tooltip, id, exact)
+    -- The tooltip hooks go in at login whatever the module's state, so this has
+    -- to answer for itself: a disabled module annotating every item tooltip with
+    -- its sets is the addon still talking with its mouth shut — and doubly wrong
+    -- next to the original ItemRack, which is adding the same lines itself.
+    if not IR.IsEnabled() then return end
     if not getData().showSetInTooltip then return end
     if not id or id == 0 then return end
     for name, set in pairs(DB().sets) do
@@ -1043,16 +1025,15 @@ local function updateClassSpecificStuff()
 end
 
 -- ── Set export / import ──────────────────────────────────────────────────────
--- Sets belong to the character, not to the profile, so carrying a build to an
--- alt (or handing it to someone else) goes through a copy-pasteable string.
--- Core's shared codec does the work; the prefix is our own, so a profile string
--- pasted into the set box is refused outright instead of half-applied.
+-- Sets belong to the character, so carrying a build to an alt goes through a
+-- copy-pasteable string. Core's shared codec does the work; the prefix is ours,
+-- so a profile string pasted into the set box is refused rather than
+-- half-applied.
 local SETS_PREFIX = "DrievItemRackSets1:"
 
--- `old`/`oldset` are live swap bookkeeping — what this set displaced last time
--- it was equipped on THIS character — so they're rebuilt empty rather than
--- shipped. Values are type-checked on the way through because the same helper
--- reads pasted strings, which are just text someone else typed.
+-- `old`/`oldset` are live swap bookkeeping for THIS character, so they're
+-- rebuilt empty rather than shipped. Values are type-checked because the same
+-- helper reads pasted strings, which are just text someone else typed.
 local function sanitiseSet(set)
     local out = { equip = {} }
     for slot, id in pairs(set.equip or {}) do
@@ -1060,11 +1041,10 @@ local function sanitiseSet(set)
             out.equip[slot] = id
         end
     end
-    -- An icon is a texture path on the older clients and a bare file ID on the
-    -- newer ones (see the editor's icon picker, which stores whichever the
-    -- client hands it). Accepting only strings quietly dropped every file-ID
-    -- icon on the way out, so those sets arrived wearing the default gear icon.
-    -- File IDs are the client's own, not the character's, so they carry fine.
+    -- An icon is a texture path on older clients and a bare file ID on newer ones.
+    -- Accepting only strings quietly dropped every file-ID icon on the way out, so
+    -- those sets arrived wearing the default gear icon. File IDs are the client's
+    -- own, so they carry fine.
     local iconType = type(set.icon)
     if iconType == "string" or iconType == "number" then out.icon = set.icon end
     if type(set.key) == "string" then out.key = set.key end
@@ -1073,10 +1053,8 @@ local function sanitiseSet(set)
     return out
 end
 
--- Returns the string plus how many sets it holds, or nil + an error message.
--- `names` is an optional array (or set-shaped table) of set names to include;
--- without it every set on the character goes in, which is what the slash
--- command and the Export All button want.
+-- Returns the string plus how many sets it holds, or nil + an error. `names` is
+-- an optional list to include; without it every set on the character goes in.
 function IR.ExportSets(names)
     local wanted
     if names then
@@ -1104,10 +1082,9 @@ function IR.ExportSets(names)
     return str, count
 end
 
--- Decodes an import string without touching the DB, so the UI can ask about
--- name clashes before anything is overwritten. Returns a table of
--- { name = sanitised set } holding only names this character will accept, plus
--- an array of the names among them that already exist here — or nil + an error.
+-- Decodes an import string without touching the DB, so the UI can ask about name
+-- clashes before anything is overwritten. Returns { name = sanitised set } for
+-- names this character will accept, plus which of them already exist here.
 function IR.ReadSetsString(str)
     local data, err = addon.DecodeTable(SETS_PREFIX, str)
     if not data then return nil, err end
@@ -1128,10 +1105,9 @@ function IR.ReadSetsString(str)
     return incoming, conflicts
 end
 
--- Adds `incoming` (from IR.ReadSetsString) to this character's sets. Existing
--- sets are left alone unless their name is listed in `overwrite`, so an import
--- adds to what's here rather than replacing it. Returns how many sets were
--- added and how many existing ones were overwritten.
+-- Adds `incoming` to this character's sets. Existing sets are left alone unless
+-- their name is in `overwrite`, so an import adds rather than replaces. Returns
+-- how many were added and how many overwritten.
 function IR.ApplySetsImport(incoming, overwrite)
     local allow = {}
     if overwrite then
@@ -1158,6 +1134,51 @@ function IR.ApplySetsImport(incoming, overwrite)
     IR.SetSetBindings()
     if IR.UpdateCurrentSet then IR.UpdateCurrentSet() end
     return added, replaced
+end
+
+-- ── Import from the original ItemRack ────────────────────────────────────────
+-- The original addon keeps this character's sets in ItemRackUser.Sets, which is
+-- a plain global for as long as its addon is loaded — hence the one condition
+-- attached to this: both addons have to be enabled at the same time. There's no
+-- file to read otherwise, since another addon's SavedVariables are only ever
+-- loaded into memory by the addon that owns them.
+--
+-- The set format is the one this module was ported from and hasn't drifted:
+-- equip[slot] holds an IR string (an itemString minus its "item:" prefix), or 0
+-- for a deliberately empty slot, alongside an icon and an optional key. Only the
+-- helm/cloak flags are spelled differently — upstream capitalises them.
+--
+-- Returns the same shape IR.ReadSetsString does — { name = set } plus the names
+-- that already exist here — so the whole import path downstream is shared.
+function IR.ReadOriginalSets()
+    local user = _G.ItemRackUser
+    if type(user) ~= "table" or type(user.Sets) ~= "table" then
+        return nil, "Couldn't find the original ItemRack. Both addons have to be enabled at the "
+            .. "same time for this — its sets are only readable while it's loaded."
+    end
+
+    local db, incoming, conflicts, any = DB(), {}, {}, false
+    for name, set in pairs(user.Sets) do
+        if type(name) == "string" and type(set) == "table"
+            and not string.match(name, "^~") and not IR.SetnameBlacklist[name] then
+            local out = sanitiseSet(set)
+            if type(set.ShowHelm)  == "number" then out.showHelm  = set.ShowHelm  end
+            if type(set.ShowCloak) == "number" then out.showCloak = set.ShowCloak end
+            -- A set naming no gear at all is upstream bookkeeping, not something
+            -- the user built.
+            if next(out.equip) then
+                incoming[name] = out
+                any = true
+                if db.sets[name] then conflicts[#conflicts + 1] = name end
+            end
+        end
+    end
+    if not any then
+        return nil, "The original ItemRack is loaded, but has no sets saved on this character."
+    end
+
+    table.sort(conflicts)
+    return incoming, conflicts
 end
 
 -- ── Slash command ────────────────────────────────────────────────────────────
@@ -1200,13 +1221,47 @@ local function slashHandler(arg)
     end
 end
 
+-- /deir and /drievitemrack name this addon, so they're ours outright.
 SLASH_DRIEVITEMRACK1 = "/deir"
 SLASH_DRIEVITEMRACK2 = "/drievitemrack"
-SLASH_DRIEVITEMRACK3 = "/itemrack"
-SLASH_DRIEVITEMRACK4 = "/rack"
-SLASH_DRIEVITEMRACK5 = "/sets"
-SLASH_DRIEVITEMRACK6 = "/ir"
 SlashCmdList["DRIEVITEMRACK"] = slashHandler
+
+-- The short forms are convenience aliases other addons may already own — the
+-- original ItemRack owns /itemrack — and taking one out from under its owner is
+-- worse than going without: the chat system keeps ONE handler per command, so
+-- "/itemrack equip Threat" landed HERE instead of on the addon the user meant.
+-- With this module turned off that answers "Item Rack is turned off" and stops,
+-- which reads as the original addon having broken for no reason. So each alias
+-- is only claimed if nothing else has registered it.
+local ALIASES = { "/itemrack", "/rack", "/sets", "/ir" }
+
+local function commandIsTaken(cmd)
+    cmd = cmd:upper()
+    for name in pairs(SlashCmdList) do
+        if name ~= "DRIEVITEMRACK" then
+            local i = 1
+            while _G["SLASH_" .. name .. i] do
+                if string.upper(_G["SLASH_" .. name .. i]) == cmd then return true end
+                i = i + 1
+            end
+        end
+    end
+end
+
+-- Called a frame after PLAYER_LOGIN, which is the earliest every other addon has
+-- had its say: the original ItemRack registers /itemrack from its OWN
+-- PLAYER_LOGIN handler, and ours may well run first. Indices have to stay
+-- contiguous from 1 — the chat system stops reading at the first gap — so the
+-- aliases that survive are numbered as they're kept, after the two above.
+function IR.ClaimSlashAliases()
+    local index = 2
+    for _, cmd in ipairs(ALIASES) do
+        if not commandIsTaken(cmd) then
+            index = index + 1
+            _G["SLASH_DRIEVITEMRACK" .. index] = cmd
+        end
+    end
+end
 
 -- ── Event plumbing ───────────────────────────────────────────────────────────
 
@@ -1232,7 +1287,7 @@ end)
 -- A swap fired mid-cast is silently eaten by the client, so anything queued
 -- during a cast waits for the cast to finish before it's retried.
 local delayedQueue = makeDebounce(0.1, function()
-    if IR.inCombat or IR.nowCasting then return end
+    if IR.inCombat or IR.IsCasting() then return end
     IR.ProcessCombatQueue()
 end)
 
@@ -1303,11 +1358,13 @@ function handlers.PLAYER_LOGIN()
 
     -- ── Legacy macro/script compatibility ────────────────────────────────────
     -- The original ItemRack exposed a global `ItemRack` table plus bare
-    -- `EquipSet`/`ToggleSet`/`UnequipSet`/`IsSetEquipped` globals, specifically
-    -- so macros could call them directly (e.g. `/run ItemRack.EquipSet("PvP")`).
-    -- Anyone migrating from that addon to this module has macros written
-    -- against those globals; only skip installing this if the real ItemRack
-    -- addon is also loaded (its own globals must win, not ours).
+    -- EquipSet/ToggleSet/UnequipSet/IsSetEquipped globals for macros. Anyone
+    -- migrating has macros written against those, so install them — unless the real
+    -- ItemRack addon is loaded, in which case its own globals must win.
+    -- Next frame, not now: every other addon's PLAYER_LOGIN handler has run by
+    -- then, so what's already registered is finally the whole picture.
+    C_Timer.After(0, IR.ClaimSlashAliases)
+
     if not (_G.ItemRack and _G.ItemRack.EquipSet) then
         _G.ItemRack = _G.ItemRack or {}
         _G.ItemRack.EquipSet       = IR.EquipSet
@@ -1342,15 +1399,36 @@ function handlers.UPDATE_BINDINGS()
 end
 
 function handlers.PLAYER_REGEN_DISABLED()
+    local wasInCombat = IR.inCombat
     IR.inCombat = true
-    if IR.ReflectHideOOC then IR.ReflectHideOOC() end
+    if wasInCombat or not IR.ReflectHideOOC then return end
+
+    -- Only the real start of a fight gets here. Zoning while already in combat
+    -- (walking into an instance mid-pull) re-fires this event with the lockdown
+    -- up since the pull began and no grace window left, so the Show() calls
+    -- inside are refused one per button — nine buttons, nine
+    -- ADDON_ACTION_BLOCKED reports. There's nothing to do in that case either:
+    -- the buttons were already put in their in-combat state when combat actually
+    -- started, and frames keep their visibility across a zone.
+    --
+    -- The flag marks the window the client does allow, so ReflectHideOOC can
+    -- tell this caller apart from the ones that have to wait for the fight to
+    -- end.
+    IR.regenGrace = true
+    IR.ReflectHideOOC()
+    IR.regenGrace = nil
 end
 
 local function leftCombatOrDeath()
     IR.inCombat = InCombatLockdown()
-    if IR.nowCasting then return end
-    IR.ProcessCombatQueue()
+    if IR.FlushBindingClickPhase then IR.FlushBindingClickPhase() end
+    if IR.FlushPendingApply then IR.FlushPendingApply() end
+    -- Ahead of the casting check: what's on screen has nothing to do with a cast
+    -- being in progress, and the early return below would otherwise leave the
+    -- buttons in their in-combat state whenever a fight ends mid-cast.
     if IR.ReflectHideOOC then IR.ReflectHideOOC() end
+    if IR.IsCasting() then return end
+    IR.ProcessCombatQueue()
 end
 handlers.PLAYER_REGEN_ENABLED = leftCombatOrDeath
 handlers.PLAYER_UNGHOST       = leftCombatOrDeath
@@ -1360,6 +1438,19 @@ function handlers.BANKFRAME_OPENED() IR.BankOpen = true end
 function handlers.BANKFRAME_CLOSED()
     IR.BankOpen = nil
     if IR.HideMenu then IR.HideMenu() end
+end
+
+-- IR.nowCasting is set by UNIT_SPELLCAST_START and cleared by whichever stop
+-- event follows — a pairing the client does NOT guarantee. A cast finishing
+-- across a loading screen leaves the flag stuck on, which was quietly fatal: the
+-- swap engine queues every equip behind it, so macros, keybindings, the set
+-- button and the menu all silently did nothing until a relog. Ask the client
+-- instead, and drop the flag as soon as it disagrees.
+function IR.IsCasting()
+    if not IR.nowCasting then return false end
+    if CastingInfo() or ChannelInfo() then return true end
+    IR.nowCasting = nil
+    return false
 end
 
 function handlers.UNIT_SPELLCAST_START(unit)

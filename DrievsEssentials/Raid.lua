@@ -26,12 +26,9 @@ end
 -- during combat lockdown.  We store a pending flag and retry on PLAYER_REGEN_ENABLED.
 local pendingApply = false
 
--- Master switch off by default (see UI.lua's "Enable Raid Settings" checkbox).
--- Rather than early-returning, apply() always runs and simply treats the
--- sub-settings as off when the master is off — that way flipping the master
--- switch off mid-raid resets the CVars immediately instead of leaving names/
--- bubbles hidden until the raid is left (which is when revert() would
--- otherwise be the only thing to undo them).
+-- Master switch off by default. apply() always runs and treats the sub-settings
+-- as off when the master is off, so flipping it off mid-raid resets the CVars
+-- immediately instead of waiting for revert() on leaving the raid.
 local function apply()
     if InCombatLockdown() then
         pendingApply = true

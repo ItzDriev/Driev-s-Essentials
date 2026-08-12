@@ -1,24 +1,15 @@
--- Driev's Essentials — Item Rack module: events (automatic set swapping).
+-- Item Rack module: events (automatic set swapping). An event pairs a condition
+-- ("mounted", "in a city") with a set: while the condition holds the set is
+-- worn, and when it ends whatever it displaced goes back on.
 --
--- An event is a condition — "you are mounted", "you are in a city" — paired
--- with one of your sets. While the condition holds the set is worn; when it
--- ends, whatever the set displaced goes back on.
+-- Gello's ItemRack model: conditions are polled or driven off a few client
+-- events, and everything that fires is recorded on a STACK, because conditions
+-- overlap — mounting in a city layers the mount set over the city set and must
+-- land back in it on dismount. That falls out of the swap engine for free, since
+-- EquipSet records what it displaced and UnequipSet puts it back. So push =
+-- EquipSet, pop = UnequipSet, and the stack is only bookkeeping.
 --
--- The model is Gello's ItemRack, kept deliberately: conditions are polled or
--- driven off a handful of client events, and everything that fires is recorded
--- on a STACK. The stack matters because conditions overlap — mounting up while
--- already in a city has to layer the mount set on top of the city set and, on
--- dismount, land back in the city set rather than in whatever was worn before
--- either fired. That falls out of the existing swap engine for free: EquipSet
--- already records what it displaced in the set's own `old` table (and which set
--- was current in `oldset`), and UnequipSet puts exactly that back. So an event
--- push is EquipSet and an event pop is UnequipSet; the stack here is only
--- bookkeeping about which events are currently holding gear.
---
--- What is NOT ported is the upstream addon's script-event type (an arbitrary
--- Lua snippet per event, compiled with loadstring). The five conditions people
--- actually use are all covered by the buff/zone/stance types below, and an
--- eval-a-string setting is not something this addon wants to own.
+-- Not ported: upstream's script-event type (arbitrary Lua via loadstring).
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -29,16 +20,12 @@ local DB = IR.DB
 
 -- ── Event definitions ────────────────────────────────────────────────────────
 -- Three condition types:
---   buff   : an aura by name, or `anyMount` for "on any mount at all"
+--   buff   : an aura by name, or `anyMount` for any mount at all
 --   zone   : a zone/subzone name, or an instance type (pvp, arena, raid, party)
---   stance : a shapeshift/stance form, by index or by form name
+--   stance : a shapeshift/stance form, by index or form name
 --
--- `revert` is the default for "put the old gear back when the condition ends";
--- the user can override it per event in the settings tab. `class` limits an
--- event to one class — those rows simply don't exist for anyone else.
---
--- Order here is the order the settings tab lists them in: the five conditions
--- everyone can use first, then the class-specific ones.
+-- `revert` defaults "put the old gear back when the condition ends". `class`
+-- limits an event to one class. Order here is the settings tab's order.
 local CITY = {
     ["Stormwind City"] = true,
     ["Ironforge"]      = true,
@@ -152,9 +139,8 @@ end
 
 -- ── Saved state ──────────────────────────────────────────────────────────────
 -- Events live in the per-character DB next to the sets, not in the profile: an
--- event is a pointer to a set, and sets are already per-character (see IR.DB).
--- A profile shared by two characters would otherwise hand one of them event
--- assignments naming gear it has never owned.
+-- event points at a set, and sets are already per-character. A profile shared by
+-- two characters would otherwise name gear one of them has never owned.
 function IR.EventsData()
     local db = DB()
     db.events = db.events or {}
@@ -192,15 +178,10 @@ function IR.GetEventRevert(name)
 end
 
 -- ── Runtime state ────────────────────────────────────────────────────────────
--- state[event name] exists exactly while that event's condition is holding, so
--- the table's presence IS the "currently active" flag. Its fields qualify what
--- happens when the condition ends:
---   noRestore  : the set was already being worn when the condition began, so
---                nothing was displaced and there is nothing to put back
---   overridden : the user equipped a set by hand while this event was holding
---                gear, so it has lost its claim on what is worn
--- Runtime only, never saved: on a fresh login nothing is holding gear, and the
--- first pass re-derives all of it from the live conditions.
+-- state[event name] exists exactly while that event's condition holds, so the
+-- table's presence IS the "active" flag. Its fields qualify what happens on end:
+--   noRestore  : the set was already worn, so nothing was displaced
+--   overridden : the user equipped a set by hand, so this event lost its claim
 local state = {}
 
 -- Bottom-to-top order of events currently holding gear.
@@ -251,15 +232,13 @@ end
 
 -- ── Push / pop ───────────────────────────────────────────────────────────────
 
--- Whether equipping this set would move anything at all. Deliberately the same
--- exact-id comparison EquipSet itself makes (not IsSetEquipped's looser
--- same-base-item match), because this is asking EquipSet's own question: would
--- it find an empty swap list?
+-- Whether equipping this set would move anything. Deliberately the same exact-id
+-- comparison EquipSet makes (not IsSetEquipped's looser match), because it's
+-- asking EquipSet's own question: would it find an empty swap list?
 --
 -- It matters because EquipSet only wipes a set's `old` table when it has moves
--- to make. Equipping a set already being worn is a no-op that leaves `old`
--- holding whatever the LAST swap displaced — so an event that pushed such a set
--- must not later "restore" that stale record. Skipping both is the fix.
+-- to make, so equipping an already-worn set leaves `old` holding the LAST swap's
+-- record — which an event must not later "restore".
 local function alreadyWearing(setname)
     local set = DB().sets[setname]
     if not set or not set.equip then return false end
@@ -313,12 +292,10 @@ local function unwindAll()
     for name in pairs(state) do deactivate(name) end
 end
 
--- Called by EquipSet whenever the user equips a set themselves — from a button,
--- a key binding, a macro or the slash command. Their choice outranks anything
--- an event is holding, so every active event gives up its claim: it stays
--- active (so it won't immediately fight back by re-equipping) but is marked
--- overridden, meaning that when its condition ends it quietly steps aside
--- instead of restoring gear the user has since replaced.
+-- Called by EquipSet whenever the user equips a set themselves. Their choice
+-- outranks any event, so every active event gives up its claim: it stays active
+-- (so it won't immediately re-equip) but is marked overridden, meaning it
+-- quietly steps aside when its condition ends instead of restoring stale gear.
 function IR.NoteManualEquip(setname)
     if not setname or string.match(setname, "^~") then return end
     if #IR.EventStack == 0 then return end
@@ -367,13 +344,11 @@ function IR.RunEvents()
         end
     end
 
-    -- Everything that ended goes first: an event that is both losing one set
-    -- and gaining another in the same pass has to give the old gear back before
-    -- the new set records what it displaces, or the two records overlap.
+    -- Everything that ended goes first: an event both losing one set and gaining
+    -- another in the same pass must give the old gear back before the new set
+    -- records what it displaced, or the two records overlap.
     --
-    -- Topmost first, so a stack unwinds the way it was built — the mount set
-    -- comes off before the city set underneath it does, and each restore puts
-    -- back what that layer actually displaced.
+    -- Topmost first, so a stack unwinds the way it was built.
     if toUnequip then
         local wanted = {}
         for _, name in ipairs(toUnequip) do wanted[name] = true end
@@ -415,10 +390,9 @@ frame:SetScript("OnEvent", function(_, event, arg1)
     if event == "UNIT_AURA" and arg1 ~= "player" then return end
     if event == "ZONE_CHANGED_NEW_AREA" or event == "ZONE_CHANGED_INDOORS"
         or event == "ZONE_CHANGED" or event == "PLAYER_ENTERING_WORLD" then
-        -- Zone and instance info settle late coming off a loading screen —
-        -- GetRealZoneText can still be the zone just left when the event
-        -- arrives. Look once promptly and once more when it has certainly
-        -- caught up; the second pass is a no-op if the first got it right.
+        -- Zone and instance info settle late off a loading screen — GetRealZoneText can
+        -- still be the zone just left. Look once promptly and once more when it has
+        -- certainly caught up; the second pass no-ops if the first got it right.
         schedule(0.4)
         C_Timer.After(2, IR.RunEvents)
         return
@@ -552,16 +526,15 @@ function IR.InitEvents()
         if not IR.EventByName[name] then data.revert[name] = nil end
     end
 
-    -- Conditions already holding at login (logged out mounted, or in a city)
-    -- are picked up by the first pass. Nothing is displaced if the set is
-    -- already on, so logging in inside a city doesn't shuffle gear that is
-    -- already correct — see alreadyWearing.
+    -- Conditions already holding at login (logged out mounted, or in a city) are
+    -- picked up by the first pass. Nothing is displaced if the set is already on,
+    -- so logging in inside a city doesn't shuffle correct gear.
     IR.ReflectEvents()
 
-    -- That first pass usually lands before the bags are readable, in which case
-    -- it did nothing at all (see eventsUsable) — and a condition that was
-    -- already true at login has no client event coming to announce it. So look
-    -- again once the world has settled, and once more for a slow load.
+    -- That first pass usually lands before the bags are readable, in which case it
+    -- did nothing (see eventsUsable) — and a condition already true at login has no
+    -- client event coming. So look again once the world has settled, and once more
+    -- for a slow load.
     C_Timer.After(2, IR.RunEvents)
     C_Timer.After(6, IR.RunEvents)
 end

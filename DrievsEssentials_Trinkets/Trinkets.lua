@@ -1,6 +1,5 @@
--- Part of the Trinkets module addon. `...` would hand us this addon's OWN
--- private table, so reach for core's shared namespace instead — the .toc's
--- ## Dependencies guarantees core has already loaded and set this global.
+-- Part of the Trinkets module addon. `...` would give this addon's own private
+-- table, so use core's shared namespace.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -22,104 +21,22 @@ local WHITE     = "Interface\\Buttons\\WHITE8x8"
 local getOrCreateMenu, buildMenu, showMenu, menuFrame, displayFrame
 local cancelMenuClose, scheduleMenuClose, positionMenu, scheduleMenuRebuild
 
--- Set to ElvUI's engine table once the PLAYER_LOGIN handler below confirms
--- ElvUI (or ShadowElvUI) is loaded — see setElvUIEngine(). Left nil otherwise,
--- so elvuiSkinButton() below is a no-op and every worn/menu button keeps its
--- baked Blizzard Classic look.
+-- ElvUI's engine table once PLAYER_LOGIN confirms ElvUI (or ShadowElvUI) is
+-- loaded. Nil otherwise, so elvuiSkinButton() is a no-op.
 local elvE
 
--- Bakes Masque's "Blizzard Classic" skin (Masque/Skins/Blizzard_Classic.lua)
--- directly onto the button, so the default look matches the classic action
--- button style with no Masque required. Masque, if installed and enabled for
--- our group, simply reskins over these standard regions; if its group is
--- disabled (or Masque isn't present), this baked look shows. Every size is
--- from that skin, relative to its 36px reference icon, so it scales with the
--- button: Normal 66/36 (offset 0.5,-0.5), Pushed 38/36, Highlight fills the
--- button (additive). Applied to the state textures explicitly rather than
--- trusting ActionButtonTemplate's own defaults. (The Checked texture is set
--- only on the worn buttons — see getOrCreateDisplay — since it's their
--- click-feedback flash; putting it on the CheckButton menu buttons would
--- leave a stuck glow after a swap click toggles their checked state.)
-local ICON_REF     = 36
-local NORMAL_RATIO = 66 / ICON_REF
-local PUSHED_RATIO = 38 / ICON_REF
+-- Bakes Masque's "Blizzard Classic" skin onto the button so the default look
+-- needs no Masque; Masque, if enabled for our group, reskins over these regions.
+-- Item Rack bakes the same look, so it lives in core.
+--
+-- The Checked texture is set only on the worn buttons — on the CheckButton menu
+-- buttons it leaves a stuck glow after a swap click toggles their checked state.
+local styleSlotButton = addon.StyleSlotButton
 
--- 1.15.9's modernized button templates define their state textures (Normal/
--- Pushed/Highlight) as nine-sliced atlas frames, i.e. with texture slice margins,
--- sometimes a non-default TexCoord, and a slightly-faded vertex color/alpha.
--- Those properties live on the texture *region*, so they persist even after we
--- swap in our own plain classic texture with SetNormalTexture/SetPushedTexture/
--- SetHighlightTexture: the leftover slice margins stretch a plain texture into a
--- huge, wrong frame, and the leftover tint/alpha makes it render below full
--- opacity (both only visible without Masque, since Masque discards the regions
--- and draws its own). Resetting slice, texcoord, color and alpha makes our
--- texture draw at exactly the size and strength we intend. Resetting the color
--- to white / alpha to 1 can only strip an *added* tint — it can't make the
--- texture's own transparent pixels opaque — so it just restores UI-Quickslot2's
--- natural look. Guarded because these APIs don't all exist on older clients
--- (where there's no bug to fix anyway).
-local function resetTemplateTexture(tex)
-    if not tex then return end
-    if tex.SetTextureSliceMargins then tex:SetTextureSliceMargins(0, 0, 0, 0) end
-    if tex.SetTexCoord    then tex:SetTexCoord(0, 1, 0, 1) end
-    if tex.SetVertexColor then tex:SetVertexColor(1, 1, 1) end
-    if tex.SetAlpha       then tex:SetAlpha(1) end
-end
-
-local function styleSlotButton(btn, size)
-    -- 1.15.9 backported the modernized ActionButtonTemplate, which adds new
-    -- decorative regions — SlotBackground (a fill behind the icon) and SlotArt —
-    -- drawn at the template's own (oversized-for-us) size. Our buttons are
-    -- type="item" / plain menu buttons, not real action slots, so nothing hides
-    -- those the way a real action button would; without Masque they render as a
-    -- big background/frame around our baked classic art. (With Masque there's no
-    -- problem because Masque replaces every region itself — which is exactly why
-    -- the bug only shows with Masque off.) LibActionButton hides these same
-    -- regions for its own non-Masque path; we do the equivalent here. Each is
-    -- nil-checked so this stays a no-op on older clients that lack them.
-    if btn.SlotBackground then btn.SlotBackground:Hide() end
-    if btn.SlotArt        then btn.SlotArt:Hide()        end
-    -- Also silence the template's inherited OnEvent so it can't re-show those
-    -- regions on a later ACTIONBAR_* event. Safe: every caller creates these out
-    -- of combat, we drive icon/cooldown/checked ourselves, and the secure
-    -- "use item" click runs off the type/slot attributes via the client's secure
-    -- dispatch, not this Lua-side OnEvent.
-    btn:UnregisterAllEvents()
-    btn:SetScript("OnEvent", nil)
-
-    btn:SetNormalTexture("Interface\\Buttons\\UI-Quickslot2")
-    local nt = btn:GetNormalTexture()
-    if nt then
-        resetTemplateTexture(nt)
-        nt:ClearAllPoints()
-        local w = size * NORMAL_RATIO
-        nt:SetSize(w, w)
-        nt:SetPoint("CENTER", btn, "CENTER", 0.5, -0.5)
-    end
-
-    btn:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
-    local pt = btn:GetPushedTexture()
-    if pt then
-        resetTemplateTexture(pt)
-        pt:ClearAllPoints()
-        local w = size * PUSHED_RATIO
-        pt:SetSize(w, w)
-        pt:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    end
-
-    btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-    local ht = btn:GetHighlightTexture()
-    if ht then resetTemplateTexture(ht); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
-end
-
--- Explicit region maps handed to Masque's Group:AddButton(button, ButtonData).
--- Masque's auto-detect (no ButtonData) only reliably finds a plain Button's
--- Icon/Cooldown by conventional field name — Normal/Pushed/Highlight/Checked
--- need to be listed by hand, otherwise Masque skins the icon/cooldown but
--- leaves those other layers (including the checked flash) drawing with their
--- original un-recolored textures instead of the active Masque skin's colours.
--- Defined ahead of the ElvUI skin block below, which needs them to hand
--- buttons back to Masque when the ElvUI skin is toggled off.
+-- Explicit region maps for Masque's Group:AddButton: auto-detect only reliably
+-- finds Icon/Cooldown by field name, so the rest must be listed by hand or
+-- Masque leaves them drawing their original textures. Defined ahead of the ElvUI
+-- block, which needs them to hand buttons back when that skin is toggled off.
 local function menuButtonData(mb)
     return {
         Icon      = mb.icon,
@@ -142,9 +59,8 @@ local function displayButtonData(btn)
 end
 
 -- ── Saved data ────────────────────────────────────────────────────────────────
--- Moved ahead of the ElvUI skin block below (which needs it to read the
--- elvuiSkinEnabled toggle) — Lua locals aren't visible to code written before
--- them.
+-- Ahead of the ElvUI block, which reads elvuiSkinEnabled — Lua locals aren't
+-- visible to code written before them.
 
 local function getData()
     addon.db.settings.trinkets = addon.db.settings.trinkets or {}
@@ -157,8 +73,8 @@ local function getData()
     end
     if not d.menuOrder then d.menuOrder = {} end
     if not d.hidden then d.hidden = {} end   -- [itemID] = true → hidden from the bag menu
-    -- [encounterID] = { enabled, mainTop, mainBottom, softTop, softBottom } —
-    -- per-boss trinkets auto-queued once you're in combat on that encounter.
+    -- [encounterID] = { enabled, trigger, mainTop, mainBottom, softTop, softBottom }.
+    -- `trigger` picks what fires the queue (nil = DEFAULT_ENC_TRIGGER).
     if not d.encounters then d.encounters = {} end
     -- One-time migration of the pre-2-set beta layout (top/bottom → main slots).
     -- Flag lives in the profile so each profile migrates once, independently.
@@ -169,18 +85,23 @@ local function getData()
         end
         d.encMigrated = true
     end
+    -- Triggers didn't exist when these configs were made — every one meant "in
+    -- combat", which is no longer what an absent trigger does. Stamp the old
+    -- behaviour on so updating doesn't silently move someone's raid swaps.
+    if not d.encTriggerMigrated then
+        for _, e in pairs(d.encounters) do
+            if e.trigger == nil then e.trigger = "combat" end
+        end
+        d.encTriggerMigrated = true
+    end
     return d
 end
 
--- The icon crop that makes ElvUI's flat look (cuts off the baked border/gloss
--- in standard icon art). E.TexCoords would normally hold it, but it only gets
--- populated when E:UpdateTexCoords() runs inside E:Initialize() — and in-game
--- diagnostics showed this ElvUI build never initializes on
--- Classic Era 1.15.9 (E.initialized stays nil), leaving E.TexCoords at the
--- identity {0,1,0,1} forever, which made every crop we applied a silent
--- no-op. So trust E.TexCoords only when it actually holds a crop, otherwise
--- compute it ourselves from the same cropIcon setting ElvUI would use
--- (0.04 * cropIcon per E:UpdateTexCoords; default 2 → the stock 8% crop).
+-- The icon crop for ElvUI's flat look. E.TexCoords would normally hold it, but
+-- it's only filled by E:UpdateTexCoords() inside E:Initialize() — and this build
+-- never initializes on Classic Era 1.15.9, leaving it at identity and every crop
+-- a silent no-op. So trust it only when it holds a crop, else compute it from
+-- the same cropIcon setting (0.04 * cropIcon; default 2 → 8%).
 local function getIconCrop()
     local tc = elvE and elvE.TexCoords
     if tc and (tc[1] ~= 0 or tc[2] ~= 1 or tc[3] ~= 0 or tc[4] ~= 1) then
@@ -191,10 +112,8 @@ local function getIconCrop()
     return m, 1 - m, m, 1 - m
 end
 
--- Frame strata / level for the two frames, user-configurable under each
--- section's Layout tab. Both default to MEDIUM / 0 — the same layer normal UI
--- panels use, so the trinket frames sit predictably among them and can be
--- raised or lowered to resolve overlaps with other addons.
+-- Frame strata / level for the two frames, set under each Layout tab. Both
+-- default to MEDIUM / 0 so they sit among normal UI panels.
 local STRATA_OPTS = {
     "BACKGROUND", "LOW", "MEDIUM", "HIGH", "DIALOG", "FULLSCREEN",
     "FULLSCREEN_DIALOG", "TOOLTIP",
@@ -208,9 +127,8 @@ local function isValidStrata(s)
     return false
 end
 
--- Applies the saved strata/level to one frame. Level is clamped at 0 (the
--- client rejects negatives) and applied after the strata, since changing
--- strata re-bases a frame's level.
+-- Level is clamped at 0 (the client rejects negatives) and applied after the
+-- strata, since changing strata re-bases a frame's level.
 local function applyFrameLayer(f, strata, level)
     if not f then return end
     if not isValidStrata(strata) then strata = DEFAULT_STRATA end
@@ -218,43 +136,32 @@ local function applyFrameLayer(f, strata, level)
     f:SetFrameLevel(math.max(0, tonumber(level) or DEFAULT_LEVEL))
 end
 
--- Re-applies both frames' configured strata/level. Called at frame creation,
--- when leaving Move Mode (which temporarily raises them), and whenever the
--- settings change.
+-- Called at frame creation, on leaving Move Mode (which temporarily raises
+-- them), and whenever the settings change.
 local function applyFrameLayers()
     local d = getData()
     applyFrameLayer(displayFrame, d.displayStrata, d.displayLevel)
     applyFrameLayer(menuFrame,    d.menuStrata,    d.menuLevel)
 end
 
--- Reskins one worn/menu trinket button to match ElvUI's action-button look
--- (used by TrinketMenu.lua's own native ElvUI skin, which this mirrors):
--- swap the baked Blizzard Classic Normal/Pushed/Highlight textures for
--- ElvUI's flat bordered button template, then crop+inset the icon the way
--- ElvUI crops every actionbar icon. No-ops until setElvUIEngine() has run, or
--- if the user has unchecked "Skin with ElvUI" (elvuiSkinEnabled, default on).
--- Idempotent (guarded by _elvuiSkinned) since it's called both at button
--- creation and again from refreshElvUISkin() to catch buttons already built
--- before ElvUI was detected.
+-- Reskins one button to ElvUI's action-button look, mirroring TrinketMenu's own
+-- ElvUI skin. No-ops until setElvUIEngine() has run, or if "Skin with ElvUI" is
+-- off. Idempotent — called at creation and again from refreshElvUISkin() for
+-- buttons built before ElvUI was detected.
 local function elvuiSkinButton(btn)
     if not (elvE and btn) or btn._elvuiSkinned then return end
     if getData().elvuiSkinEnabled == false then return end
     if not btn.StripTextures or not btn.SetTemplate then return end
     btn._elvuiSkinned = true
-    -- StripTextures() clears EVERY texture region on the button, the trinket
-    -- icon included, so remember its texture and put it straight back. Without
-    -- this the icon only reappeared when something else happened to refresh it
-    -- (which is why a toggle off→on left the icon blank while the cooldown
-    -- swipe — a separate Cooldown frame — stayed visible).
+    -- StripTextures() clears EVERY texture region including the trinket icon, so
+    -- remember its texture and put it back. Without this a toggle off→on left the
+    -- icon blank while the cooldown swipe stayed visible.
     local icon = btn.icon
     local savedTexture = icon and icon:GetTexture()
-    -- 1.15.9's modernized ActionButtonTemplate applies an IconMask MaskTexture
-    -- to the icon. A MaskTexture IS a Texture region, so StripTextures() below
-    -- blanks the mask's own texture too — and a blank mask is alpha 0
-    -- everywhere, which renders the masked icon fully invisible no matter what
-    -- texture we put back on it (blank button, cooldown still visible, no
-    -- error). Save the mask's texture/atlas first so revertElvUIButton can
-    -- restore it for the unskinned look.
+    -- 1.15.9's ActionButtonTemplate applies an IconMask MaskTexture to the icon. A
+    -- MaskTexture IS a Texture region, so StripTextures() blanks it too — and a blank
+    -- mask is alpha 0 everywhere, rendering the icon invisible whatever texture we
+    -- put back. Save it first so revertElvUIButton can restore it.
     local mask = btn.IconMask
     if mask and btn._elvuiMaskTexture == nil and btn._elvuiMaskAtlas == nil then
         btn._elvuiMaskAtlas   = mask.GetAtlas and mask:GetAtlas() or nil
@@ -265,14 +172,10 @@ local function elvuiSkinButton(btn)
     if btn.StyleButton then btn:StyleButton() end
     btn:SetBackdropColor(0, 0, 0, 0)
     if icon then
-        -- Don't render through the template's own icon region while skinned —
-        -- it carries 1.15.9 baggage (the IconMask above, atlas history from
-        -- StripTextures) that made it misrender in ways plain textures don't;
-        -- the TrinketMenu 11509 fix reached the same "only a freshly created
-        -- texture renders reliably" conclusion. So build a virgin replacement
-        -- texture on the button and swap btn.icon to point at it — every
-        -- existing update path (updateWornIcons/buildMenu/click handlers)
-        -- then reads and writes the clean region with no syncing needed.
+        -- Don't render through the template's own icon region while skinned — it carries
+        -- 1.15.9 baggage (the IconMask, atlas history from StripTextures) that misrenders
+        -- in ways plain textures don't. Build a virgin texture and point btn.icon at it,
+        -- so every existing update path reads and writes the clean region.
         local display = btn._elvuiIcon
         if not display then
             display = btn:CreateTexture(nil, "ARTWORK", nil, -1)
@@ -289,19 +192,15 @@ local function elvuiSkinButton(btn)
     end
 end
 
--- Undoes elvuiSkinButton: restores the baked Blizzard Classic look (the same
--- styleSlotButton() call used at button creation) and clears the backdrop
--- SetTemplate() added, so toggling the checkbox off reverts live instead of
--- needing a reload.
+-- Undoes elvuiSkinButton and clears the backdrop SetTemplate() added, so
+-- toggling the checkbox off reverts live instead of needing a reload.
 local function revertElvUIButton(btn, size)
     if not btn or not btn._elvuiSkinned then return end
     btn._elvuiSkinned = nil
     if btn.SetBackdrop then btn:SetBackdrop(nil) end
     styleSlotButton(btn, size)
-    -- Restore the template's IconMask that elvuiSkinButton hid (and whose
-    -- texture StripTextures blanked) so the unskinned icon gets its stock
-    -- rounded-corner crop back. MaskTexture:SetTexture needs the additive
-    -- wrap modes or the mask clamps wrong at the edges.
+    -- Restore the IconMask elvuiSkinButton hid (and whose texture StripTextures
+    -- blanked). SetTexture needs the additive wrap modes or the mask clamps wrong.
     local mask = btn.IconMask
     if mask then
         if btn._elvuiMaskAtlas then
@@ -312,10 +211,9 @@ local function revertElvUIButton(btn, size)
         end
         mask:Show()
     end
-    -- Swap btn.icon back to the template's own icon region and hide the
-    -- replacement texture the skin created (see elvuiSkinButton). The current
-    -- texture/desaturation state is copied across so the unskinned button
-    -- shows the same trinket without waiting for the next refresh.
+    -- Point btn.icon back at the template's region and hide the skin's replacement.
+    -- The texture/desaturation state is copied so the button shows the same trinket
+    -- immediately.
     local display = btn._elvuiIcon
     local icon    = btn._origIcon or btn.icon
     if display and icon then
@@ -332,22 +230,15 @@ local function revertElvUIButton(btn, size)
     end
 end
 
--- Applies or reverts the skin across every worn/menu button already built
--- (both frames are created once and memoized — see getOrCreateDisplay/
--- getOrCreateMenu), based on the current elvuiSkinEnabled setting. New
--- buttons self-skin at creation time via elvuiSkinButton, which reads the
--- same setting. Called once ElvUI is confirmed loaded, and again whenever the
--- checkbox is toggled.
+-- Applies or reverts the skin across every button already built. New buttons
+-- self-skin at creation via elvuiSkinButton, which reads the same setting.
 local function refreshElvUISkin()
     if not elvE then return end
     local on = getData().elvuiSkinEnabled ~= false
-    -- The ElvUI skin and Masque are mutually exclusive per button: Masque
-    -- reskins every region it owns (its own icon texcoords, border art,
-    -- re-anchored icon) right over the ElvUI template, leaving an ElvUI
-    -- backdrop with a classic-styled icon floating inside it. So skinning a
-    -- button first removes it from the Masque group (RemoveButton restores
-    -- the stock regions and no-ops if it was never added), and reverting
-    -- hands it back so Masque users keep their chosen look.
+    -- The ElvUI skin and Masque are mutually exclusive per button: Masque reskins
+    -- every region it owns right over the ElvUI template, leaving an ElvUI backdrop
+    -- with a classic icon inside. So skinning removes the button from the Masque
+    -- group, and reverting hands it back.
     local group = addon.Trinkets and addon.Trinkets._masqueGroup
     local function apply(btn, size, buttonData)
         if not btn then return end
@@ -379,9 +270,8 @@ local function setElvUIEngine(E)
     refreshElvUISkin()
 end
 
--- Re-asserts the ElvUI icon crop on a skinned button. Called after every
--- icon:SetTexture() as cheap insurance against anything resetting the
--- region's texcoords. No-op for unskinned buttons.
+-- Re-asserts the crop after every icon:SetTexture(), as insurance against
+-- anything resetting the region's texcoords. No-op for unskinned buttons.
 local function applyElvUICrop(btn)
     if elvE and btn and btn._elvuiSkinned and btn.icon then
         btn.icon:SetTexCoord(getIconCrop())
@@ -394,19 +284,15 @@ local baggedTrinkets  = {}
 local numTrinkets     = 0
 local combatQueue     = {}   -- [targetSlot] = { bag, slot, texture }
 -- Preemptive ("soft") queue: [targetSlot] = { id, bag, slot, texture }. Unlike
--- combatQueue (which fires the moment combat ends), a soft-queued trinket waits
--- for a GAMEPLAY condition — the currently-equipped trinket must have been used
--- and its on-use buff expired (see isSwapGateOpen/processSoftQueue) — so you can
--- line up the next trinket without it swapping the active one out mid-effect.
--- Runtime-only, same lifetime as combatQueue (not persisted across relog).
+-- combatQueue (which fires when combat ends), this waits for a GAMEPLAY
+-- condition — the equipped trinket used and its buff expired — so the next one
+-- can be lined up without swapping the active one out mid-effect.
 local softQueue       = {}
 local pendingMenuShow = false  -- true when showMenu found 0 trinkets due to unloaded item data
 local itemInfoTimer   = nil    -- debounce timer for GET_ITEM_INFO_RECEIVED
--- Whether hidden trinkets are currently revealed. Latched from the Alt state
--- only when the mouse ENTERS the display+menu region fresh (see mouseInRegion):
--- hovering the display with Alt held reveals them, without Alt hides them. It
--- is NOT re-latched on internal moves (button↔frame, display→menu) nor tied to
--- the live Alt state, so releasing Alt and moving onto the menu keeps them shown.
+-- Latched from the Alt state only when the mouse ENTERS the display+menu region
+-- fresh. NOT re-latched on internal moves nor tied to the live Alt state, so
+-- releasing Alt and moving onto the menu keeps them shown.
 local showHidden      = false
 local mouseInRegion   = false  -- mouse currently over the display or bag menu
 
@@ -531,20 +417,15 @@ local function itemBuffActive(id)
     return false
 end
 
--- Equipping ANY on-use trinket applies a generic "just equipped" swap lockout,
--- shown as a normal cooldown swipe, regardless of whether the trinket was
--- ever actually clicked — indistinguishable from a real on-use cooldown by
--- duration alone (some real trinket cooldowns are themselves under 30s).
--- Tracks, per slot, whether the currently-equipped trinket has been confirmed
--- used since it was equipped (via markTrinketUsed, hooked to the player's
--- UNIT_SPELLCAST_SUCCEEDED below); reset whenever the equipped item changes.
--- Auto-queue must never swap a trinket away before it's had a chance to be
--- used at all.
+-- Equipping ANY on-use trinket applies a generic "just equipped" swap lockout
+-- shown as a normal cooldown swipe, indistinguishable from a real on-use
+-- cooldown by duration alone. So track per slot whether the equipped trinket was
+-- confirmed used, reset when the equipped item changes — auto-queue must never
+-- swap one away before it's had a chance to be used.
 local queueUsedTracker = { [0] = { id = nil, used = false }, [1] = { id = nil, used = false } }
 
--- Called on UNIT_SPELLCAST_SUCCEEDED("player", ...). If the spell that just
--- succeeded is the on-use spell of whichever trinket is currently equipped in
--- slot 0/1, marks that slot's trinket as genuinely used.
+-- On UNIT_SPELLCAST_SUCCEEDED("player", ...): if the spell is the on-use spell
+-- of whichever trinket is equipped in slot 0/1, mark that slot used.
 local function markTrinketUsed(spellName)
     if not spellName then return end
     for which = 0, 1 do
@@ -557,10 +438,9 @@ local function markTrinketUsed(spellName)
     end
 end
 
--- processQueue is defined further down (after grayOutDisplaySlot/
--- markSwappedOut/updateQueueIndicators/menuSwapFreeze, which it reuses so an
--- auto-queued swap gets the exact same combat-queueing and visual feedback as
--- a manual click) — see below the bag-menu button setup.
+-- processQueue is defined further down, after grayOutDisplaySlot/markSwappedOut/
+-- updateQueueIndicators/menuSwapFreeze, which it reuses so an auto-queued swap
+-- gets the same feedback as a manual click.
 
 -- ── Notify ───────────────────────────────────────────────────────────────────
 
@@ -656,14 +536,13 @@ end
 
 -- ── Icon / cooldown helpers ───────────────────────────────────────────────────
 
--- [which] = true while a slot is mid-swap: its icon is still the grayed
--- outgoing trinket and its cooldown swirl must be frozen so the incoming
--- trinket's cooldown doesn't paint over the old icon before it updates.
+-- [which] = true while a slot is mid-swap: its icon is still the grayed outgoing
+-- trinket, and its cooldown swirl must be frozen so the incoming trinket's
+-- cooldown doesn't paint over the old icon.
 local swapPending = {}
 
--- Desaturate the worn-icon in place (keeps the old texture visible, just
--- grayed) so there's no black flash while the swap resolves. Cleared by
--- updateWornIcons() once PLAYER_EQUIPMENT_CHANGED lands the new trinket.
+-- Desaturate in place so there's no black flash while the swap resolves. Cleared
+-- by updateWornIcons() once PLAYER_EQUIPMENT_CHANGED lands the new trinket.
 local function grayOutDisplaySlot(slot)
     if not displayFrame then return end
     local which = slot - SLOT_TOP
@@ -704,9 +583,8 @@ local function updateWornIcons()
                 applyElvUICrop(btn)
                 settled = true
             else
-                -- GetInventoryItemTexture is available immediately for worn
-                -- items (no item-cache dependency), so the display updates the
-                -- instant the equipment change fires.
+                -- GetInventoryItemTexture has no item-cache dependency for worn items, so the
+                -- display updates the instant the equipment change fires.
                 local tex = GetInventoryItemTexture("player", slot)
                 if tex then
                     btn.icon:SetTexture(tex)
@@ -728,25 +606,19 @@ local function updateWornIcons()
             end
         end
     end
-    -- Bag-menu rebuild timer starts here, i.e. AFTER the display icon/cooldown
-    -- above have already been set — never at click time — so the configured
-    -- delay is measured from when the display visually settles.
+    -- Started AFTER the display icon/cooldown are set, never at click time, so the
+    -- configured delay is measured from when the display visually settles.
     scheduleMenuRebuild()
 end
 
--- Equipping an on-use trinket puts a ~30s "swap lockout" cooldown on trinkets.
--- On the bag menu that swirl is unwanted noise for the trinket you're swapping
--- IN (its cooldown belongs on the display slot, and it's leaving the menu
--- anyway) and for uninvolved trinkets — so we filter ≤30s cooldowns there.
--- BUT the trinket you swap OUT should keep its equip cooldown visible in the
--- menu, so the item just swapped out is exempted from the filter by ID.
+-- Equipping an on-use trinket puts a ~30s swap lockout on trinkets. On the bag
+-- menu that swirl is noise, so ≤30s cooldowns are filtered there — except the
+-- trinket swapped OUT, exempted by ID so its equip cooldown stays visible.
 local SWAP_LOCKOUT_MAX = 30
 local swappedOutAt   = {}     -- [itemID] = GetTime() the item was last swapped out
--- True from the moment a swap is initiated until the menu rebuilds. While set,
--- updateMenuCooldowns() is skipped: during the swap the bag slots the menu
--- buttons point at are momentarily stale (the swapped-out trinket lands in the
--- clicked trinket's old slot), so re-reading them would repaint a wrong/30s
--- timer over an existing icon. Menu timers must only change on the rebuild.
+-- True from the moment a swap starts until the menu rebuilds. While set,
+-- updateMenuCooldowns() is skipped: the bag slots the menu buttons point at are
+-- momentarily stale, so re-reading would paint a wrong timer over an icon.
 local menuSwapFreeze = false
 
 -- Records a trinket (by ID) as freshly swapped out of an equipment slot so its
@@ -841,9 +713,8 @@ local function getOrCreateQueueIndicator(which)
     return f
 end
 
--- The preemptive/soft-queue badge sits in the opposite (bottom-right) corner so
--- it's distinguishable at a glance from the combat/auto-queue badge (top-left),
--- and carries a gold border to read as "waiting, not yet firing".
+-- The soft-queue badge sits in the opposite corner from the combat/auto-queue
+-- one, with a gold border to read as "waiting, not yet firing".
 local function getOrCreateSoftIndicator(which)
     if not displayFrame then return nil end
     local btn = displayFrame["t"..which]
@@ -865,10 +736,9 @@ local function getOrCreateSoftIndicator(which)
     return f
 end
 
--- Same inset used by TrinketMenu: while a swap is actually pending in combat
--- it shows the incoming item's icon; otherwise, if this slot's auto queue is
--- simply enabled, it shows TrinketMenu's own gear icon as an "armed" marker.
--- The bottom-right badge separately shows any preemptive/soft-queued trinket.
+-- While a swap is pending in combat it shows the incoming item's icon;
+-- otherwise, if auto queue is enabled, the gear icon as an "armed" marker. The
+-- bottom-right badge separately shows any soft-queued trinket.
 local function updateQueueIndicators()
     local d = getData()
     for which = 0, 1 do
@@ -899,25 +769,19 @@ local function updateQueueIndicators()
     end
 end
 
--- If a swap's protected calls get silently blocked (e.g. combat resumes in
--- the split-second around the call — ADDON_ACTION_BLOCKED doesn't raise a
--- catchable Lua error), PLAYER_EQUIPMENT_CHANGED never fires for that slot,
--- swapPending is never cleared by updateWornIcons(), and the icon/cooldown
--- freeze forever with nothing else the addon can key off of. After the timeout
--- this recovers: un-gray the frozen icon and unfreeze the menu so the slot is
--- usable again. Undoing that stuck state is UNCONDITIONAL — it's a pure bug fix
--- with no downside. The user-facing "watchdog" toggle only governs the extra
--- step of auto-RE-QUEUING the failed swap for retry (which can misfire on a
--- slow-but-successful swap), so that part alone is gated behind the setting.
+-- If a swap's protected calls get silently blocked (combat resuming in the
+-- split second around the call — ADDON_ACTION_BLOCKED raises no catchable
+-- error), PLAYER_EQUIPMENT_CHANGED never fires, swapPending is never cleared,
+-- and the icon freezes forever. This recovers after the timeout.
+--
+-- That recovery is UNCONDITIONAL. The user-facing "watchdog" toggle governs only
+-- auto-RE-QUEUING the failed swap, which can misfire on a slow-but-successful one.
 local SWAP_WATCHDOG_TIMEOUT = 1.0
 
--- [which] = a counter bumped every time a swap is attempted on that slot.
--- Each attempt's watchdog closure snapshots the counter as its "generation";
--- if a newer attempt has since started on the same slot before the watchdog
--- fires, the watchdog is stale and must no-op instead of acting on outdated
--- bag/slot data — otherwise rapid repeat swaps on one slot can leave two
--- watchdogs racing over a single shared swapPending flag, and the stale one
--- can re-queue an old, no-longer-wanted trinket that nothing else can clear.
+-- [which] = a counter bumped per swap attempt. Each watchdog snapshots it as its
+-- "generation" and no-ops if a newer attempt has started, so rapid repeat swaps
+-- don't leave two watchdogs racing over one swapPending flag with the stale one
+-- re-queueing an old trinket.
 local swapGen = {}
 
 local function attemptSwap(targetSlot, bag, slot, texture)
@@ -926,15 +790,11 @@ local function attemptSwap(targetSlot, bag, slot, texture)
     if CursorHasItem() then return end
 
     local which = targetSlot - SLOT_TOP
-    -- Guard against overlapping swap attempts on the SAME slot (e.g. two
-    -- fast clicks on different trinkets for the same slot). The pickup pair
-    -- below is only treated as an atomic bag<->equipment swap by the client
-    -- once the prior attempt's swap has actually been confirmed — and that
-    -- confirmation (PLAYER_EQUIPMENT_CHANGED, tracked via swapPending) can
-    -- lag well behind the cursor itself going back to empty. Firing another
-    -- PickupContainerItem/PickupInventoryItem pair into that still-settling
-    -- transaction is what strands the second trinket on the cursor, so key
-    -- the guard off swapPending rather than CursorHasItem() alone.
+    -- Guard against overlapping swaps on the SAME slot. The pickup pair below is
+    -- only treated as an atomic bag<->equipment swap once the prior swap is
+    -- confirmed, and that confirmation can lag well behind the cursor going empty.
+    -- Firing another pair into the still-settling transaction is what strands the
+    -- second trinket on the cursor — so key off swapPending, not CursorHasItem().
     if swapPending[which] then return end
 
     grayOutDisplaySlot(targetSlot)
@@ -963,12 +823,9 @@ local function attemptSwap(targetSlot, bag, slot, texture)
                 combatQueue[targetSlot] = combatQueue[targetSlot]
                     or { bag = bag, slot = slot, texture = texture }
             else
-                -- Out of combat the swap should be possible; something transient
-                -- (e.g. a brief CC that had already dropped combat) blocked it.
-                -- Retry directly rather than parking it in the combat queue,
-                -- which would never flush without a combat-end event and would
-                -- leave the indicator stuck. attemptSwap's own watchdog keeps
-                -- retrying until it lands.
+                -- Out of combat the swap should be possible; something transient blocked it.
+                -- Retry directly rather than parking it in the combat queue, which would never
+                -- flush without a combat-end event.
                 attemptSwap(targetSlot, bag, slot, texture)
             end
         end
@@ -976,13 +833,12 @@ local function attemptSwap(targetSlot, bag, slot, texture)
     end)
 end
 
--- Whether slot `which`'s currently-equipped trinket is clear to be swapped
--- AWAY: true once it's been genuinely used since being equipped and its on-use
--- buff (if any) has expired. A trinket with no on-use spell, or an empty slot,
--- is always clear. Also (re)initialises the used-tracker when the equipped item
--- changes, so this is safe to call as the single source of truth every tick.
--- Shared by both the auto-queue (processQueue) and the preemptive/soft-queue
--- (processSoftQueue) so the two obey the exact same "used + expired" rule.
+-- Whether slot `which`'s equipped trinket is clear to be swapped AWAY: true once
+-- it's been genuinely used since being equipped and its on-use buff has expired.
+-- A trinket with no on-use spell, or an empty slot, is always clear. Also
+-- (re)initialises the used-tracker when the equipped item changes, so it's safe
+-- as the single source of truth every tick. Shared by processQueue and
+-- processSoftQueue so both obey the same "used + expired" rule.
 local function isSwapGateOpen(which)
     local slot      = SLOT_TOP + which
     local link      = GetInventoryItemLink("player", slot)
@@ -1001,28 +857,20 @@ local function isSwapGateOpen(which)
     return true
 end
 
--- Ported from TrinketMenu's TrinketMenu.ProcessAutoQueue, adapted to this
--- addon's simpler per-slot { sort, stats } data (no Stop-marker/profile
--- system). Two bugs this fixes vs. the original version:
+-- Ported from TrinketMenu.ProcessAutoQueue, adapted to this addon's per-slot
+-- { sort, stats } data. Two bugs this fixes vs. the original:
 --
---   1. "Doesn't work at all" — the old version tried to equip directly at
---      all times, including in combat. Equipping via PickupContainerItem +
---      PickupInventoryItem is silently blocked mid-combat, leaving an item
---      stuck on the cursor and the whole auto-queue in a confused state from
---      then on. Now it feeds the SAME combatQueue used by manual clicks and
---      lets PLAYER_REGEN_ENABLED flush it once combat ends.
+--   1. "Doesn't work at all" — it equipped directly at all times, including in
+--      combat, where the pickup pair is silently blocked, leaving an item on the
+--      cursor and the queue confused. Now it feeds the same combatQueue manual
+--      clicks use, flushed by PLAYER_REGEN_ENABLED.
 --
---   2. "Spam swaps between trinkets" — the old version scanned the ENTIRE
---      sort list every tick and jumped to the first ready+owned trinket, with
---      nothing stopping it from swapping the current one out before it had
---      even been used. Oscillation is now prevented up front: the currently-
---      equipped trinket can only be swapped OUT once it's been genuinely used
---      (see queueUsedTracker/markTrinketUsed) and, if it grants a buff, that
---      buff has expired — a trinket that was never clicked, or whose buff is
---      still running, is never touched. Once that gate clears, the whole sort
---      list is scanned top-down for the first ready+owned replacement, since
---      whatever gets swapped in becomes the new "current" and is subject to
---      the exact same gate before it can be swapped away again.
+--   2. "Spam swaps" — it scanned the whole sort list every tick and jumped to
+--      the first ready trinket, with nothing stopping it swapping the current
+--      one out before it had been used. The equipped trinket can now only be
+--      swapped out once genuinely used and its buff expired; once that gate
+--      clears, the list is scanned top-down and whatever swaps in becomes the
+--      new "current", subject to the same gate.
 local function processQueue(which)
     local d = getData()
     local q = d.queue[which]
@@ -1093,20 +941,18 @@ local function ownsTrinket(id)
     return false
 end
 
--- Fires a preemptively (soft) queued trinket. Bags are re-scanned live for the
--- queued item ID (its bag/slot may have shifted since it was queued) rather than
--- trusting the stored position. In combat it hands off to combatQueue (fires on
--- the next combat end via attemptSwap), matching the auto-queue's own behaviour.
+-- Fires a soft-queued trinket. Bags are re-scanned live for the queued item ID
+-- (its position may have shifted) rather than trusting the stored one. In combat
+-- it hands off to combatQueue, matching the auto-queue's behaviour.
 local function processSoftQueue(which)
     local slot = SLOT_TOP + which
     local sq = softQueue[slot]
     if not sq then return end
 
-    -- A first-stage swap is still pending for this slot (queued for combat end,
-    -- or its swap in flight). The soft-queued trinket is meant to follow THAT
-    -- one, so hold until it has actually landed — otherwise the gate below would
-    -- evaluate against the wrong (soon-to-be-replaced) equipped trinket and this
-    -- could fire early, clobbering the first-stage swap. Central to chain mode.
+    -- A first-stage swap is still pending for this slot. The soft-queued trinket is
+    -- meant to follow THAT one, so hold until it has landed — otherwise the gate
+    -- below would evaluate against the soon-to-be-replaced trinket and could fire
+    -- early, clobbering the first-stage swap. Central to chain mode.
     if combatQueue[slot] then return end
     if swapPending[which] then return end
 
@@ -1124,16 +970,12 @@ local function processSoftQueue(which)
     if CastingInfo() or ChannelInfo() then return end
 
     -- Normally wait for the equipped trinket to have been used and its buff to
-    -- have expired. There's ONE exception — swap early — but only when ALL of:
-    --   * it was never used (so we're not throwing away a buff mid-duration),
-    --   * it's stuck on a real cooldown (> the ~30s equip lockout) so it can't
-    --     be used any time soon, and
-    --   * the soft trinket is itself ready to go.
-    -- This keeps the "don't stall behind a trinket whose long on-use cooldown
-    -- was already ticking when equipped" fix, while NOT firing when the trinket
-    -- was just popped (buff still running), nor when the soft trinket shares
-    -- that cooldown (e.g. a Diamond Flask-style shared trinket cooldown), where
-    -- swapping to it would gain nothing.
+    -- expire. One exception — swap early — but only when ALL of: it was never used
+    -- (so no buff is being thrown away mid-duration), it's on a real cooldown (> the
+    -- ~30s equip lockout) so it can't be used soon, and the soft trinket is ready.
+    -- That keeps the "don't stall behind a long cooldown that was already ticking"
+    -- fix without firing when the trinket was just popped, or when the soft trinket
+    -- shares that cooldown and swapping would gain nothing.
     if not isSwapGateOpen(which) then
         local curLink = GetInventoryItemLink("player", slot)
         local curID   = curLink and curLink:match("item:(%d+)")
@@ -1184,14 +1026,12 @@ local function findBagTrinket(id)
     end
 end
 
--- Push a configured boss's chosen trinkets into the queues so the swaps happen
--- the next time combat allows. Two presets per slot: the Main trinket goes to
--- the combat queue (fires first), the Soft trinket to the soft queue (fires
--- after the Main one has been used and its effect expired — same chaining as a
--- manual soft queue). Main needs a bag copy and is skipped if already worn; the
--- Soft trinket may be one you currently have EQUIPPED (a common case: engage
--- with X/Y on, main-queue a/b, soft-queue X/Y back), so it's queued as long as
--- you own it — processSoftQueue re-equips it from bags once it's displaced.
+-- Push a configured boss's trinkets into the queues so the swaps happen the next
+-- time combat allows. Two presets per slot: Main swaps in first (immediately out
+-- of combat, else via the combat queue), Soft goes to the soft queue, firing
+-- after Main has been used and expired. Main needs a bag copy and is skipped if
+-- already worn; Soft may be one you currently have EQUIPPED (a common case), so
+-- it's queued as long as you own it and re-equipped from bags once displaced.
 local function queueEncounterTrinkets(enc)
     if not enc then return end
     local changed = false
@@ -1210,7 +1050,17 @@ local function queueEncounterTrinkets(enc)
             local bag, s = findBagTrinket(mid)
             if bag then
                 local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(mid) or mid)
-                combatQueue[slot] = { id = mid, bag = bag, slot = s, texture = tex }
+                if UnitAffectingCombat("player") then
+                    combatQueue[slot] = { id = mid, bag = bag, slot = s, texture = tex }
+                else
+                    -- Triggers that can fire outside combat (Encounter Start on
+                    -- a boss that doesn't aggro immediately, Encounter End after
+                    -- the kill) would otherwise park the swap in combatQueue,
+                    -- which only flushes on PLAYER_REGEN_ENABLED — i.e. not
+                    -- until the NEXT fight ends. Out of combat the equip is
+                    -- legal right now, so just do it.
+                    attemptSwap(slot, bag, s, tex)
+                end
                 changed = true
             end
         end
@@ -1225,15 +1075,83 @@ local function queueEncounterTrinkets(enc)
     if changed then updateQueueIndicators() end
 end
 
--- Specific Auto Queue must only fire once you're BOTH inside a configured
--- encounter AND actually in combat — never on ENCOUNTER_START alone. Some
--- bosses don't put the raid in combat immediately, so queuing at encounter
--- start could swap your equipped trinket out during that pre-combat window.
--- Gating on real combat means the swap is only lined up once you're fighting.
--- Called from both ENCOUNTER_START and PLAYER_REGEN_DISABLED (whichever makes
--- both conditions true second); the per-encounter latch keeps it to one queue.
-local currentEncounterID = nil
-local encounterQueued    = false
+-- ── Specific Auto Queue triggers ─────────────────────────────────────────────
+-- Each configured encounter picks WHEN its trinkets queue, as enc.trigger:
+--
+--   combat        In combat on the encounter, optionally held for the safeguard
+--                 delay. The original behaviour, before triggers existed.
+--   encounter     ENCOUNTER_START alone, without waiting for combat.
+--   hp75/50/35/20 The boss dropping to that share of health, polled on the
+--                 shared 1s ticker.
+--   end           ENCOUNTER_END — kill or wipe — for swapping back afterwards.
+--
+-- `hp` is the fraction the threshold triggers compare against. `desc` is the
+-- hover help the settings UI shows, kept here beside the code that implements
+-- the behaviour so it can't quietly go stale.
+local ENC_TRIGGERS = {
+    {
+        value = "combat",
+        label = "In Combat",
+        desc  = {
+            "Queues once you are both inside the encounter and actually in combat — whichever of the two happens second.",
+            "With the safeguard delay above switched on, both have to hold continuously for its full duration first. Dropping combat, or the encounter ending, cancels the attempt and restarts the delay from scratch.",
+            "The cautious option: it swaps at the pull, but a boss that does not put the raid in combat the instant it starts will not make you swap during the run-in.",
+        },
+    },
+    {
+        value = "encounter",
+        label = "Encounter Start",
+        desc  = {
+            "Queues the moment the encounter starts, without waiting for combat. The safeguard delay does not apply.",
+            "Faster off the mark, but on a boss that leaves the raid out of combat for a few seconds this can swap a trinket during the run-in. Pick it when you want the set on before your first global.",
+        },
+    },
+}
+
+-- The four health thresholds differ only by their number, so build them rather
+-- than paste four near-identical option tables.
+for _, pct in ipairs({ 75, 50, 35, 20 }) do
+    ENC_TRIGGERS[#ENC_TRIGGERS + 1] = {
+        value = "hp" .. pct,
+        label = "Boss at " .. pct .. "%",
+        hp    = pct / 100,
+        desc  = {
+            "Queues the first time the boss drops to " .. pct .. "% health or below. Checked once a second, so it can land a little under the mark rather than exactly on it.",
+            "Classic Era has no boss unit token, so the boss's health is read through your target, your mouseover, or its nameplate. It has to be at least one of those for the threshold to be seen at all — in practice, keep it targeted.",
+            "On a multi-boss encounter (Four Horsemen, Twin Emperors, Bug Trio) the first one to reach " .. pct .. "% is what fires it.",
+        },
+    }
+end
+
+ENC_TRIGGERS[#ENC_TRIGGERS + 1] = {
+    value = "end",
+    label = "Encounter End",
+    desc  = {
+        "Queues when the encounter ends — on the kill or on a wipe. Nothing swaps while the fight is running.",
+        "This is the one for putting a farming or utility set back on the moment the boss is down. If you are still in combat when it fires, the swap lands as soon as you drop out of it.",
+    },
+}
+
+addon.TRINKET_ENC_TRIGGERS = ENC_TRIGGERS
+
+-- What an encounter with no explicit trigger does. Stored as nil rather than
+-- written out, so a boss row you never touch still prunes itself away — which
+-- means changing this value changes what every untouched config does, hence the
+-- one-time stamp in getData() that pins pre-existing configs to their old
+-- behaviour instead of moving them.
+local DEFAULT_ENC_TRIGGER = "hp75"
+addon.TRINKET_ENC_TRIGGER_DEFAULT = DEFAULT_ENC_TRIGGER
+
+-- [trigger] = health fraction, for the threshold triggers only. Doubles as the
+-- "is this an HP trigger?" test everywhere below.
+local TRIGGER_HP = {}
+for _, t in ipairs(addon.TRINKET_ENC_TRIGGERS) do
+    if t.hp then TRIGGER_HP[t.value] = t.hp end
+end
+
+local currentEncounterID   = nil
+local currentEncounterName = nil   -- ENCOUNTER_START's name, for the HP triggers
+local encounterQueued      = false
 
 -- Encounter ids belonging to the "debug" raid (The Stockades). These only
 -- auto-queue when the Debug module is explicitly enabled, so they can't fire
@@ -1248,28 +1166,97 @@ for _, raid in ipairs(addon.RAIDS or {}) do
 end
 
 -- Safeguard delay: optionally require encounter-start + in-combat to hold
--- simultaneously for a configured duration before queuing, rather than firing
--- the instant both first line up. encGen is bumped on every ENCOUNTER_START/END
--- so a delayed attempt started for an earlier encounter can recognise it's been
--- superseded (encounter ended/changed) and quietly no-op instead of firing late.
+-- simultaneously for a duration before queuing. encGen is bumped on every
+-- ENCOUNTER_START/END so a delayed attempt from an earlier encounter can tell
+-- it's been superseded and no-op rather than fire late.
 local encGen = 0
 
-local function maybeQueueEncounter()
-    if encounterQueued then return end
-    if not currentEncounterID then return end
-    if not UnitAffectingCombat("player") then return end
-    if debugEncounterIDs[currentEncounterID] and not getData().debugEncounters then return end
+-- The config for the encounter we're currently in, or nil if there isn't one,
+-- it isn't ticked, or it's a Stockades test encounter with Debug switched off.
+local function activeEncounterConfig()
+    if not currentEncounterID then return nil end
+    if debugEncounterIDs[currentEncounterID] and not getData().debugEncounters then return nil end
     local enc = getData().encounters[currentEncounterID]
-    if not (enc and enc.enabled) then return end
+    if enc and enc.enabled then return enc end
+    return nil
+end
 
+-- Classic Era has no boss1..boss5 tokens, so boss health is only readable
+-- through a token we already hold. Rather than register UNIT_HEALTH (constant
+-- traffic for everything in range), sample target, mouseover and anything with a
+-- nameplate on the queues' existing 1s ticker.
+--
+-- A unit counts as the boss if its name matches ENCOUNTER_START's, or failing
+-- that if it's classified worldboss — which covers multi-mob encounters whose
+-- name matches no single unit. With several up, the LOWEST health wins.
+local function encounterBossHealthPct()
+    local lowest
+    local function consider(unit)
+        if not unit or not UnitExists(unit) or UnitIsDead(unit) then return end
+        if not UnitCanAttack("player", unit) then return end
+        if UnitName(unit) ~= currentEncounterName
+           and UnitClassification(unit) ~= "worldboss" then return end
+        local maxHP = UnitHealthMax(unit)
+        if not maxHP or maxHP <= 0 then return end
+        local pct = UnitHealth(unit) / maxHP
+        if not lowest or pct < lowest then lowest = pct end
+    end
+    consider("target")
+    consider("mouseover")
+    for _, plate in ipairs(C_NamePlate.GetNamePlates() or {}) do
+        consider(plate.namePlateUnitToken)
+    end
+    return lowest
+end
+
+-- Polled from the shared ticker for the hp* triggers only; every other trigger
+-- is event-driven via maybeQueueEncounter.
+local function tickEncounterHealth()
+    if encounterQueued then return end
+    local enc = activeEncounterConfig()
+    if not enc then return end
+    local threshold = TRIGGER_HP[enc.trigger or DEFAULT_ENC_TRIGGER]
+    if not threshold then return end
+    local pct = encounterBossHealthPct()
+    if pct and pct <= threshold then
+        queueEncounterTrinkets(enc)
+        encounterQueued = true
+    end
+end
+
+-- The event-driven triggers. `reason` is the event that got us here:
+-- "encounter", "combat" or "end". The per-encounter latch keeps each to one
+-- queue per pull.
+--
+-- "combat" must fire only once you're BOTH inside a configured encounter AND in
+-- combat, never on ENCOUNTER_START alone — some bosses don't put the raid in
+-- combat immediately, and queuing then could swap your trinket out.
+local function maybeQueueEncounter(reason)
+    if encounterQueued then return end
+    local enc = activeEncounterConfig()
+    if not enc then return end
+
+    local trigger = enc.trigger or DEFAULT_ENC_TRIGGER
+    if TRIGGER_HP[trigger] then return end   -- tickEncounterHealth owns these
+
+    if trigger == "end" then
+        if reason ~= "end" then return end
+    elseif reason == "end" then
+        return                               -- the fight's over, too late to matter
+    elseif trigger == "combat" and not UnitAffectingCombat("player") then
+        return
+    end
+
+    -- "combat" is the only trigger with two conditions that can come apart
+    -- mid-window, so it's the only one the delay applies to. Holding an HP or
+    -- encounter-end trigger back would make it miss the moment it exists to catch.
     local d = getData()
-    if d.encQueueDelayEnabled then
+    if trigger == "combat" and d.encQueueDelayEnabled then
         local myGen = encGen
         local myEncounterID = currentEncounterID
         C_Timer.After(math.max(0, d.encQueueDelaySeconds or 5.0), function()
-            -- Re-verify both conditions still hold at fire time (not just when
-            -- scheduled) — if the encounter ended/changed or combat dropped in
-            -- the meantime, this attempt is stale and must not fire late.
+            -- Re-verify both conditions at fire time, not just when scheduled: if the
+            -- encounter changed or combat dropped meanwhile, this attempt is stale.
             if encGen ~= myGen then return end
             if encounterQueued then return end
             if currentEncounterID ~= myEncounterID then return end
@@ -1289,16 +1276,11 @@ end
 local DOCK_GAP = 2   -- gap between the display frame and the docked bag menu
 local DEFAULT_CORNER = "below-left"
 
--- Anchors `frame` (the bag menu, or the small drag-preview indicator) to a
--- side/corner of the display using TWO independent single-axis anchor points
--- that both target the display FRAME's own outer edges — together they pin
--- the exact same point a single corner-to-corner SetPoint would, so the bag
--- menu's nearest corner touches the display's nearest corner exactly, the
--- same as any two frames snapped edge-to-edge. Since both axes reference the
--- display frame, growing displayEdgePad (which grows the frame outward from
--- its centre) shifts BOTH axes together — the two frames' corners stay
--- touching, they just spread apart as a unit, instead of the icons drifting
--- out of alignment with the frame's own edge.
+-- Anchors `frame` to a side of the display using TWO independent single-axis
+-- anchor points, both targeting the display FRAME's outer edges — together
+-- pinning the same point one corner-to-corner SetPoint would. Since both axes
+-- reference the frame, growing displayEdgePad shifts them together, so the
+-- corners stay touching instead of the icons drifting out of alignment.
 local function applyDockAnchor(frame, side, align, gap)
     if not displayFrame then return end
     frame:ClearAllPoints()
@@ -1333,13 +1315,10 @@ local function applyDockAnchor(frame, side, align, gap)
     end
 end
 
--- Docks the bag menu against the display, using whichever corner pair was
--- last picked (by dragging, see computeDockCorner below). This is entirely
--- independent of the menuAlign SETTING (the Alignment dropdown) — that only
--- controls which end of the row/column trinket #1 packs to in buildMenu(),
--- not which physical corner the frame is anchored at. Conflating the two
--- used to mean the anchor always snapped to whatever menuAlign happened to
--- be, ignoring where the menu was actually dropped.
+-- Docks the menu using whichever corner pair was last picked by dragging.
+-- Independent of the menuAlign SETTING, which only controls which end of the row
+-- trinket #1 packs to — conflating the two meant the anchor snapped to menuAlign
+-- and ignored where the menu was actually dropped.
 local function positionDockedMenu()
     if not displayFrame or not menuFrame then return end
     local key = getData().menuDockCorner or DEFAULT_CORNER
@@ -1348,16 +1327,10 @@ local function positionDockedMenu()
     applyDockAnchor(menuFrame, side, align, DOCK_GAP)
 end
 
--- Determines which side/corner of the display the bag menu is currently
--- closest to touching. Uses the CURSOR's position (where you're actually
--- hovering/dragging the menu from), not the menu frame's geometric centre —
--- if you grab the menu near one edge and drag that edge close to the
--- display, the menu's centroid can still sit far off to the other side
--- (especially since the menu is often much wider than the tiny 2-icon
--- display), picking the opposite corner from the one you're pointing at.
--- The cursor position is compared against the DISPLAY's centre, normalized
--- by the display's own half-size, so the menu's own bulk can't skew which
--- side/corner is picked either.
+-- Uses the CURSOR's position, not the menu's geometric centre: grabbing the menu
+-- near one edge and dragging that edge close can leave the centroid far off to
+-- the other side, picking the opposite corner from the one you're pointing at.
+-- Normalised by the display's half-size so the menu's bulk can't skew it.
 local function computeDockCorner()
     if not displayFrame then return DEFAULT_CORNER end
     local dcx, dcy = displayFrame:GetCenter()
@@ -1413,10 +1386,8 @@ positionMenu = function()
     elseif d.menuPx and d.menuPy then
         menuFrame:ClearAllPoints()
         if d.menuAlign == "right" then
-            -- Right edge fixed → anchor TOPRIGHT so add/remove grows leftward.
-            -- Prefer the saved right edge; if it's missing (e.g. alignment was
-            -- switched without re-dragging) derive it from the last left edge
-            -- plus the current width.
+            -- Right edge fixed → anchor TOPRIGHT so add/remove grows leftward. Prefer the
+            -- saved right edge; derive it from the last left edge plus width if missing.
             local right = d.menuPxRight or (d.menuPx + menuFrame:GetWidth())
             menuFrame:SetPoint("TOPRIGHT", UIParent, "BOTTOMLEFT", right, d.menuPy)
         else
@@ -1427,9 +1398,8 @@ positionMenu = function()
     end
 end
 
--- Lays out the two worn-trinket buttons using the configurable edge padding and
--- gap, resizes the display frame to match, and re-docks the menu (its position
--- depends on the display size / padding).
+-- Lays out the two worn buttons from the configured padding and gap, resizes the
+-- display to match, and re-docks the menu (whose position depends on both).
 local function layoutDisplay()
     if not displayFrame then return end
     local d   = getData()
@@ -1472,16 +1442,12 @@ scheduleMenuClose = function()
     end)
 end
 
--- Rebuilds the bag menu getData().swapDelay seconds after the worn icon has
--- ALREADY updated (this is only ever called from inside updateWornIcons(),
--- right after the new texture lands) — so the delay is measured from the
--- point the display visually settles, never from click time. Debounced so
--- PLAYER_EQUIPMENT_CHANGED and UNIT_INVENTORY_CHANGED firing for the same
--- swap don't queue up two rebuilds.
---
--- The menu's shown-state is checked only when the timer FIRES, never here:
--- PLAYER_EQUIPMENT_CHANGED arrives a frame or two after the click, and gating
--- the scheduling on IsShown at that moment could drop the rebuild entirely.
+-- Rebuilds the menu swapDelay seconds after the worn icon has ALREADY updated
+-- (this only runs from updateWornIcons), so the delay is measured from when the
+-- display settles, not from click time. Debounced against two events for one
+-- swap. Shown-state is checked when the timer FIRES, not here —
+-- PLAYER_EQUIPMENT_CHANGED lands a frame or two after the click, and gating on
+-- IsShown then could drop the rebuild.
 local menuRebuildTimer
 scheduleMenuRebuild = function()
     if menuRebuildTimer then menuRebuildTimer:Cancel() end
@@ -1502,21 +1468,13 @@ local function applyDisplayScale()
     displayFrame:SetScale(getData().displayScale or 1.0)
 end
 
--- Worn-trinket buttons register for BOTH the down and up phase of the click,
--- always — never just one.
---
--- Using an inventory item is a protected action, and the client only treats
--- ONE physical phase as the valid hardware trigger for it — the phase chosen
--- by the `ActionButtonUseKeyDown` CVar, for mouse AND keybind alike. A secure
--- button registered for the opposite phase gets its OnClick, but the protected
--- UseInventoryItem inside is silently rejected, so the trinket can't be used
--- at all. By registering both phases the secure use always lands on whichever
--- phase the CVar makes valid; the other phase's use no-ops harmlessly (so no
--- double use). This mirrors what LibActionButton does — and what our action
--- bars do — so trinkets and action bars share one key-up/down behaviour,
--- driven by that CVar (toggle it under General → Input). PreClick dedupes its
--- own non-secure side effects via the `down` arg so they fire once per press.
--- Safe to call any time; RegisterForClicks isn't combat-protected.
+-- Worn buttons register BOTH click phases, always. Using an inventory item is
+-- protected, and the client treats only ONE phase as the valid hardware trigger
+-- — whichever `ActionButtonUseKeyDown` names, for mouse and keybind alike. A
+-- button on the other phase still gets its OnClick, but the protected
+-- UseInventoryItem is silently rejected. Registering both puts the use on the
+-- valid phase and the other no-ops. PreClick dedupes its own side effects via
+-- `down`. RegisterForClicks isn't combat-protected.
 local function applyClickTrigger()
     if not displayFrame then return end
     for which = 0, 1 do
@@ -1525,14 +1483,10 @@ local function applyClickTrigger()
     end
 end
 
--- Blocks a trinket's keybind (and mouse click) from using the item while a
--- given modifier is held, via WoW's own secure modified-click attribute
--- system — the same mechanism TrinketMenu itself uses (its
--- alt-slot*/shift-slot* = ATTRIBUTE_NOOP calls). Setting <mod>-slot* to
--- ATTRIBUTE_NOOP tells the secure click header to do nothing whenever that
--- modifier is held, entirely declaratively — resolved C-side with no Lua
--- involved in the decision, so it's combat-safe and doesn't depend on script
--- timing the way trying to intercept the click in PreClick would.
+-- Blocks the keybind and click from using the item while a modifier is held, via
+-- WoW's secure modified-click attributes (the mechanism TrinketMenu uses).
+-- <mod>-slot* = ATTRIBUTE_NOOP is resolved C-side, so it's combat-safe and
+-- doesn't depend on script timing the way intercepting in PreClick would.
 local function applyModifierBlockers()
     if not displayFrame then return end
     local d = getData()
@@ -1560,10 +1514,9 @@ buildMenu = function()
     -- leftward, so column 0 (the 1st trinket in menu order) sits at the right.
     local rightAlign = (d.menuAlign == "right")
 
-    -- Hidden trinkets (Alt+click a bag-menu icon to toggle) are sorted to the
-    -- end and normally excluded. They're revealed — shown desaturated, always
-    -- after the visible ones — when showHidden is latched on by Alt-hovering
-    -- the display (see the display OnEnter handlers).
+    -- Hidden trinkets (Alt+click a menu icon to toggle) sort to the end and are
+    -- normally excluded. They show desaturated when showHidden is latched on by
+    -- Alt-hovering the display.
     local displayCount = numTrinkets
     if not showHidden then
         displayCount = 0
@@ -1658,10 +1611,8 @@ getOrCreateMenu = function()
     f:Hide()
 
     for i = 1, MAX_MENU do
-        -- Inherits ActionButtonTemplate (like TrinketMenu's own menu buttons)
-        -- for Icon/Cooldown; styleSlotButton bakes the Blizzard Classic
-        -- Normal/Pushed/Highlight look on top. No Checked flash here — these
-        -- aren't the worn buttons (see styleSlotButton's note).
+        -- Inherits ActionButtonTemplate for Icon/Cooldown; styleSlotButton bakes the
+        -- Blizzard Classic look on top. No Checked flash — these aren't the worn buttons.
         local mb = CreateFrame("CheckButton", nil, f, "ActionButtonTemplate")
         mb:SetSize(MENU_SIZE, MENU_SIZE)
         mb:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -1692,12 +1643,10 @@ getOrCreateMenu = function()
             scheduleMenuClose()
         end)
         mb:SetScript("OnClick", function(self, btn)
-            -- Being a CheckButton (via ActionButtonTemplate), clicking it can
-            -- leave its native checked-glow stuck on — and since these 30
-            -- buttons are pooled/reused across buildMenu() rebuilds, a stuck
-            -- glow then shows up on whatever item next occupies that slot
-            -- position. Clear it defensively on every click, matching
-            -- TrinketMenu's own MenuTrinket_OnClick fix for the same issue.
+            -- Being a CheckButton, clicking can leave its native checked-glow stuck on — and
+            -- these buttons are pooled across rebuilds, so the glow then shows on whatever
+            -- next occupies that slot. Cleared defensively on every click, matching
+            -- TrinketMenu's own fix.
             self:SetChecked(false)
 
             -- Alt+click toggles whether this trinket is hidden from the bag menu.
@@ -1715,11 +1664,9 @@ getOrCreateMenu = function()
                 targetSlot = rightIsTop and SLOT_BOT or SLOT_TOP
             end
 
-            -- Preemptive (soft) queue: hold the configured modifier and click to
-            -- line this trinket up WITHOUT swapping now — it fires later, once the
-            -- currently-equipped trinket has been used and its buff has expired
-            -- (see processSoftQueue). Clicking the same trinket again toggles it
-            -- off; clicking a different one replaces the pending entry.
+            -- Soft queue: hold the configured modifier and click to line this trinket up
+            -- WITHOUT swapping now — it fires once the equipped one has been used and its
+            -- buff expired. Clicking it again toggles off; a different one replaces it.
             local mod = getData().softQueueMod or "shift"
             local modHeld = (mod == "shift" and IsShiftKeyDown())
                          or (mod == "ctrl"  and IsControlKeyDown())
@@ -1739,10 +1686,9 @@ getOrCreateMenu = function()
             end
 
             if UnitAffectingCombat("player") then
-                -- A plain click manages the MAIN (combat) queue only: queue this
-                -- trinket, or UN-queue it if it's the one already queued for this
-                -- slot (click again to toggle off). The soft queue is left
-                -- untouched — it's managed solely by modifier+click.
+                -- A plain click manages the MAIN (combat) queue only: queue this trinket, or
+                -- un-queue it if it's already the one queued for this slot. The soft queue is
+                -- managed solely by modifier+click.
                 if combatQueue[targetSlot] and combatQueue[targetSlot].id == self._id then
                     combatQueue[targetSlot] = nil
                 else
@@ -1757,10 +1703,9 @@ getOrCreateMenu = function()
                 return
             end
             if self._bag and self._slot then
-                -- The bag-menu rebuild is scheduled from updateWornIcons() once
-                -- PLAYER_EQUIPMENT_CHANGED actually lands the new trinket, not
-                -- from here — starting it at click time raced against network
-                -- latency and could rebuild the menu before the icon updated.
+                -- The rebuild is scheduled from updateWornIcons() once PLAYER_EQUIPMENT_CHANGED
+                -- lands, not from here — starting at click time raced network latency and could
+                -- rebuild the menu before the icon updated.
                 attemptSwap(targetSlot, self._bag, self._slot, self.icon:GetTexture())
                 updateQueueIndicators()
             end
@@ -1772,9 +1717,8 @@ getOrCreateMenu = function()
 
     menuFrame = f
 
-    -- Register with Masque if already initialised (e.g. when menu is first opened
-    -- after PLAYER_ENTERING_WORLD). ElvUI-skinned buttons stay out of the
-    -- group — Masque would reskin over the ElvUI template (see refreshElvUISkin).
+    -- Register with Masque if already initialised. ElvUI-skinned buttons stay out of
+    -- the group, since Masque would reskin over the ElvUI template.
     if addon.Trinkets and addon.Trinkets._masqueGroup then
         for i = 1, MAX_MENU do
             local mb = f["mb"..i]
@@ -1789,16 +1733,13 @@ end
 
 -- ── Display frame ─────────────────────────────────────────────────────────────
 
--- Swaps the two worn trinkets between the top and bottom slots (13 <-> 14),
--- triggered by holding the configured swap modifier and clicking a worn trinket
--- (see the PreClick in getOrCreateDisplay). Both slots must be filled. Uses the
--- standard pick-up/place cursor dance: pick up top (13 empties), pick up bottom
--- (drops top into 14, picks up bottom), drop bottom into 13. The cursor is
--- cleared afterwards so a partial failure can't leave a trinket stuck on it.
+-- Swaps the two worn trinkets between slots 13 and 14 via the standard cursor
+-- dance: pick up top, pick up bottom (which drops top into 14), drop bottom into
+-- 13. Both slots must be filled. The cursor is cleared afterwards so a partial
+-- failure can't leave a trinket stuck on it.
 local function swapWornTrinkets()
-    -- PickupInventoryItem is protected in combat and errors if called from this
-    -- non-secure handler while locked down, so this manual swap is out-of-combat
-    -- only. (In-combat swapping goes through the secure auto-queue instead.)
+    -- PickupInventoryItem is protected in combat and errors from this non-secure
+    -- handler while locked down, so this manual swap is out-of-combat only.
     if InCombatLockdown() then return end
     if not (GetInventoryItemLink("player", SLOT_TOP) and GetInventoryItemLink("player", SLOT_BOT)) then
         return
@@ -1810,29 +1751,60 @@ local function swapWornTrinkets()
     ClearCursor()
 end
 
--- Suppress the secure "use item" action for the configured soft-queue and
--- slot-swap modifiers on the two worn buttons, so <modifier>+click does the
--- special action (handled in the PreClick below) instead of firing the
--- trinket's on-use. A modifier set to "none" is left untouched, so holding it
--- just fires the trinket normally. Secure SetAttribute is combat-protected, so
--- this only applies out of combat; a change made during combat lands once
--- combat ends.
+-- Suppress the secure "use item" action for the soft-queue and slot-swap
+-- modifiers, so <modifier>+click does the special action instead of firing the
+-- trinket. "none" is untouched.
+--
+-- It can't be a static attribute: a keybind press arrives as an ordinary
+-- LeftButton click on the same button, so a static shift-type1 would blank the
+-- use for a shift-held KEYBIND too. Armed per click from a restricted snippet
+-- that can tell the two apart via IsUnderMouse() and can SetAttribute mid-combat.
+local SECURE_ARM_MODS = [[
+    -- Runs before the secure use resolves. Blanks the item action for the configured
+    -- modifiers only when the click came from the mouse (or keybinds are opted in).
+    if self:GetAttribute("de_kbmods") or self:IsUnderMouse() then
+        local s = self:GetAttribute("de_softmod")
+        local w = self:GetAttribute("de_swapmod")
+        if s and s ~= "none" then
+            self:SetAttribute(s .. "-type1", "macro")
+            self:SetAttribute(s .. "-macrotext1", "")
+        end
+        if w and w ~= "none" then
+            self:SetAttribute(w .. "-type1", "macro")
+            self:SetAttribute(w .. "-macrotext1", "")
+        end
+    end
+]]
+
+-- Wrapped onto PostClick, not onto PreClick's tail: PreClick's post-body would
+-- run before the secure action resolves and un-blank it again.
+local SECURE_DISARM_MODS = [[
+    local s = self:GetAttribute("de_softmod")
+    local w = self:GetAttribute("de_swapmod")
+    if s and s ~= "none" then
+        self:SetAttribute(s .. "-type1", nil)
+        self:SetAttribute(s .. "-macrotext1", nil)
+    end
+    if w and w ~= "none" then
+        self:SetAttribute(w .. "-type1", nil)
+        self:SetAttribute(w .. "-macrotext1", nil)
+    end
+]]
+
 local function applySoftQueueMod()
     if not displayFrame or InCombatLockdown() then return end
-    local d       = getData()
-    local softMod = d.softQueueMod or "shift"
-    local swapMod = d.swapMod or "ctrl"
+    local d = getData()
     for which = 0, 1 do
         local btn = displayFrame["t"..which]
         if btn then
+            btn:SetAttribute("de_softmod", d.softQueueMod or "shift")
+            btn:SetAttribute("de_swapmod", d.swapMod or "ctrl")
+            btn:SetAttribute("de_kbmods",  d.modKeybindActions or false)
+            -- Clear anything a previous build (or an interrupted click) left
+            -- armed, so no modifier stays blanked behind our back.
             for _, m in ipairs({ "shift", "ctrl", "alt" }) do
-                if m == softMod or m == swapMod then
-                    btn:SetAttribute(m .. "-type1", "macro")
-                    btn:SetAttribute(m .. "-macrotext1", "")
-                else
-                    btn:SetAttribute(m .. "-type1", nil)
-                    btn:SetAttribute(m .. "-macrotext1", nil)
-                end
+                btn:SetAttribute(m .. "-type1", nil)
+                btn:SetAttribute(m .. "-macrotext1", nil)
             end
         end
     end
@@ -1840,10 +1812,10 @@ end
 
 local function getOrCreateDisplay()
     if displayFrame then return displayFrame end
-    -- The worn buttons use SecureActionButtonTemplate; creating a secure frame
-    -- (and the SetAttribute calls below) is blocked in combat. Bail so a login
-    -- or /reload mid-fight doesn't error — PLAYER_REGEN_ENABLED soft-loads it
-    -- once combat ends. Callers must tolerate a nil return.
+    -- The worn buttons are SecureActionButtonTemplate, and creating a secure frame
+    -- (plus the SetAttribute calls below) is blocked in combat. Bail so a /reload
+    -- mid-fight doesn't error; PLAYER_REGEN_ENABLED soft-loads it after. Callers
+    -- must tolerate a nil return.
     if InCombatLockdown() then return nil end
 
     local f = CreateFrame("Frame", "DrievTrinketDisplay", UIParent, "BackdropTemplate")
@@ -1857,37 +1829,29 @@ local function getOrCreateDisplay()
     f:SetBackdropColor(0, 0, 0, 0)
     f:SetBackdropBorderColor(0, 0, 0, 0)
     f:EnableMouse(true)
-    -- Fallback: the two buttons already open the menu on their own OnEnter,
-    -- but any hover over the display frame itself (its padding margin, or a
-    -- gap between the buttons) should reliably open the menu too — not just
-    -- cancel the pending close. Also force a fresh buildMenu() unconditionally
-    -- (menuFrame may not exist yet, or may be showing stale/empty content from
-    -- before item data was cached at login) so hovering always self-heals the
-    -- bag menu instead of possibly leaving it stuck showing nothing.
+    -- Fallback: the buttons open the menu on their own OnEnter, but a hover over the
+    -- display frame itself should too. Forces a fresh buildMenu() unconditionally —
+    -- menuFrame may not exist yet, or may hold stale content from before item data
+    -- was cached — so hovering self-heals the menu.
     f:SetScript("OnEnter", function()
         cancelMenuClose()
         getOrCreateMenu()
-        -- Latch hidden-trinket reveal from the Alt state, but only on a fresh
-        -- entry into the region — not on internal button↔frame moves, so it
-        -- survives releasing Alt and heading to the menu.
+        -- Latch hidden-trinket reveal from the Alt state, but only on a fresh entry into
+        -- the region, so it survives releasing Alt and heading to the menu.
         if not mouseInRegion then showHidden = IsAltKeyDown() end
         mouseInRegion = true
-        -- Unconditional, regardless of alwaysShow: if the menu somehow ended
-        -- up empty/hidden at login (e.g. bag item data wasn't cached yet, so
-        -- the initial buildMenu() found 0 trinkets and never called Show()),
-        -- hovering must still be able to self-heal it — not silently rebuild
-        -- without ever displaying anything.
+        -- Unconditional, regardless of alwaysShow: if the menu ended up empty at login
+        -- (bag data not cached, so buildMenu() found 0 trinkets and never called Show),
+        -- hovering must be able to self-heal it.
         showMenu()
     end)
     f:SetScript("OnLeave", scheduleMenuClose)
 
     for which = 0, 1 do
         local slot = SLOT_TOP + which
-        -- Inherits ActionButtonTemplate (like TrinketMenu's own trinket
-        -- buttons) for its Icon/Cooldown regions; styleSlotButton then bakes
-        -- the Blizzard Classic Normal/Pushed/Highlight look on top, and the
-        -- Checked flash is set just below. SecureActionButtonTemplate is mixed
-        -- in so the worn buttons can use/equip items via a secure click.
+        -- Inherits ActionButtonTemplate for Icon/Cooldown; styleSlotButton bakes the
+        -- Blizzard Classic look on top and the Checked flash is set below.
+        -- SecureActionButtonTemplate is mixed in so a secure click can use the item.
         local btn = CreateFrame("CheckButton", "DrievTrinketBtn"..which, f,
             "ActionButtonTemplate,SecureActionButtonTemplate")
         btn:SetSize(BTN_SIZE, BTN_SIZE)
@@ -1910,10 +1874,9 @@ local function getOrCreateDisplay()
         cd:SetSwipeColor(0, 0, 0, 0.8)   -- matches TrinketMenu's cooldown swipe
         btn.Cooldown = cd   -- Masque
 
-        -- Click-feedback flash: the Blizzard Classic checked texture, full
-        -- button size, additive. Driven manually via SetChecked in PostClick
-        -- (see below); the SetChecked(false) there before re-showing avoids the
-        -- native checked-glow sticking after a secure item click.
+        -- Click-feedback flash, driven manually via SetChecked in PostClick. The
+        -- SetChecked(false) there before re-showing avoids the native glow sticking
+        -- after a secure item click.
         btn:SetCheckedTexture("Interface\\Buttons\\CheckButtonHilight")
         local ct = btn:GetCheckedTexture()
         if ct then
@@ -1926,10 +1889,8 @@ local function getOrCreateDisplay()
         btn:SetScript("PostClick", function(self)
             self:SetChecked(false)
             self:SetChecked(true)
-            -- Cancel any pending hide from a previous click and restart the
-            -- 0.5s countdown, so spamming the button keeps the checked flash
-            -- solidly visible instead of flickering off between clicks —
-            -- it only fades 0.5s after the LAST click.
+            -- Cancel any pending hide and restart the 0.5s countdown, so spamming the button
+            -- keeps the flash solid rather than flickering between clicks.
             if self.checkedTimer then self.checkedTimer:Cancel() end
             self.checkedTimer = C_Timer.NewTimer(0.5, function()
                 self.checkedTimer = nil
@@ -1937,21 +1898,22 @@ local function getOrCreateDisplay()
             end)
         end)
 
-        -- <modifier>+click does a special action instead of firing the trinket
-        -- (the secure use for these modifiers is suppressed by applySoftQueueMod):
+        -- <modifier>+MOUSE-click does a special action instead of firing the trinket
+        -- (the secure use is blanked for that click by SECURE_ARM_MODS):
         --   • swap modifier   → swap the top/bottom slot trinkets
-        --   • soft-queue mod  → soft-queue the worn trinket in this slot (toggle)
-        -- A modifier set to "none" matches nothing here, so it just fires the
-        -- trinket. The swap modifier is checked first so it wins if somehow both
-        -- happen to be held.
-        btn:SetScript("PreClick", function(_, _, down)
-            -- The button is registered for both the down and up phase (see
-            -- applyClickTrigger), so PreClick fires twice per press. These side
-            -- effects (swap, soft-queue toggle) must run once — act on the down
-            -- phase only. `down == false` is the up event; skip it. (A nil down
-            -- from a legacy path still runs, so nothing is lost there.)
+        --   • soft-queue mod  → soft-queue this slot's worn trinket (toggle)
+        -- Swap is checked first, so it wins if both are held.
+        btn:SetScript("PreClick", function(self, _, down)
+            -- The button registers both phases, so PreClick fires twice per press. These
+            -- side effects must run once, so act on the down phase only; `down == false` is
+            -- the up event. A nil `down` from a legacy path still runs.
             if down == false then return end
             local d = getData()
+
+            -- Mouse only, unless opted in: the keybind is a CLICK binding on this very
+            -- button, so a modifier held while pressing is indistinguishable from a
+            -- modifier+click except by cursor position. Same test the secure snippet uses.
+            if not (d.modKeybindActions or self:IsMouseOver()) then return end
 
             local swapMod  = d.swapMod or "ctrl"
             local swapHeld = (swapMod == "shift" and IsShiftKeyDown())
@@ -1976,6 +1938,14 @@ local function getOrCreateDisplay()
             end
             updateQueueIndicators()
         end)
+
+        -- Arm/disarm the modifier suppression around each click. Wrapped after
+        -- both scripts are set, since SecureHandlerWrapScript captures whatever
+        -- handler is installed at wrap time — a later SetScript on either would
+        -- drop the wrapper. The button doubles as its own snippet header, so
+        -- `self` inside the snippets is this button.
+        SecureHandlerWrapScript(btn, "PreClick",  btn, SECURE_ARM_MODS)
+        SecureHandlerWrapScript(btn, "PostClick", btn, SECURE_DISARM_MODS)
 
         -- Keybind text anchored to top-right of the icon
         local hk = btn:CreateFontString(nil, "OVERLAY")
@@ -2008,13 +1978,11 @@ end
 
 -- ── Masque integration ────────────────────────────────────────────────────────
 
--- Masque is a shared LibStub library: ANY addon that happens to embed it
--- (not just the standalone "Masque" addon) makes LibStub("Masque") available
--- and keeps applying whatever skin was last chosen for a given group name.
--- Registration is unconditional: the buttons already carry the baked-in
--- Blizzard Classic look (see styleSlotButton), so there's no in-addon toggle
--- to gate this — a user who doesn't want Masque skinning just disables our
--- group in Masque's own options, which reverts to that baked look.
+-- Masque is a shared LibStub library: ANY addon embedding it makes
+-- LibStub("Masque") available and keeps applying whichever skin was last chosen
+-- for a group name. Registration is unconditional — the buttons already carry
+-- the baked Blizzard Classic look, so a user who doesn't want skinning disables
+-- our group in Masque's own options.
 local function initMasque()
     local MSQ = LibStub and LibStub("Masque", true)
     if not MSQ then return end
@@ -2155,12 +2123,10 @@ local function enterMoveMode()
     m:SetFrameStrata("TOOLTIP")
     if numTrinkets > 0 then m:Show(); addon.ShowEditBox(m) end
 
-    -- The bag menu is always movable in edit mode. When docked, dragging it
-    -- around the display picks the snap corner (shown live by a highlighted
-    -- corner marker) and re-docks on release; when undocked it free-floats
-    -- and saves its spot. A plain click (no drag) opens the precise X/Y
-    -- position editor instead — committing a position there force-undocks
-    -- the menu, since a docked menu's spot is derived, not a free x/y.
+    -- Dragging a docked menu around the display picks the snap corner (shown live by
+    -- a corner marker) and re-docks on release; undocked it free-floats. A plain
+    -- click opens the X/Y editor instead, and committing a position there
+    -- force-undocks, since a docked spot is derived rather than a free x/y.
     m:SetScript("OnMouseDown", function(self, button)
         if button ~= "LeftButton" then return end
         self._clickX, self._clickY = GetCursorPosition()
@@ -2182,10 +2148,9 @@ local function enterMoveMode()
         local dd = getData()
 
         if math.abs(x - sx) < 4 and math.abs(y - sy) < 4 then
-            -- Click: StopMovingOrSizing() above replaced the docked menu's
-            -- multi-point anchor with a single raw one even though it barely
-            -- moved — restore the proper dock anchor before (maybe) opening
-            -- the editor, so a plain click can't silently undock it.
+            -- StopMovingOrSizing() above replaced the docked menu's multi-point anchor with
+            -- a single raw one even though it barely moved, so restore the dock anchor
+            -- before (maybe) opening the editor — a plain click mustn't silently undock.
             if dd.menuDocked ~= false then positionDockedMenu() end
             if addon.UI then addon.UI.OpenPositionEditor(menuMovable, self) end
             return
@@ -2269,15 +2234,10 @@ eventFrame:RegisterEvent("ENCOUNTER_START")
 eventFrame:RegisterEvent("ENCOUNTER_END")
 eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "PLAYER_LOGIN" then
-        -- Native ElvUI skin support for the worn Display Menu buttons and the
-        -- pop-out Bag Menu grid (see elvuiSkinButton/refreshElvUISkin above).
-        -- ShadowElvUI is a fork that keeps ElvUI's engine API intact but
-        -- renames the global from ElvUI to ShadowElvUI, hence the fallback.
-        --
-        -- The engine is a global table (unpackable into E, L, V, P, G) that
-        -- only exists once the addon has loaded, so its presence IS the load
-        -- check. Using it directly avoids IsAddOnLoaded, which Blizzard moved to
-        -- C_AddOns.IsAddOnLoaded and removed as a global in Classic Era 1.15.9.
+        -- Native ElvUI skin support. ShadowElvUI is a fork keeping ElvUI's engine API
+        -- but renaming the global, hence the fallback. The engine table only exists once
+        -- the addon has loaded, so its presence IS the load check — which avoids
+        -- IsAddOnLoaded, removed as a global in Classic Era 1.15.9.
         local engine = ElvUI or ShadowElvUI
         if type(engine) == "table" then
             setElvUIEngine((unpack(engine)))
@@ -2285,9 +2245,9 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     elseif event == "PLAYER_ENTERING_WORLD" then
         applyVisibility()   -- creates the frame, applies scale + saved position
         populateQueueSorts()
-        -- Only register Masque once the display actually exists — if init ran
-        -- mid-combat the display is deferred, and initMasque would otherwise
-        -- create its group with no buttons and then refuse to re-run later.
+        -- Only register Masque once the display exists: if init ran mid-combat the
+        -- display is deferred, and initMasque would create its group with no buttons and
+        -- then refuse to re-run.
         if displayFrame then initMasque() end
         -- Pre-warm item info for bag trinkets so first hover doesn't stall
         C_Timer.After(0.5, scanBags)
@@ -2295,8 +2255,7 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         -- Updates the icon/cooldown instantly and schedules the (debounced,
         -- user-configured-delay) bag-menu rebuild itself — see updateWornIcons().
         updateWornIcons()
-        -- If a slot's queued trinket is now the one worn there (e.g. it landed,
-        -- or you equipped it yourself), the combat-queue entry is fulfilled —
+        -- If a slot's queued trinket is now the one worn there, the entry is fulfilled —
         -- clear it so its indicator can't linger.
         local cleared = false
         for which = 0, 1 do
@@ -2328,19 +2287,24 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
             if name then markTrinketUsed(name) end
         end
     elseif event == "ENCOUNTER_START" then
-        -- arg1 = encounterID. Record it, but only actually queue once we're also
-        -- in combat (see maybeQueueEncounter) — not on encounter start alone.
-        currentEncounterID = arg1
-        encounterQueued    = false
+        -- arg1 = encounterID, arg2 = encounterName. The name is kept for the HP
+        -- triggers, which have no boss unit token on Classic Era.
+        currentEncounterID   = arg1
+        currentEncounterName = arg2
+        encounterQueued      = false
         encGen = encGen + 1
-        maybeQueueEncounter()
+        maybeQueueEncounter("encounter")
     elseif event == "ENCOUNTER_END" then
-        currentEncounterID = nil
-        encounterQueued    = false
+        -- Give the Encounter End trigger its shot while the encounter is still
+        -- the current one, then tear the state down.
+        maybeQueueEncounter("end")
+        currentEncounterID   = nil
+        currentEncounterName = nil
+        encounterQueued      = false
         encGen = encGen + 1
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Entered combat: if we're mid-encounter with a config, queue now.
-        maybeQueueEncounter()
+        maybeQueueEncounter("combat")
     elseif event == "GET_ITEM_INFO_RECEIVED" then
         -- Debounce: item data loads in bursts, wait for the burst to settle
         if itemInfoTimer then itemInfoTimer:Cancel() end
@@ -2354,10 +2318,9 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
             end
         end)
     elseif event == "PLAYER_REGEN_ENABLED" then
-        -- Left combat: invalidate any in-flight Specific Auto Queue safeguard
-        -- delay (see maybeQueueEncounter) so a brief combat drop mid-delay
-        -- forces the full duration to restart on the next PLAYER_REGEN_DISABLED,
-        -- rather than letting a stale timer fire once combat merely resumes.
+        -- Left combat: invalidate any in-flight safeguard delay, so a brief combat drop
+        -- restarts the full duration rather than letting a stale timer fire when combat
+        -- merely resumes.
         encGen = encGen + 1
         -- Soft-load: if init happened mid-combat (login/reload during a fight),
         -- the secure display couldn't be built then — build it now, out of combat.
@@ -2370,10 +2333,8 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         combatQueue = {}
         updateQueueIndicators()
         C_Timer.After(0.1, function()
-            -- Combat can resume during this delay (e.g. a brief regen gap
-            -- mid-fight). PickupContainerItem/PickupInventoryItem are
-            -- protected and throw ADDON_ACTION_BLOCKED if called while back
-            -- in combat lockdown, so re-queue instead of firing blind.
+            -- Combat can resume during this delay. The pickup calls are protected and throw
+            -- ADDON_ACTION_BLOCKED in lockdown, so re-queue rather than fire blind.
             if InCombatLockdown() then
                 for targetSlot, q in pairs(queued) do
                     combatQueue[targetSlot] = combatQueue[targetSlot] or q
@@ -2392,14 +2353,14 @@ eventFrame:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     end
 end)
 
--- The queue/notify work below is a once-per-second poll, so it runs on a ticker
--- rather than an OnUpdate that fired ~60x a second purely to add up `elapsed`
--- and return early on all but one of those calls.
+-- A once-per-second poll, so a ticker rather than an OnUpdate firing ~60x a
+-- second just to add up `elapsed` and return early.
 C_Timer.NewTicker(1.0, function()
     processSoftQueue(0)
     processSoftQueue(1)
     processQueue(0)
     processQueue(1)
+    tickEncounterHealth()
     tickNotify()
 end)
 
@@ -2429,9 +2390,8 @@ addon.Trinkets = {
     refreshElvUISkin   = refreshElvUISkin,
     applyFrameLayers   = applyFrameLayers,
     STRATA_OPTS        = STRATA_OPTS,
-    -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode — with
-    -- "Enable Trinket Menu" off the display frame is hidden entirely, so its
-    -- edit box would just float over nothing.
+    -- Read by UI.EnterMoveMode to skip a disabled module — with the display hidden
+    -- its edit box would float over nothing.
     isEnabled          = function() return getData().enabled and true or false end,
 }
 

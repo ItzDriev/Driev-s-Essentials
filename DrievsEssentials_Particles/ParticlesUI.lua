@@ -1,7 +1,5 @@
--- Driev's Essentials — Particles module: settings UI.
---
--- This addon only loads when the core addon is present (## Dependencies in the
--- .toc guarantees load order), so the shared namespace below always exists.
+-- Particles module: settings UI. Loads only alongside core (## Dependencies),
+-- so the shared namespace below always exists.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -15,7 +13,6 @@ local W     = UI.widgets
 
 local applyBackdrop   = W.applyBackdrop
 local createCheckbox  = W.createCheckbox
-local createTab       = W.createTab
 local createSideTab   = W.createSideTab
 local activateTab     = W.activateTab
 local selectSubTab    = W.selectSubTab
@@ -34,14 +31,11 @@ addon.RegisterDefaults("particles", { enabled = false, classes = { WARRIOR = tru
 local DEFAULT_LINGER_SECONDS = 10
 local MAX_LINGER_SECONDS     = 120
 
--- Lazy: only writes into SavedVariables when the panel is actually built.
--- On first init for a raid, pre-checks any boss with `default = true` (the
--- bosses that were hardcoded in the original WeakAura's encounter list) and
--- pre-arms linger for any boss with a built-in `linger` duration.
--- `d.bosses` / `d.linger` / `d.lingerSecs` are healed separately from `d`
--- itself (rather than only on fresh creation) since older or imported profile
--- data can have a particles entry for a raid with no such sub-table at all —
--- without this, indexing them in buildRaidPanel below would error for that raid.
+-- Lazy: only writes to SavedVariables when the panel is actually built. On first
+-- init for a raid, pre-checks bosses with `default = true` and pre-arms linger
+-- for bosses with a built-in duration. The sub-tables are healed separately from
+-- `d` itself, since imported or older profiles can have a raid entry with none —
+-- indexing them in buildRaidPanel would then error.
 local function particlesData(raid)
     addon.db.settings.particles = addon.db.settings.particles or {}
     local d = addon.db.settings.particles[raid.key]
@@ -83,17 +77,14 @@ local WING_COLORS = {
     frostwyrm = "ffcc33",   -- gold
 }
 
--- onEnableChanged(checked) is an optional callback fired whenever the "Enable
--- particle system" checkbox changes, so a caller showing a status indicator
--- elsewhere (e.g. the raid-selector dot in buildParticlesRaidsPanel) can update
--- it immediately rather than waiting for its own next OnShow.
+-- onEnableChanged(checked) lets a caller showing a status indicator elsewhere
+-- (the raid-selector dot) update immediately rather than on its next OnShow.
 local function buildRaidPanel(parent, raid, onEnableChanged)
     local shell, panel = makeScrollPanel(parent)
 
-    -- Read particlesData(raid) live inside each handler (never captured once at
-    -- build time) so a profile switch/import — which repoints addon.db — is
-    -- reflected on the next OnShow instead of writing to / showing the old
-    -- profile's table.
+    -- Read particlesData(raid) live in each handler, never captured at build time,
+    -- so a profile switch (which repoints addon.db) is reflected on the next OnShow
+    -- instead of writing to the old profile's table.
     local enable = createCheckbox(panel, "Enable particle system for " .. raid.label, 300)
     enable:SetPoint("TOPLEFT", 14, -14)
     enable.OnChange = function(_, checked)
@@ -104,30 +95,29 @@ local function buildRaidPanel(parent, raid, onEnableChanged)
     local headline = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     headline:SetPoint("TOPLEFT", enable, "BOTTOMLEFT", 0, -18)
     headline:SetText("Select Bosses")
-    headline:SetTextColor(unpack(C.red))
+    UI.tint(headline, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", headline, "BOTTOMLEFT", 0, -4)
     desc:SetWidth(560); desc:SetJustifyH("LEFT")
     desc:SetText("Selected bosses keep particle effects enabled during their encounter (raid baseline is off). Linger keeps them on for a few extra seconds after the encounter ends, for lingering ground effects (Viscidus slime, Ouro residue, etc).")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
-    -- One row per boss: [enable] name … [linger] [seconds stepper]. A single
-    -- column (rather than the old 3-up grid) so the per-boss linger controls
-    -- line up in their own columns; the scroll panel takes care of the overflow
-    -- on the longer raids.
+    -- One row per boss: [enable] name … [linger] [seconds]. A single column rather
+    -- than a 3-up grid so the linger controls line up; the scroll panel handles
+    -- overflow on longer raids.
     local NAME_W, LINGER_X, SECS_X = 250, 262, 320
     local rowHeight = 24
 
     local lingerHdr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     lingerHdr:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", LINGER_X - 4, -16)
     lingerHdr:SetText("Linger")
-    lingerHdr:SetTextColor(unpack(C.textDim))
+    UI.tint(lingerHdr, C.textDim)
 
     local secsHdr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     secsHdr:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", SECS_X, -16)
     secsHdr:SetText("Seconds")
-    secsHdr:SetTextColor(unpack(C.textDim))
+    UI.tint(secsHdr, C.textDim)
 
     local gridAnchor = CreateFrame("Frame", nil, panel)
     gridAnchor:SetSize(1, 1)
@@ -225,12 +215,12 @@ local function buildGeneralPanel(parent)
     local classHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     classHeader:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -18)
     classHeader:SetText("Class Filter")
-    classHeader:SetTextColor(unpack(C.red))
+    UI.tint(classHeader, C.red)
 
     local classDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     classDesc:SetPoint("TOPLEFT", classHeader, "BOTTOMLEFT", 0, -4)
     classDesc:SetText("Particle system only runs while playing a selected class")
-    classDesc:SetTextColor(unpack(C.textGrey))
+    UI.tint(classDesc, C.textGrey)
 
     local classGridAnchor = CreateFrame("Frame", nil, panel)
     classGridAnchor:SetSize(1, 1)
@@ -273,18 +263,18 @@ local function buildGeneralPanel(parent)
     local headline = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     headline:SetPoint("TOPLEFT", enableAllBtn, "BOTTOMLEFT", 0, -24)
     headline:SetText("Encounter Particle Level")
-    headline:SetTextColor(unpack(C.red))
+    UI.tint(headline, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", headline, "BOTTOMLEFT", 0, -4)
     desc:SetWidth(560); desc:SetJustifyH("LEFT")
     desc:SetText("Select the particle density used when particles are enabled for a boss encounter. Raids always use 0 between encounters, aka particles are disabled on trash. Outside of raids it will use the same particle density as selected here")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
     local rowLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     rowLabel:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -34)
     rowLabel:SetText("Encounter density:")
-    rowLabel:SetTextColor(unpack(C.textWhite))
+    UI.tint(rowLabel, C.textWhite)
 
     local function getData()
         addon.db.settings.particles         = addon.db.settings.particles or {}
@@ -302,7 +292,7 @@ local function buildGeneralPanel(parent)
     local rangeNote = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     rangeNote:SetPoint("LEFT", densityStepper.plus, "RIGHT", 10, 0)
     rangeNote:SetText("(1 - 5)")
-    rangeNote:SetTextColor(unpack(C.textDim))
+    UI.tint(rangeNote, C.textDim)
 
     local function refreshDisplay()
         enableCB:SetChecked(getModuleData().enabled == true)
@@ -397,51 +387,19 @@ local function buildParticlesRaidsPanel(parent)
 end
 
 local function buildParticlesPanel(parent)
-    local panel = CreateFrame("Frame", nil, parent)
-    panel:SetAllPoints()
-
-    local subBar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subBar:SetHeight(26)
-    subBar:SetPoint("TOPLEFT", 4, -4)
-    subBar:SetPoint("TOPRIGHT", -4, -4)
-    applyBackdrop(subBar, 1, C.panelDark)
-
-    local subContent = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subContent:SetPoint("TOPLEFT", subBar, "BOTTOMLEFT", 0, -2)
-    subContent:SetPoint("BOTTOMRIGHT", -4, 4)
-    applyBackdrop(subContent, 1, C.panelDeep)
-
-    panel.subTabs   = {}
-    panel.subPanels = {}
+    local panel, _, _, addSubTab = W.makeSubTabPanel(parent)
 
     local debugRaid
     for _, raid in ipairs(addon.RAIDS) do
         if raid.key == "debug" then debugRaid = raid end
     end
 
-    local generalTab = createTab(subBar, "General", 80)
-    generalTab:SetHeight(22)
-    generalTab:SetPoint("LEFT", 4, 0)
-    generalTab:SetScript("OnClick", function() selectSubTab(panel, "general") end)
-    panel.subTabs["general"]   = generalTab
-    panel.subPanels["general"] = function() return buildGeneralPanel(subContent) end
-
-    local raidsTab = createTab(subBar, "Raids", 80)
-    raidsTab:SetHeight(22)
-    raidsTab:SetPoint("LEFT", generalTab, "RIGHT", 4, 0)
-    raidsTab:SetScript("OnClick", function() selectSubTab(panel, "raids") end)
-    panel.subTabs["raids"]   = raidsTab
-    panel.subPanels["raids"] = function() return buildParticlesRaidsPanel(subContent) end
-
-    local debugTab = createTab(subBar, "Debug", 80)
-    debugTab:SetHeight(22)
-    debugTab:SetPoint("LEFT", raidsTab, "RIGHT", 4, 0)
-    debugTab:SetScript("OnClick", function() selectSubTab(panel, "debug") end)
-    panel.subTabs["debug"]   = debugTab
-    panel.subPanels["debug"] = function()
+    addSubTab("general", "General", 80, buildGeneralPanel)
+    addSubTab("raids",   "Raids",   80, buildParticlesRaidsPanel)
+    addSubTab("debug",   "Debug",   80, function(subContent)
         return debugRaid and buildRaidPanel(subContent, debugRaid)
             or CreateFrame("Frame", nil, subContent)
-    end
+    end)
 
     selectSubTab(panel, "general")
     return panel

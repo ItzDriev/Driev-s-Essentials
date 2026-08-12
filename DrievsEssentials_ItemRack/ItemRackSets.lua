@@ -1,12 +1,6 @@
--- Driev's Essentials — Item Rack module: the equipment set editor.
---
--- Laid out like the character sheet it edits: a column of slot buttons down
--- each side, the weapon/ammo row along the bottom, and the set's own settings
--- (name, icon, helm/cloak, save/delete) filling the middle.
---
--- Hovering a slot button pops out the same item menu the character sheet uses,
--- except a click there assigns the item to the set being edited instead of
--- equipping it (IR.BuildMenu's `include` flag → IR.OnMenuPickForEditor).
+-- Item Rack module: the equipment set editor, laid out like the character sheet
+-- it edits. Hovering a slot pops out the same item menu the character sheet
+-- uses, except a click assigns to the set being edited instead of equipping.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -36,17 +30,14 @@ local _   -- scratch for the multi-return item APIs below
 local PAD       = 10
 local BTN       = 36
 local COL_STEP  = 40
--- Hugs the icon grid's own footprint (8 cols * 28px + a 6px gap before the
--- scrollbar track) rather than leaving the old wide margin around it; the
--- name/search fields, dropdown and save/delete buttons all key off this too,
--- and shrink along with it.
+-- Hugs the icon grid's footprint (8 cols × 28px plus a 6px gap before the
+-- scrollbar) rather than leaving a wide margin. The name/search fields, dropdown
+-- and save/delete buttons all key off this and shrink with it.
 local CENTER_W  = 244
 local TOPBAR_H  = 26
 local HEADER_H  = 32 -- title line + "Select Set" label, above the picker row
--- The one row below the picker: "Bind Key", the current binding, and
--- "Slot Keybinding" at the far end. Everything below (both slot columns and the
--- centre column) hangs off this, and the window's height includes it, so the
--- whole layout follows the constant.
+-- The one row below the picker. Everything below it hangs off this, and the
+-- window's height includes it, so the whole layout follows the constant.
 local BINDROW_H = 24
 -- Shorter grid than before so the options block and save row can sit level with
 -- the bottom of the side columns; the extra columns keep the icon count similar.
@@ -70,22 +61,18 @@ local slotButtons = {}
 local iconButtons = {}
 
 -- Working copy of the set being edited. `selected` is what makes a slot part of
--- the set at all; `id` is the specific item chosen for it.
--- `headIcons` is the leading, addon-owned stretch of the icon list (see below);
--- `filter` is nil for "show everything" or an array of indices into the full
--- virtual list when a search is active.
+-- the set; `id` is the item chosen for it. `filter` is nil for "show everything"
+-- or an array of indices into the virtual list when searching.
 local editor = { inv = {}, headIcons = {}, filter = nil, selectedIcon = nil, iconOffset = 0, iconSearch = "" }
 for i = 0, 19 do editor.inv[i] = {} end
 
 -- ── Icon list ────────────────────────────────────────────────────────────────
 
--- The icon list is virtual: nothing holds a copy of it. Its first HEAD_ICONS
--- entries are the addon's own — the 20 currently-chosen items, so a set can wear
--- the icon of one of its own pieces, plus two banners — and every index behind
--- those is resolved straight out of the client's macro icon list on demand.
--- Since the grid only ever draws ICON_COLS × ICON_ROWS cells, opening the window
--- and scrolling it touch a few dozen icons rather than the several thousand that
--- exist.
+-- The icon list is virtual: nothing holds a copy. Its first HEAD_ICONS entries
+-- are the addon's own — the 20 currently-chosen items plus two banners — and
+-- everything behind them is resolved out of the client's macro icon list on
+-- demand. The grid only draws ICON_COLS × ICON_ROWS cells, so scrolling touches
+-- dozens, not thousands.
 local HEAD_ICONS = 22
 
 local applyIconFilter
@@ -100,11 +87,9 @@ local iconSource
 local function resolveIconSource()
     if iconSource then return iconSource end
 
-    -- Order matches what this module did before, so no client changes which list
-    -- it sees. The first branch can only hand the whole thing over at once, so
-    -- there's nothing to be lazy about there; the second is indexable, and it's
-    -- the one Classic Era takes (it has GetMacroIcons but no MACRO_ICON_FILENAMES,
-    -- so the first condition is false).
+    -- Order matches what this module did before, so no client changes which list it
+    -- sees. The first branch can only hand over everything at once; the second is
+    -- indexable, and it's the one Classic Era takes.
     if _G.GetMacroIcons and _G.MACRO_ICON_FILENAMES then
         if RefreshPlayerSpellIconInfo then RefreshPlayerSpellIconInfo() end
         local list = GetMacroIcons(MACRO_ICON_FILENAMES)
@@ -219,10 +204,9 @@ local function populateInitialIcons()
     editor.headIcons[22] = "Interface\\Icons\\INV_Banner_03"
     populateInvIcons()   -- fills 1-20 from the live gear, then re-filters
 
-    -- The client's list still has to be asked for once, and that call is the one
-    -- remaining lump of work — so it happens a frame after the window is up
-    -- rather than on the click that opened it. The head fills the first rows
-    -- meanwhile, and refreshIcons redraws once the rest is reachable.
+    -- The client's list still has to be asked for once, and that's the remaining
+    -- lump of work — so it happens a frame after the window is up rather than on the
+    -- click that opened it. The head fills the first rows meanwhile.
     if not iconSource then
         C_Timer.After(0, function()
             resolveIconSource()
@@ -252,14 +236,14 @@ local function createTriState(parent, label, width)
     fill:SetTexture(WHITE)
     fill:SetPoint("TOPLEFT", 2, -2)
     fill:SetPoint("BOTTOMRIGHT", -2, 2)
-    fill:SetVertexColor(unpack(C.red))
+    UI.tintTexture(fill, C.red)
     fill:Hide()
 
     local bar = box:CreateTexture(nil, "ARTWORK")
     bar:SetTexture(WHITE)
     bar:SetSize(8, 2)
     bar:SetPoint("CENTER")
-    bar:SetVertexColor(unpack(C.textDim))
+    UI.tintTexture(bar, C.textDim)
     bar:Hide()
 
     local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -282,12 +266,12 @@ local function createTriState(parent, label, width)
         self:SetState(nextState)
     end)
     row:SetScript("OnEnter", function(self)
-        box:SetBackdropBorderColor(unpack(C.red))
+        UI.tintBorder(box, C.red)
         IR.OnTooltip(self, label,
             "Empty: leave this as it is.\nRed: show it when the set is equipped.\nGrey bar: hide it when the set is equipped.")
     end)
     row:SetScript("OnLeave", function()
-        box:SetBackdropBorderColor(unpack(C.checkBorder))
+        UI.tintBorder(box, C.checkBorder)
         GameTooltip:Hide()
     end)
 
@@ -308,12 +292,9 @@ local function currentName()
     return frame and frame.nameBox:GetText() or ""
 end
 
--- The Hide checkbox tracks whichever SAVED set the typed name currently matches
--- — never a state carried over from whatever was loaded before. Otherwise
--- editing "Tank" (hidden) into "Tank Alt" and hitting Save would quietly create
--- a new, already-hidden set, purely because the checkbox never got told the name
--- had changed out from under it. A name matching no saved set (i.e. a set that
--- doesn't exist yet) always reads as unhidden.
+-- The Hide checkbox tracks whichever SAVED set the typed name currently matches,
+-- never state carried over from what was loaded. Otherwise editing "Tank"
+-- (hidden) into "Tank Alt" and saving would create a new, already-hidden set.
 local function syncHideCheckbox()
     if not frame then return end
     local setname = currentName()
@@ -410,12 +391,9 @@ end
 function IR.OnMenuPickForEditor(slot, id)
     if not slot or slot > 19 then return end
 
-    -- Paired slots (rings, trinkets, weapons) swap rather than duplicate: putting
-    -- the bottom ring into the top slot would otherwise leave the same ring in
-    -- both, so the top slot's old ring drops into the bottom one. The paired slot
-    -- has to be marked selected too — RefreshSetEditorInv re-reads worn gear for
-    -- unselected slots, which would quietly undo the swap on the next inventory
-    -- event.
+    -- Paired slots (rings, trinkets, weapons) swap rather than duplicate. The paired
+    -- slot must be marked selected too — RefreshSetEditorInv re-reads worn gear for
+    -- unselected slots and would undo the swap on the next inventory event.
     local other    = IR.SlotInfo[slot].other
     local previous = editor.inv[slot].id
     if other and previous and previous ~= id and editor.inv[other].id == id then
@@ -455,15 +433,6 @@ local function slotDock(slot)
     return "TOPLEFT", "BOTTOMLEFT", "VERTICAL"
 end
 
--- Same 1.15.9 nine-slice reset the on-screen buttons need; see ItemRackButtons.
-local function resetTemplateTexture(tex)
-    if not tex then return end
-    if tex.SetTextureSliceMargins then tex:SetTextureSliceMargins(0, 0, 0, 0) end
-    if tex.SetTexCoord    then tex:SetTexCoord(0, 1, 0, 1) end
-    if tex.SetVertexColor then tex:SetVertexColor(1, 1, 1) end
-    if tex.SetAlpha       then tex:SetAlpha(1) end
-end
-
 local function createSlotButton(parent, slot, size)
     size = size or BTN
     local btn = CreateFrame("CheckButton", "DrievIRSetSlot" .. slot, parent, "ActionButtonTemplate")
@@ -471,22 +440,9 @@ local function createSlotButton(parent, slot, size)
     btn:SetSize(size, size)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
-    if btn.SlotBackground then btn.SlotBackground:Hide() end
-    if btn.SlotArt        then btn.SlotArt:Hide()        end
-    btn:UnregisterAllEvents()
-    btn:SetScript("OnEvent", nil)
-
-    btn:SetNormalTexture("Interface\\Buttons\\UI-Quickslot2")
-    local nt = btn:GetNormalTexture()
-    if nt then
-        resetTemplateTexture(nt)
-        nt:ClearAllPoints()
-        nt:SetSize(size * 66 / 36, size * 66 / 36)
-        nt:SetPoint("CENTER", btn, "CENTER", 0.5, -0.5)
-    end
-    btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-    local ht = btn:GetHighlightTexture()
-    if ht then resetTemplateTexture(ht); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
+    -- skipPushed: these are picker buttons, not things you "use", so they've
+    -- never shown the depress flash the on-screen slot buttons do.
+    addon.StyleSlotButton(btn, size, { skipPushed = true })
 
     btn.icon:SetAllPoints(btn)
 
@@ -727,17 +683,14 @@ local function buildSideList(parent, onPick)
     panel:SetPoint("TOPRIGHT", parent, "TOPLEFT", -2, 0)
     panel:SetPoint("BOTTOMRIGHT", parent, "BOTTOMLEFT", -2, 0)
     applyBackdrop(panel, 1, C.panelBG, C.tabBorder)
-    -- Has to swallow the mouse, not just draw over things. This panel hangs
-    -- outside the editor window's own rect, so without this the cursor falls
-    -- straight through to whatever is behind — including the on-screen Item Rack
-    -- buttons, which would pop their menus open from under the panel.
+    -- Has to swallow the mouse, not just draw over things: this panel hangs outside
+    -- the editor window's rect, so without it the cursor falls through to whatever
+    -- is behind — including the on-screen buttons, which would pop their menus open.
     panel:EnableMouse(true)
     panel:Hide()
 
-    -- Moving sets on and off the character belongs with the list of them, so
-    -- the pair sits at the top of this panel. Halves of the panel's inner width
-    -- (SIDE_W less the 8px margins, less the gap between them), which is what
-    -- decides their labels: "Export"/"Import" fit where "Export Sets" wouldn't.
+    -- Halves of the panel's inner width, which is what decides their labels:
+    -- "Export"/"Import" fit where "Export Sets" wouldn't.
     local SIDE_BTN_W = math.floor((SIDE_W - 16 - 6) / 2)
 
     local exportBtn = flatButton(panel, "Export", SIDE_BTN_W, 18)
@@ -761,10 +714,25 @@ local function buildSideList(parent, onPick)
     end)
     importBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- Full width under the other two: "Import OLD" doesn't fit in half a panel,
+    -- and it isn't a peer of them anyway — it's the one-off migration step.
+    local importOldBtn = flatButton(panel, "Import OLD", SIDE_BTN_W * 2 + 6, 18)
+    importOldBtn:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -6)
+    importOldBtn:SetScript("OnClick", function() IR.ShowImportOriginalPopup() end)
+    importOldBtn:HookScript("OnEnter", function(self)
+        IR.OnTooltip(self, "Import From The Original ItemRack",
+            "Copies this character's sets straight out of the original ItemRack addon — no export "
+            .. "string needed.\n\n"
+            .. "|cffffffffBoth addons have to be enabled at the same time|r for this: its sets are only "
+            .. "readable while it's loaded. Once they're across, switch it off under Esc → AddOns.\n\n"
+            .. "Any set here with the same name is replaced.")
+    end)
+    importOldBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
+
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    header:SetPoint("TOPLEFT", exportBtn, "BOTTOMLEFT", 0, -8)
+    header:SetPoint("TOPLEFT", importOldBtn, "BOTTOMLEFT", 0, -8)
     header:SetText("Sets")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -2)
@@ -830,10 +798,9 @@ local function buildSideList(parent, onPick)
         updateThumb()
     end
 
-    -- Live-reorder while the cursor moves: the row pool is index-fixed and
-    -- re-skinned on every refresh, so the dragged set is tracked by name and the
-    -- backing list is moved under it. That keeps the row beneath the cursor
-    -- showing the set being dragged.
+    -- Live-reorder while the cursor moves: the row pool is index-fixed and re-skinned
+    -- on every refresh, so the dragged set is tracked by name and the backing list
+    -- moved under it, keeping the row beneath the cursor showing what's dragged.
     local function dragUpdate()
         if not dragName then return end
         local current
@@ -883,7 +850,7 @@ local function buildSideList(parent, onPick)
         local key = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         key:SetPoint("RIGHT", -4, 0)
         key:SetJustifyH("RIGHT")
-        key:SetTextColor(unpack(C.textDim))
+        UI.tint(key, C.textDim)
         row.key = key
 
         local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -897,7 +864,7 @@ local function buildSideList(parent, onPick)
             if self.setName and onPick then onPick(self.setName) end
         end)
         row:SetScript("OnEnter", function(self)
-            self:SetBackdropBorderColor(unpack(C.red))
+            UI.tintBorder(self, C.red)
         end)
         row:SetScript("OnLeave", function(self)
             self:SetBackdropBorderColor(0, 0, 0, 0)
@@ -996,8 +963,8 @@ local function buildSideList(parent, onPick)
     local function stopThumb(self) self:SetScript("OnUpdate", nil) end
     thumb:SetScript("OnMouseUp", stopThumb)
     thumb:SetScript("OnHide", stopThumb)
-    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle)) end)
+    thumb:SetScript("OnEnter", function(self) UI.tintBg(self, C.tabHover) end)
+    thumb:SetScript("OnLeave", function(self) UI.tintBg(self, C.tabIdle) end)
 
     -- The list is sized off the scroll frame, whose dimensions aren't final
     -- until the panel has actually been laid out.
@@ -1042,21 +1009,20 @@ function validateButtons()
         -- says has to fit. The Bind Key tooltip carries the longer explanation.
         frame.bindLabel:SetText("Bound to |cfffb2c36" .. GetBindingText(key, nil, false) .. "|r"
             .. (live and "" or " |cffff8800(inactive)|r"))
-        frame.bindLabel:SetTextColor(unpack(C.textWhite))
+        UI.tint(frame.bindLabel, C.textWhite)
     elseif exists then
         frame.bindLabel:SetText("No key bound")
-        frame.bindLabel:SetTextColor(unpack(C.textDim))
+        UI.tint(frame.bindLabel, C.textDim)
     else
         frame.bindLabel:SetText("Save the set first")
-        frame.bindLabel:SetTextColor(unpack(C.textDim))
+        UI.tint(frame.bindLabel, C.textDim)
     end
 end
 
 -- ── Slot button key binding ──────────────────────────────────────────────────
--- A mode rather than a dialog: what gets bound is whichever on-screen button
--- the pointer is over, so the buttons underneath have to stay hoverable. The
--- prompt therefore takes the keyboard and nothing else, and parks itself at the
--- top of the screen away from wherever the bars are likely to be.
+-- A mode rather than a dialog: what gets bound is whichever on-screen button the
+-- pointer is over, so the buttons underneath must stay hoverable. The prompt
+-- takes the keyboard and nothing else.
 
 local slotBindPrompt   -- built on first use
 local slotBindPaused   -- true while the "already bound" question is up
@@ -1082,7 +1048,7 @@ local function getSlotBindPrompt()
     help:SetPoint("TOP", title, "BOTTOM", 0, -6)
     help:SetWidth(410)
     help:SetJustifyH("CENTER")
-    help:SetTextColor(unpack(C.textGrey))
+    UI.tint(help, C.textGrey)
     help:SetText("Hover one of your Item Rack buttons and press a key.\n"
         .. "Escape finishes. Delete clears the hovered button's binding.")
 
@@ -1312,6 +1278,41 @@ function IR.ShowImportSetsPopup()
     })
 end
 
+-- Straight out of the original ItemRack's memory, no export string in between.
+-- Same-named sets are replaced outright rather than asked about one by one, as
+-- the string import does: there's a single obvious source here — the addon the
+-- user is migrating off — and picking through a clash list on the way out of it
+-- is ceremony. The confirmation says plainly that it overwrites instead.
+function IR.ShowImportOriginalPopup()
+    local incoming, conflicts = IR.ReadOriginalSets()
+    -- Second return is the clash list on success, the reason on failure.
+    if not incoming then
+        IR.Print(conflicts)
+        return
+    end
+
+    local count = 0
+    for _ in pairs(incoming) do count = count + 1 end
+
+    -- Counts, not names: the dialog is a fixed size, and a character with a
+    -- dozen clashing sets would push its own buttons off the bottom.
+    local message = "Import " .. count .. " set" .. (count == 1 and "" or "s")
+        .. " from the original ItemRack?"
+    if #conflicts > 0 then
+        message = message .. "\n\n|cffff8800" .. #conflicts .. " set"
+            .. (#conflicts == 1 and " here has that name and will be"
+                                 or "s here have those names and will be")
+            .. " replaced.|r"
+    end
+
+    showConfirmPopup({
+        title       = "Import From The Original ItemRack",
+        message     = message,
+        confirmText = "Import",
+        onConfirm   = function() finishImport(incoming, conflicts) end,
+    })
+end
+
 local function buildFrame()
     local colH    = #LEFT_COL * COL_STEP
     -- The centre column ends level with the bottom edge of the last slot button
@@ -1362,10 +1363,9 @@ local function buildFrame()
     setLabel:SetPoint("BOTTOMLEFT", top, "TOPLEFT", 4, 2)
     setLabel:SetText("Select Set")
 
-    -- Locking lives here as well as in the settings window and the pop-out
-    -- menus: this window is the one thing that's always reachable (/sets), and
-    -- once the bars are locked the menu's own lock control needs Alt held to
-    -- even appear — which is a bad place to leave the only way back out.
+    -- Locking lives here as well as in the settings window and the menus: this
+    -- window is always reachable (/sets), and once the bars are locked the menu's
+    -- own lock control needs Alt held to appear — a bad place for the only way out.
     local lock = createCheckbox(top, "Lock", 60)
     lock:SetPoint("RIGHT", 0, 0)
     lock.OnChange = function(_, checked)
@@ -1394,10 +1394,9 @@ local function buildFrame()
     picker:SetHeight(18)
     f.setPicker = picker
 
-    -- ── Bind row: both key-binding controls and what's currently bound ───────
-    -- "Slot Keybinding" isn't tied to the set being edited at all — it binds
-    -- the movable buttons — so it sits at the far end of the row, with the
-    -- current binding readout filling the gap between the two.
+    -- ── Bind row ─────────────────────────────────────────────────────────────
+    -- "Slot Keybinding" isn't tied to the set being edited — it binds the movable
+    -- buttons — so it sits at the far end, with the current binding readout between.
     local bindRow = CreateFrame("Frame", nil, f)
     bindRow:SetPoint("TOPLEFT", top, "BOTTOMLEFT", 0, -6)
     bindRow:SetPoint("TOPRIGHT", top, "BOTTOMRIGHT", 0, -6)

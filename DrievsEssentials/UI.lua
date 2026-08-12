@@ -3,9 +3,8 @@ local addonName, addon = ...
 local UI = {}
 addon.UI = UI
 
--- Palette derived from user-specified hex: bg #24263A, accent #fb2c36.
--- All other shades are darker/lighter variants of the bg to keep hierarchy
--- without introducing unrelated hues.
+-- Palette from hex bg #24263A, accent #fb2c36. Other shades are variants of the
+-- bg, so the hierarchy holds without introducing unrelated hues.
 local C = {
     panelBG       = { 0.141, 0.149, 0.227, 0.97 }, -- #24263A
     panelDark     = { 0.090, 0.098, 0.165, 1    },
@@ -25,11 +24,321 @@ local C = {
     statusOff     = { 0.45, 0.45, 0.50, 1 },  -- disabled/off indicator dots
 }
 
+-- ── Recolouring ─────────────────────────────────────────────────────────────
+-- Every entry above is a live table shared by reference with each module addon,
+-- so recolouring edits them IN PLACE and anything holding a reference picks the
+-- new value up for free.
+--
+-- What that misses is anything already painted, so the tint helpers record which
+-- palette entry each object was last painted from. ApplyPalette repaints only
+-- objects still showing the old value, leaving anything since recoloured by
+-- other means (a class-tinted bar, a hidden border) alone.
+local PALETTE_DEFAULT = {}   -- key -> the shipped colour, for "reset"
+local PALETTE_KEY     = {}   -- live colour table -> key, for the repaint check
+for key, live in pairs(C) do
+    PALETTE_DEFAULT[key] = { live[1], live[2], live[3], live[4] }
+    PALETTE_KEY[live]    = key
+end
+
+-- Display order and labels for the colour picker, grouped so the entries someone
+-- actually wants to change come first.
+UI.paletteOrder = {
+    { key = "red",          label = "Accent"            },
+    { key = "panelBG",      label = "Window"            },
+    { key = "panelDark",    label = "Sidebar / top bar" },
+    { key = "panelDeep",    label = "Content area"      },
+    { key = "textWhite",    label = "Text"              },
+    { key = "textGrey",     label = "Text: label"       },
+    { key = "textDim",      label = "Text: hint"        },
+    { key = "tabIdle",      label = "Tab"               },
+    { key = "tabHover",     label = "Tab: hover"        },
+    { key = "tabActive",    label = "Tab: active"       },
+    { key = "tabBorder",    label = "Border"            },
+    { key = "tabActiveBdr", label = "Border: active"    },
+    { key = "checkBg",      label = "Checkbox"          },
+    { key = "checkBorder",  label = "Checkbox border"   },
+    { key = "statusOn",     label = "Status: on"        },
+    { key = "statusOff",    label = "Status: off"       },
+}
+
+-- Pulls a colour a third of the way to white. The active-tab border is a lighter
+-- tint of the accent everywhere, so presets and themes derive it rather than
+-- carrying a second value that can drift out of step.
+local function lighten(v) return v + (1 - v) * 0.35 end
+
+-- Accent-only presets. The neutral shades are hand-tuned against each other, so
+-- a preset swaps just the three entries carrying the hue.
+UI.palettePresets = {
+    { name = "Crimson", rgb = { 0.984, 0.173, 0.212 } },  -- shipped default
+    { name = "Azure",   rgb = { 0.204, 0.545, 0.965 } },
+    { name = "Violet",  rgb = { 0.639, 0.396, 0.980 } },
+    { name = "Jade",    rgb = { 0.184, 0.769, 0.518 } },
+    { name = "Amber",   rgb = { 0.976, 0.639, 0.153 } },
+    { name = "Steel",   rgb = { 0.545, 0.596, 0.702 } },
+}
+
+-- Full-palette themes, where the accent presets above only re-hue. Built from
+-- two neutral ramps crossed with two accents rather than written out four times.
+-- Each ramp keeps the shipped ordering — panelBG lightest, panelDeep darkest —
+-- so the hierarchy survives a theme change.
+local VOID_RAMP = {
+    bg          = { 0.031, 0.031, 0.043 },
+    dark        = { 0.016, 0.016, 0.024 },
+    deep        = { 0.004, 0.004, 0.008 },
+    tabIdle     = { 0.055, 0.055, 0.071 },
+    tabHover    = { 0.118, 0.118, 0.149 },
+    border      = { 0.157, 0.157, 0.196 },
+    checkBg     = { 0.027, 0.027, 0.039 },
+    checkBorder = { 0.220, 0.220, 0.263 },
+    text        = { 1.000, 1.000, 1.000 },
+    textGrey    = { 0.720, 0.720, 0.755 },
+    textDim     = { 0.440, 0.440, 0.480 },
+}
+
+local BLACK_RAMP = {
+    bg          = { 0.078, 0.078, 0.102 },
+    dark        = { 0.047, 0.047, 0.063 },
+    deep        = { 0.024, 0.024, 0.031 },
+    tabIdle     = { 0.106, 0.106, 0.133 },
+    tabHover    = { 0.176, 0.176, 0.216 },
+    border      = { 0.216, 0.216, 0.263 },
+    checkBg     = { 0.063, 0.063, 0.082 },
+    checkBorder = { 0.286, 0.286, 0.337 },
+    text        = { 1.000, 1.000, 1.000 },
+    textGrey    = { 0.750, 0.750, 0.780 },
+    textDim     = { 0.470, 0.470, 0.510 },
+}
+
+local DARK_RAMP = {
+    bg          = { 0.141, 0.141, 0.173 },
+    dark        = { 0.098, 0.098, 0.125 },
+    deep        = { 0.063, 0.063, 0.082 },
+    tabIdle     = { 0.180, 0.180, 0.220 },
+    tabHover    = { 0.259, 0.259, 0.310 },
+    border      = { 0.310, 0.310, 0.365 },
+    checkBg     = { 0.110, 0.110, 0.137 },
+    checkBorder = { 0.384, 0.384, 0.439 },
+    text        = { 1.000, 1.000, 1.000 },
+    textGrey    = { 0.780, 0.780, 0.810 },
+    textDim     = { 0.520, 0.520, 0.560 },
+}
+
+local ACCENT_RED   = { 0.984, 0.173, 0.212 }
+local ACCENT_AZURE = { 0.204, 0.545, 0.965 }
+
+local function buildTheme(name, ramp, accent)
+    return {
+        name   = name,
+        colors = {
+            panelBG      = ramp.bg,
+            panelDark    = ramp.dark,
+            panelDeep    = ramp.deep,
+            tabIdle      = ramp.tabIdle,
+            tabHover     = ramp.tabHover,
+            tabBorder    = ramp.border,
+            checkBg      = ramp.checkBg,
+            checkBorder  = ramp.checkBorder,
+            textWhite    = ramp.text,
+            textGrey     = ramp.textGrey,
+            textDim      = ramp.textDim,
+            red          = accent,
+            tabActive    = accent,
+            tabActiveBdr = { lighten(accent[1]), lighten(accent[2]), lighten(accent[3]) },
+            statusOn     = { 0.30, 0.85, 0.35 },
+            statusOff    = { 0.45, 0.45, 0.50 },
+        },
+    }
+end
+
+-- Ordered darkest to lightest within each accent, and laid out three to a row
+-- by the popup below, so each row is one accent's ramp read left to right.
+UI.themePresets = {
+    buildTheme("Void Red",    VOID_RAMP,  ACCENT_RED),
+    buildTheme("Black Red",   BLACK_RAMP, ACCENT_RED),
+    buildTheme("Dark Red",    DARK_RAMP,  ACCENT_RED),
+    buildTheme("Void Azure",  VOID_RAMP,  ACCENT_AZURE),
+    buildTheme("Black Azure", BLACK_RAMP, ACCENT_AZURE),
+    buildTheme("Dark Azure",  DARK_RAMP,  ACCENT_AZURE),
+}
+
+local tinted = {}   -- every object a tint helper has painted, in paint order
+
+local function record(obj, field, color)
+    -- One-off colours (the white backing of a swatch, a 0-alpha border) aren't
+    -- palette entries and must never be repainted.
+    if not PALETTE_KEY[color] then return end
+    if not obj.deTinted then
+        obj.deTinted = true
+        tinted[#tinted + 1] = obj
+    end
+    obj[field] = color
+end
+
+function UI.tint(obj, color)
+    record(obj, "deTintText", color)
+    obj:SetTextColor(unpack(color))
+end
+
+function UI.tintBg(frame, color)
+    record(frame, "deTintBg", color)
+    frame:SetBackdropColor(unpack(color))
+end
+
+function UI.tintBorder(frame, color)
+    record(frame, "deTintBorder", color)
+    frame:SetBackdropBorderColor(unpack(color))
+end
+
+function UI.tintTexture(tex, color)
+    record(tex, "deTintVertex", color)
+    tex:SetVertexColor(unpack(color))
+end
+
+-- Colour components are floats the client rounds on the way in and out, so an
+-- exact == against what we set is unreliable; a tolerance under one 8-bit step is.
+local function sameColor(color, r, g, b, a)
+    if not color then return false end
+    local function near(x, y) return math.abs((x or 0) - (y or 0)) < 0.004 end
+    if not (near(color[1], r) and near(color[2], g) and near(color[3], b)) then return false end
+    -- A 3-component entry never set an alpha, so it can't disagree about one.
+    return color[4] == nil or near(color[4], a)
+end
+
+-- `old` maps key -> the colour each entry held before ApplyPalette overwrote it.
+local function repaint(old)
+    for i = 1, #tinted do
+        local o = tinted[i]
+
+        local c = o.deTintText
+        if c and o.GetTextColor and sameColor(old[PALETTE_KEY[c]], o:GetTextColor()) then
+            o:SetTextColor(unpack(c))
+        end
+
+        c = o.deTintBg
+        if c and o.GetBackdropColor and sameColor(old[PALETTE_KEY[c]], o:GetBackdropColor()) then
+            o:SetBackdropColor(unpack(c))
+        end
+
+        c = o.deTintBorder
+        if c and o.GetBackdropBorderColor and sameColor(old[PALETTE_KEY[c]], o:GetBackdropBorderColor()) then
+            o:SetBackdropBorderColor(unpack(c))
+        end
+
+        c = o.deTintVertex
+        if c and o.GetVertexColor and sameColor(old[PALETTE_KEY[c]], o:GetVertexColor()) then
+            o:SetVertexColor(unpack(c))
+        end
+    end
+end
+
+local function savedColors()
+    local s = addon.db and addon.db.settings
+    return s and s.uiColors
+end
+
+-- Re-derives the palette from the active profile (falling back to the shipped
+-- colour) and repaints what's on screen. Called on login, after a profile
+-- switch, and after every swatch edit.
+function UI.ApplyPalette()
+    local saved = savedColors()
+    local old   = {}
+    for key, live in pairs(C) do
+        old[key] = { live[1], live[2], live[3], live[4] }
+        local src = (saved and saved[key]) or PALETTE_DEFAULT[key]
+        for i = 1, 4 do live[i] = src[i] end
+    end
+    repaint(old)
+end
+
+-- `a` is optional; omitted, the entry keeps the transparency it already has.
+function UI.SetPaletteColor(key, r, g, b, a)
+    local def  = PALETTE_DEFAULT[key]
+    local live = C[key]
+    local s    = addon.db and addon.db.settings
+    if not (def and s) then return end
+    s.uiColors = s.uiColors or {}
+    s.uiColors[key] = { r, g, b, a or live[4] or def[4] or 1 }
+    UI.ApplyPalette()
+end
+
+function UI.ResetPaletteColor(key)
+    local s = addon.db and addon.db.settings
+    if not (s and s.uiColors) then return end
+    s.uiColors[key] = nil
+    UI.ApplyPalette()
+end
+
+function UI.ResetPalette()
+    local s = addon.db and addon.db.settings
+    if not s then return end
+    s.uiColors = {}
+    UI.ApplyPalette()
+end
+
+-- The accent shows up as three entries — itself, the active tab fill and the
+-- active border (a lighter tint) — so a preset sets all three from one hue.
+function UI.ApplyPalettePreset(rgb)
+    local s = addon.db and addon.db.settings
+    if not s then return end
+    s.uiColors = s.uiColors or {}
+    local r, g, b = rgb[1], rgb[2], rgb[3]
+    -- Hue only: whatever transparency each of the three is carrying survives a
+    -- preset, so picking a new accent doesn't quietly undo an opacity setting.
+    s.uiColors.red          = { r, g, b, C.red[4] or 1 }
+    s.uiColors.tabActive    = { r, g, b, C.tabActive[4] or 1 }
+    s.uiColors.tabActiveBdr = { lighten(r), lighten(g), lighten(b), C.tabActiveBdr[4] or 1 }
+    UI.ApplyPalette()
+end
+
+-- A theme replaces the whole override set rather than layering: otherwise a
+-- colour changed by hand under an earlier theme would survive and nothing would
+-- match its preview. Alpha is the exception — themes carry RGB only.
+function UI.ApplyTheme(theme)
+    local s = addon.db and addon.db.settings
+    if not (s and theme and theme.colors) then return end
+    s.uiColors = {}
+    for key, rgb in pairs(theme.colors) do
+        local live = C[key]
+        if live then
+            s.uiColors[key] = { rgb[1], rgb[2], rgb[3], live[4] or PALETTE_DEFAULT[key][4] }
+        end
+    end
+    UI.ApplyPalette()
+end
+
+function UI.GetPaletteColor(key)
+    local c = C[key] or PALETTE_DEFAULT[key]
+    if not c then return 1, 1, 1, 1 end
+    return c[1], c[2], c[3], c[4] or 1
+end
+
+-- The three shades the window is built from, sharing one "window opacity"
+-- control rather than dialling the same alpha into three entries by hand.
+local WINDOW_SHADES = { "panelBG", "panelDark", "panelDeep" }
+
+function UI.GetWindowOpacity()
+    return math.floor((C.panelBG[4] or 1) * 100 + 0.5)
+end
+
+function UI.SetWindowOpacity(pct)
+    local s = addon.db and addon.db.settings
+    if not s then return end
+    -- Floored well clear of zero: a fully transparent window is still there, still
+    -- on top and still swallowing clicks, with nothing on screen to say so.
+    -- Per-entry alpha can go to 0; the window itself can't.
+    local a = math.max(0.1, math.min(1, (pct or 100) / 100))
+    s.uiColors = s.uiColors or {}
+    for _, key in ipairs(WINDOW_SHADES) do
+        local c = C[key]
+        s.uiColors[key] = { c[1], c[2], c[3], a }
+    end
+    UI.ApplyPalette()
+end
+
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 
--- Insets matching edgeSize pull the background in from the frame's edge so
--- the border strip frames it cleanly instead of the border texture drawing
--- flush against (and slightly overlapping) a full-bleed background.
+-- Insets matching edgeSize pull the background in from the frame's edge, so the
+-- border frames it cleanly instead of drawing flush against a full-bleed one.
 local function applyBackdrop(frame, edgeSize, bg, border)
     edgeSize = edgeSize or 1
     frame:SetBackdrop({
@@ -38,8 +347,41 @@ local function applyBackdrop(frame, edgeSize, bg, border)
         edgeSize = edgeSize,
         insets   = { left = edgeSize, right = edgeSize, top = edgeSize, bottom = edgeSize },
     })
-    frame:SetBackdropColor(unpack(bg))
-    frame:SetBackdropBorderColor(unpack(border or { 0, 0, 0, 0 }))
+    -- Through the tint helpers so a later recolour can repaint them; both are no-ops
+    -- for the one-off colours some callers pass instead of a palette entry.
+    UI.tintBg(frame, bg)
+    UI.tintBorder(frame, border or { 0, 0, 0, 0 })
+end
+
+-- Hover help, so a setting's explanation lives in a tooltip rather than as grey
+-- body text. `body` takes a string or a list of paragraphs, and an empty one
+-- attaches nothing — which is what lets the widget factories pass an optional
+-- `desc` straight through without every caller guarding it.
+--
+-- HookScript, not SetScript: widgets set their own OnEnter/OnLeave for the hover
+-- highlight, and replacing those would trade the border glow for the tooltip.
+local function attachTooltip(widget, title, body)
+    if not widget then return end
+    local lines = type(body) == "table" and body or { body }
+    local hasBody = false
+    for _, para in ipairs(lines) do
+        if para and para ~= "" then hasBody = true; break end
+    end
+    if not hasBody then return end
+
+    widget:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        local titled = title and title ~= ""
+        if titled then GameTooltip:AddLine(title, 1, 1, 1) end
+        for _, para in ipairs(lines) do
+            if para and para ~= "" then
+                if titled then GameTooltip:AddLine(" ") end
+                GameTooltip:AddLine(para, 0.75, 0.75, 0.75, true)
+            end
+        end
+        GameTooltip:Show()
+    end)
+    widget:HookScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
 -- Reusable tab button. OnClick is attached by the caller so the same factory
@@ -52,23 +394,20 @@ local function createTab(parent, label, width)
     local text = tab:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     text:SetPoint("CENTER")
     text:SetText(label)
-    text:SetTextColor(unpack(C.textGrey))
+    UI.tint(text, C.textGrey)
     tab.text = text
 
     tab:SetScript("OnEnter", function(self)
-        if not self.active then self:SetBackdropColor(unpack(C.tabHover)) end
+        if not self.active then UI.tintBg(self, C.tabHover) end
     end)
     tab:SetScript("OnLeave", function(self)
-        if not self.active then self:SetBackdropColor(unpack(C.tabIdle)) end
+        if not self.active then UI.tintBg(self, C.tabIdle) end
     end)
     return tab
 end
 
--- Tall, full-width, left-aligned tab button for a vertical sidebar (the main
--- nav column, and the per-raid selector inside Particles → Raids). Caller
--- anchors LEFT/RIGHT to the containing column and TOP to the previous button;
--- OnClick is attached by the caller. Shares tab.text + backdrop so the same
--- activateTab() drives its active/idle look.
+-- Tall, full-width, left-aligned tab for a vertical sidebar. Caller anchors it
+-- and wires OnClick; shares tab.text + backdrop so activateTab() drives its look.
 local function createSideTab(parent, label, height)
     local tab = CreateFrame("Button", nil, parent, "BackdropTemplate")
     tab:SetHeight(height or 28)
@@ -77,22 +416,20 @@ local function createSideTab(parent, label, height)
     local text = tab:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     text:SetPoint("LEFT", 14, 0)
     text:SetText(label)
-    text:SetTextColor(unpack(C.textGrey))
+    UI.tint(text, C.textGrey)
     tab.text = text
 
     tab:SetScript("OnEnter", function(self)
-        if not self.active then self:SetBackdropColor(unpack(C.tabHover)) end
+        if not self.active then UI.tintBg(self, C.tabHover) end
     end)
     tab:SetScript("OnLeave", function(self)
-        if not self.active then self:SetBackdropColor(unpack(C.tabIdle)) end
+        if not self.active then UI.tintBg(self, C.tabIdle) end
     end)
     return tab
 end
 
--- Standard flat action button: dark backdrop, centred white label, red hover
--- border. The caller anchors it (SetPoint) and wires OnClick; `.label` is
--- exposed for buttons that recolour or relabel it. `font` defaults to
--- GameFontNormal.
+-- Flat action button: dark backdrop, centred white label, red hover border.
+-- `.label` is exposed for buttons that recolour or relabel it.
 local function flatButton(parent, text, w, h, font)
     local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
     btn:SetSize(w or 80, h or 22)
@@ -100,23 +437,32 @@ local function flatButton(parent, text, w, h, font)
     local label = btn:CreateFontString(nil, "OVERLAY", font or "GameFontNormal")
     label:SetPoint("CENTER")
     label:SetText(text or "")
-    label:SetTextColor(unpack(C.textWhite))
+    UI.tint(label, C.textWhite)
     btn.label = label
-    btn:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(C.red)) end)
-    btn:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    btn:SetScript("OnEnter", function(self) UI.tintBorder(self, C.red) end)
+    btn:SetScript("OnLeave", function(self) UI.tintBorder(self, C.tabBorder) end)
     return btn
 end
 
--- A themed [-] [value] [+] stepper. Creates the two square buttons (with the
--- standard red hover border) and, between them, an editable value box: clicking
--- +/- adjusts opts.get()/opts.set() by opts.step (default 1), and the box itself
--- can be typed into directly — Enter commits whatever number is in it (Escape or
--- clicking away without a valid number reverts to the current value). Either
--- path clamps to [opts.min, opts.max], re-renders through opts.format (default
--- tostring), then runs opts.onChange(v). Returns the minus button as the layout
--- handle (the caller SetPoints it), with `.value`/`.plus` exposed for anchoring
--- a trailing suffix and `.Refresh()` to re-read the stored value. opts.get must
--- always return a number (fall back to a default when the store isn't ready yet).
+-- The red "X" in a popup's top-right. `inset` is how far in it sits — the popups
+-- use 8, the position editor 6, which is all that differs between them.
+local function closeButton(panel, inset)
+    local btn = CreateFrame("Button", nil, panel)
+    btn:SetSize(18, 18)
+    btn:SetPoint("TOPRIGHT", -(inset or 8), -(inset or 8))
+    local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    label:SetPoint("CENTER"); label:SetText("X"); UI.tint(label, C.red)
+    btn:SetScript("OnEnter", function() UI.tint(label, C.textWhite) end)
+    btn:SetScript("OnLeave", function() UI.tint(label, C.red) end)
+    btn:SetScript("OnClick", function() panel:Hide() end)
+    return btn
+end
+
+-- A themed [-] [value] [+] stepper. +/- adjust opts.get()/set() by opts.step;
+-- the box also takes typing (Enter commits, Escape reverts). Either path clamps
+-- to [min, max], re-renders through opts.format, then runs opts.onChange(v).
+-- Returns the minus button as the layout handle, with `.value`/`.plus` for
+-- anchoring a suffix and `.Refresh()`. opts.get must always return a number.
 local function buildStepper(parent, opts)
     local step = opts.step or 1
     local fmt  = opts.format or tostring
@@ -126,11 +472,10 @@ local function buildStepper(parent, opts)
     minus:SetSize(22, 22)
     applyBackdrop(minus, 1, C.panelDark, C.tabBorder)
     local ml = minus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    ml:SetPoint("CENTER"); ml:SetText("-"); ml:SetTextColor(unpack(C.textWhite))
+    ml:SetPoint("CENTER"); ml:SetText("-"); UI.tint(ml, C.textWhite)
 
-    -- Bordered like every other numeric input in this addon (the position
-    -- editor's X/Y boxes, the edit-sliders' value boxes), so it reads as
-    -- something you can click into rather than a plain label.
+    -- Bordered like every other numeric input here, so it reads as something you can
+    -- click into rather than a plain label.
     local value = CreateFrame("EditBox", nil, parent, "BackdropTemplate")
     value:SetPoint("LEFT", minus, "RIGHT", gap, 0)
     value:SetSize(opts.valueWidth or 24, 20)
@@ -138,7 +483,7 @@ local function buildStepper(parent, opts)
     value:SetAutoFocus(false)
     value:SetJustifyH("CENTER")
     value:SetFontObject(opts.valueFont or "GameFontNormal")
-    value:SetTextColor(unpack(opts.valueColor or C.textWhite))
+    UI.tint(value, opts.valueColor or C.textWhite)
     value:SetTextInsets(2, 2, 0, 0)
     value:SetMaxLetters(10)
 
@@ -147,11 +492,10 @@ local function buildStepper(parent, opts)
     plus:SetPoint("LEFT", value, "RIGHT", gap, 0)
     applyBackdrop(plus, 1, C.panelDark, C.tabBorder)
     local pl = plus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    pl:SetPoint("CENTER"); pl:SetText("+"); pl:SetTextColor(unpack(C.textWhite))
+    pl:SetPoint("CENTER"); pl:SetText("+"); UI.tint(pl, C.textWhite)
 
-    -- Re-reads the stored value into the box, unless the user is mid-edit —
-    -- otherwise a background refresh (e.g. another control changing the same
-    -- setting) would yank the cursor out of what they're typing.
+    -- Re-reads the stored value unless the user is mid-edit, or a background refresh
+    -- would yank the cursor out of what they're typing.
     local function refresh()
         if not value:HasFocus() then value:SetText(fmt(opts.get())) end
     end
@@ -165,10 +509,10 @@ local function buildStepper(parent, opts)
     local function adjust(delta) commit(opts.get() + delta) end
     minus:SetScript("OnClick", function() adjust(-step) end)
     plus:SetScript("OnClick",  function() adjust(step) end)
-    minus:SetScript("OnEnter", function() minus:SetBackdropBorderColor(unpack(C.red)) end)
-    minus:SetScript("OnLeave", function() minus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-    plus:SetScript("OnEnter",  function() plus:SetBackdropBorderColor(unpack(C.red)) end)
-    plus:SetScript("OnLeave",  function() plus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    minus:SetScript("OnEnter", function() UI.tintBorder(minus, C.red) end)
+    minus:SetScript("OnLeave", function() UI.tintBorder(minus, C.tabBorder) end)
+    plus:SetScript("OnEnter",  function() UI.tintBorder(plus, C.red) end)
+    plus:SetScript("OnLeave",  function() UI.tintBorder(plus, C.tabBorder) end)
 
     -- Invalid text (empty, non-numeric) just reverts to the current value rather
     -- than erroring or silently zeroing the setting.
@@ -181,24 +525,20 @@ local function buildStepper(parent, opts)
     value:SetScript("OnEditFocusLost",  commitBox)
     value:SetScript("OnEscapePressed",  function() refresh(); value:ClearFocus() end)
     value:SetScript("OnEditFocusGained", function() value:HighlightText() end)
-    value:SetScript("OnEnter", function() if not value:HasFocus() then value:SetBackdropBorderColor(unpack(C.red)) end end)
-    value:SetScript("OnLeave", function() if not value:HasFocus() then value:SetBackdropBorderColor(unpack(C.tabBorder)) end end)
+    value:SetScript("OnEnter", function() if not value:HasFocus() then UI.tintBorder(value, C.red) end end)
+    value:SetScript("OnLeave", function() if not value:HasFocus() then UI.tintBorder(value, C.tabBorder) end end)
 
     minus.plus, minus.value, minus.Refresh = plus, value, refresh
     refresh()
     return minus
 end
 
--- Generic tab/panel switcher; usable for both the top-level tabs and the
--- in-Particles raid sub-tabs.
+-- Generic tab/panel switcher for top-level tabs and sub-tabs alike.
 --
--- A panels[key] entry may be either a finished frame or a builder function.
--- Builders are run on first activation and the result cached back into the
--- table, so a tab nobody opens costs nothing. This matters: building every
--- panel up front (every module tab × sub-tab × raid × boss × trinket dropdown)
--- is tens of thousands of frames and backdrops in a single call, which stalls
--- for a noticeable beat on a fast machine and trips Blizzard's "script ran too
--- long" watchdog on a slow one — the whole window then fails to open.
+-- A panels[key] entry is either a finished frame or a builder function. Builders
+-- run on first activation and cache back, so a tab nobody opens costs nothing.
+-- Building every panel up front is tens of thousands of frames in one call,
+-- which trips Blizzard's "script ran too long" watchdog on a slow machine.
 local function resolvePanel(panels, key)
     local panel = panels[key]
     if type(panel) == "function" then
@@ -213,13 +553,13 @@ local function activateTab(tabs, panels, key)
         local active = (k == key)
         tab.active = active
         if active then
-            tab:SetBackdropColor(unpack(C.tabActive))
-            tab:SetBackdropBorderColor(unpack(C.tabActiveBdr))
-            tab.text:SetTextColor(unpack(C.textWhite))
+            UI.tintBg(tab, C.tabActive)
+            UI.tintBorder(tab, C.tabActiveBdr)
+            UI.tint(tab.text, C.textWhite)
         else
-            tab:SetBackdropColor(unpack(C.tabIdle))
-            tab:SetBackdropBorderColor(unpack(C.tabBorder))
-            tab.text:SetTextColor(unpack(C.textGrey))
+            UI.tintBg(tab, C.tabIdle)
+            UI.tintBorder(tab, C.tabBorder)
+            UI.tint(tab.text, C.textGrey)
         end
     end
     -- Resolve before the loop: hiding the others must not force them to build.
@@ -240,20 +580,65 @@ local function selectSubTab(parent, key)
     activateTab(parent.subTabs, parent.subPanels, key)
 end
 
+-- The standard sub-tab shell: a row of tabs over a content area, used by every
+-- module tab with sub-tabs so insets and framing match.
+--
+--   opts.barHeight — for a module laying its tabs out differently (default 26)
+--   opts.hidden    — start hidden, for tabs built before first selection
+--
+-- Returns the panel, its tab bar (modules sometimes park a control there), the
+-- frame sub-panels parent to, and addSubTab(key, label, width, panel).
+--
+-- Prefer passing `panel` as a BUILDER FUNCTION taking the content frame, so it's
+-- built on first open — building every sub-tab up front trips the watchdog. An
+-- already-built frame is accepted for panels a module must construct in place.
+local function makeSubTabPanel(parent, opts)
+    opts = opts or {}
+    local panel = CreateFrame("Frame", nil, parent)
+    panel:SetAllPoints()
+    if opts.hidden then panel:Hide() end
+
+    local subBar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+    subBar:SetHeight(opts.barHeight or 26)
+    subBar:SetPoint("TOPLEFT", 4, -4)
+    subBar:SetPoint("TOPRIGHT", -4, -4)
+    applyBackdrop(subBar, 1, C.panelDark)
+
+    local subContent = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+    subContent:SetPoint("TOPLEFT", subBar, "BOTTOMLEFT", 0, -2)
+    subContent:SetPoint("BOTTOMRIGHT", -4, 4)
+    applyBackdrop(subContent, 1, C.panelDeep)
+
+    panel.subTabs, panel.subPanels = {}, {}
+
+    local previous
+    local function addSubTab(key, label, width, builder)
+        local tab = createTab(subBar, label, width)
+        tab:SetHeight(22)
+        if previous then
+            tab:SetPoint("LEFT", previous, "RIGHT", 4, 0)
+        else
+            tab:SetPoint("LEFT", 4, 0)
+        end
+        tab:SetScript("OnClick", function() selectSubTab(panel, key) end)
+        panel.subTabs[key]   = tab
+        panel.subPanels[key] = type(builder) == "function"
+            and function() return builder(subContent) end
+            or builder
+        previous = tab
+        return tab
+    end
+
+    return panel, subBar, subContent, addSubTab
+end
+
 -- ── Scrollable panels ────────────────────────────────────────────────────────
--- Themed, draggable vertical scrollbar (track + thumb) for an existing
--- ScrollFrame, matching the style already used by the font-picker dropdown
--- and the profile export/import popup. `trackParent` is the frame the
--- track's right edge anchors to — normally the outer shell the ScrollFrame
--- fills (minus the width reserved for the track itself). Returns an
--- `update()` function; call it whenever the scroll child's content height
--- changes (resizing rows, showing/hiding optional widgets, etc.) to keep the
--- thumb's size/position in sync.
+-- Themed, draggable scrollbar for an existing ScrollFrame. `trackParent` is what
+-- the track's right edge anchors to. Returns an `update()` to call whenever the
+-- scroll child's content height changes.
 local SCROLLBAR_W = 10
--- Clearance to keep a scrollbar track clear of the main window's bottom-right
--- resize grip (see createMainFrame's `sizer`). Only the outer panels that
--- actually reach that corner opt in via attachScrollTrack's `bottomInset`;
--- nested scrollbars pass nothing and run the full height of their box.
+-- Keeps a scrollbar track clear of the window's resize grip. Only outer panels
+-- reaching that corner opt in via `bottomInset`.
 local SCROLLBAR_BOTTOM_CLEARANCE = 16
 
 local function attachScrollTrack(scroll, trackParent, bottomInset)
@@ -268,19 +653,16 @@ local function attachScrollTrack(scroll, trackParent, bottomInset)
     applyBackdrop(thumb, 1, C.tabIdle, C.tabBorder)
     thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)
 
-    -- Track is always visible (not conditionally hidden on maxScroll<=0) —
-    -- GetVerticalScrollRange() isn't reliably accurate until the frame has
-    -- actually been shown/laid out, so hiding based on it produced a track
-    -- that silently never appeared until some other event forced a recompute.
-    -- When there's nothing to scroll the thumb just fills the whole track.
+    -- Track is always visible rather than hidden on maxScroll<=0:
+    -- GetVerticalScrollRange() isn't reliable until the frame is laid out, so hiding
+    -- on it produced a track that silently never appeared.
     local function update()
         track:Show()
         local trackH = track:GetHeight()
         if trackH <= 0 then return end
-        -- GetVerticalScrollRange() can return a stale/cached value until the
-        -- ScrollFrame's scroll-child rect is explicitly recomputed — this is
-        -- the real fix for the thumb reading wrong until the user scrolls
-        -- once (which forces an internal refresh as a side effect).
+        -- GetVerticalScrollRange() can return a stale value until the scroll-child rect
+        -- is explicitly recomputed — the real fix for the thumb reading wrong until the
+        -- user scrolls once.
         if scroll.UpdateScrollChildRect then scroll:UpdateScrollChildRect() end
         local maxScroll = scroll:GetVerticalScrollRange()
         if maxScroll <= 0 then
@@ -293,11 +675,9 @@ local function attachScrollTrack(scroll, trackParent, bottomInset)
         local visibleH = scroll:GetHeight()
         local thumbH   = math.max(16, trackH * visibleH / (visibleH + maxScroll))
         local cur      = scroll:GetVerticalScroll()
-        -- Shrinking the window (or its content) while scrolled near the
-        -- bottom can leave the saved offset past the new, smaller range —
-        -- without reclamping, frac exceeds 1 and the thumb is pushed past the
-        -- end of the track (or off-screen entirely), flickering every time
-        -- update() re-fires during the resize.
+        -- Shrinking the window while scrolled near the bottom leaves the offset past the
+        -- new range; without reclamping, frac exceeds 1 and the thumb is pushed off the
+        -- track, flickering on every resize tick.
         if cur > maxScroll then
             cur = maxScroll
             scroll:SetVerticalScroll(cur)
@@ -338,8 +718,8 @@ local function attachScrollTrack(scroll, trackParent, bottomInset)
             update()
         end
     end)
-    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
+    thumb:SetScript("OnEnter", function(self) UI.tintBg(self, C.tabHover) end)
+    thumb:SetScript("OnLeave", function(self) UI.tintBg(self, C.tabIdle)  end)
 
     scroll:EnableMouseWheel(true)
     scroll:SetScript("OnMouseWheel", function(_, d)
@@ -351,22 +731,17 @@ local function attachScrollTrack(scroll, trackParent, bottomInset)
     return track, update
 end
 
--- Recursively finds the lowest (screen-space) bottom edge among a frame's
--- descendants — both child frames (GetChildren) and directly-drawn regions
--- like FontStrings/Textures (GetRegions), since e.g. a checkbox row's own
--- label is a region on the row, not on `inner`. Used to size a scroll child
--- to its ACTUAL content height rather than a guessed fixed value — a fixed
--- height taller than the real content makes GetVerticalScrollRange() always
--- report room to scroll, even on panels with nothing to scroll.
+-- Recursively finds the lowest bottom edge among a frame's descendants — child
+-- frames AND directly-drawn regions, since a checkbox row's label is a region on
+-- the row, not on `inner`. A fixed height taller than the content makes
+-- GetVerticalScrollRange() always report room to scroll.
 local function findLowestBottom(frame, bottom)
     for _, child in ipairs({ frame:GetChildren() }) do
         local cb = child:GetBottom()
         if cb and (not bottom or cb < bottom) then bottom = cb end
-        -- Don't descend into a nested ScrollFrame: it clips and scrolls its own
-        -- (possibly much taller) child, so only its own visible bottom edge
-        -- should count toward the enclosing panel's height — otherwise the
-        -- outer panel grows to fit the inner scroll's full content and you can
-        -- scroll the outer panel down into empty space below it.
+        -- Don't descend into a nested ScrollFrame: it clips its own taller child, so only
+        -- its visible bottom edge counts — otherwise the outer panel grows to fit the
+        -- inner content and scrolls into empty space.
         if child:GetObjectType() ~= "ScrollFrame" then
             bottom = findLowestBottom(child, bottom)
         end
@@ -380,9 +755,8 @@ local function findLowestBottom(frame, bottom)
     return bottom
 end
 
--- Resizes `inner` to fit its actual content (see findLowestBottom), with a
--- floor of the scroll frame's own visible height so a short panel never
--- becomes "scrollable" into empty space.
+-- Floored at the scroll frame's visible height, so a short panel never becomes
+-- "scrollable" into empty space.
 local function fitInnerHeight(inner, scroll)
     local top = inner:GetTop()
     if not top then return end
@@ -392,14 +766,9 @@ local function fitInnerHeight(inner, scroll)
     inner:SetHeight(math.max(contentH, visibleH))
 end
 
--- Wraps a tab/sub-tab's content in a scrollable area with the themed
--- scrollbar above — for panels whose content can grow taller than the fixed
--- settings window. Returns (shell, inner): `shell` is what callers treat
--- exactly like the old flat panel (anchor/size it, SetShown it, hang an
--- OnShow script off it for refresh-on-tab-switch — activateTab only toggles
--- THIS frame, so its Show/Hide state — and therefore OnShow firing — behaves
--- identically to before); `inner` is what all of the panel's actual widgets
--- should be created on/anchored to, exactly as the old flat panel was.
+-- Wraps a tab's content in a scrollable area. Returns (shell, inner): `shell`
+-- behaves exactly like the old flat panel (anchor it, SetShown it, hang an
+-- OnShow off it), and `inner` is what the widgets are created on.
 local function makeScrollPanel(parent, innerHeight)
     local shell = CreateFrame("Frame", nil, parent)
     shell:SetAllPoints()
@@ -415,9 +784,8 @@ local function makeScrollPanel(parent, innerHeight)
 
     local _, update = attachScrollTrack(scroll, shell, SCROLLBAR_BOTTOM_CLEARANCE)
 
-    -- fitInnerHeight resizes `inner`, which re-triggers inner's own
-    -- OnSizeChanged below — that handler only calls update() (never
-    -- fitInnerHeight again), so this can't recurse.
+    -- fitInnerHeight resizes `inner`, re-triggering its OnSizeChanged below — that
+    -- handler only calls update(), never fitInnerHeight, so this can't recurse.
     local function refreshScroll()
         fitInnerHeight(inner, scroll)
         update()
@@ -428,16 +796,12 @@ local function makeScrollPanel(parent, innerHeight)
         refreshScroll()
     end)
     inner:SetScript("OnSizeChanged", update)
-    -- GetVerticalScrollRange() isn't reliably accurate (and content may not
-    -- have its final size) until the frame is actually visible, so the very
-    -- first pass (from the OnSizeChanged calls above, which can fire while
-    -- still hidden during initial layout) can under-report it. HookScript
-    -- (not SetScript) so this doesn't clobber the caller's own OnShow
-    -- refresh, attached separately after this function returns. GetTop()/
-    -- GetBottom() can ALSO still be stale on the very same frame a panel is
-    -- first shown (only settling one frame later — this is why scrolling,
-    -- which re-triggers the calc later, "fixed" it) so also defer a second
-    -- pass via C_Timer.After(0, ...) to catch that case on first open.
+    -- GetVerticalScrollRange() isn't reliable until the frame is visible, so the
+    -- first pass (from OnSizeChanged, which can fire while still hidden) can
+    -- under-report. HookScript rather than SetScript, so the caller's own OnShow
+    -- refresh isn't clobbered. GetTop()/GetBottom() can ALSO be stale on the very
+    -- frame a panel is first shown, settling one frame later — which is why
+    -- scrolling appeared to "fix" it — so a second pass is deferred via C_Timer.
     shell:HookScript("OnShow", function()
         refreshScroll()
         C_Timer.After(0, refreshScroll)
@@ -449,8 +813,10 @@ local function makeScrollPanel(parent, innerHeight)
     return shell, inner, refreshScroll
 end
 
--- Custom dark/red themed checkbox. The whole row is clickable.
-local function createCheckbox(parent, label, width)
+-- Custom dark/red themed checkbox. The whole row is clickable. `desc` is
+-- optional hover help (string or list of paragraphs) shown under the label in a
+-- tooltip, so an explanation never has to be laid out as body text in the panel.
+local function createCheckbox(parent, label, width, desc)
     local row = CreateFrame("Button", nil, parent)
     row:SetSize(width or 200, 20)
 
@@ -463,13 +829,13 @@ local function createCheckbox(parent, label, width)
     fill:SetTexture(WHITE)
     fill:SetPoint("TOPLEFT", 2, -2)
     fill:SetPoint("BOTTOMRIGHT", -2, 2)
-    fill:SetVertexColor(unpack(C.red))
+    UI.tintTexture(fill, C.red)
     fill:Hide()
 
     local text = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     text:SetPoint("LEFT", box, "RIGHT", 6, 0)
     text:SetText(label)
-    text:SetTextColor(unpack(C.textWhite))
+    UI.tint(text, C.textWhite)
 
     row.box, row.fill, row.text = box, fill, text
     row.checked = false
@@ -480,28 +846,82 @@ local function createCheckbox(parent, label, width)
     end
     function row:GetChecked() return self.checked end
 
-    row:SetScript("OnEnter", function() box:SetBackdropBorderColor(unpack(C.red)) end)
-    row:SetScript("OnLeave", function() box:SetBackdropBorderColor(unpack(C.checkBorder)) end)
+    row:SetScript("OnEnter", function() UI.tintBorder(box, C.red) end)
+    row:SetScript("OnLeave", function() UI.tintBorder(box, C.checkBorder) end)
     row:SetScript("OnClick", function(self)
         self:SetChecked(not self.checked)
         if self.OnChange then self:OnChange(self.checked) end
     end)
+    attachTooltip(row, label, desc)
     return row
 end
 
--- Compact themed dropdown. options = array of { value, label }. The pop-out
--- option list is parented to UIParent (so the settings scroll-frame can't clip
--- it) at DIALOG strata with a full-screen catcher behind it to close on an
--- outside click, and it also closes if the dropdown itself is hidden (e.g. the
--- settings window closes). Exposes :Refresh() to re-read the current value.
-local function createDropdown(parent, width, options, getVal, setVal, onSelect)
+-- A clickable colour swatch opening WoW's native picker, RGB only — every panel
+-- keeps opacity on its own stepper, so the two never fight over one value.
+-- Handles both the modern SetupColorPickerAndShow API and the older field-based
+-- one, since which exists varies across Classic Era builds. :Refresh() re-reads.
+--
+-- opts.size — square edge length (default 20)
+-- opts.hover — highlight the border red under the cursor
+local function createColorSwatch(parent, getRGB, setRGB, onChange, opts)
+    opts = opts or {}
+    local sw = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    sw:SetSize(opts.size or 20, opts.size or 20)
+    applyBackdrop(sw, 1, { 1, 1, 1 }, C.tabBorder)
+
+    local function paint()
+        local r, g, b = getRGB()
+        sw:SetBackdropColor(r or 1, g or 1, b or 1, 1)
+    end
+
+    sw:SetScript("OnClick", function()
+        local r, g, b = getRGB()
+        local function apply()
+            local nr, ng, nb = ColorPickerFrame:GetColorRGB()
+            setRGB(nr, ng, nb); paint(); if onChange then onChange() end
+        end
+        local function cancel()
+            setRGB(r, g, b); paint(); if onChange then onChange() end
+        end
+        if ColorPickerFrame.SetupColorPickerAndShow then
+            ColorPickerFrame:SetupColorPickerAndShow({
+                r = r, g = g, b = b, hasOpacity = false,
+                swatchFunc = apply, cancelFunc = cancel,
+            })
+        else
+            ColorPickerFrame.hasOpacity = false
+            ColorPickerFrame.func       = apply
+            ColorPickerFrame.cancelFunc = cancel
+            ColorPickerFrame:SetColorRGB(r, g, b)
+            ColorPickerFrame:Hide() -- force OnShow to refire with these values
+            ColorPickerFrame:Show()
+        end
+    end)
+
+    if opts.hover then
+        sw:SetScript("OnEnter", function(s) UI.tintBorder(s, C.red) end)
+        sw:SetScript("OnLeave", function(s) UI.tintBorder(s, C.tabBorder) end)
+    end
+
+    sw.Refresh = paint
+    paint()
+    return sw
+end
+
+-- Compact themed dropdown. options = array of { value, label }. The pop-out list
+-- is parented to UIParent (so the settings scroll frame can't clip it) at DIALOG
+-- strata, with a full-screen catcher behind it to close on an outside click; it
+-- also closes if the dropdown is hidden. :Refresh() re-reads the value.
+-- tipTitle/tipBody are hover help — unlike a checkbox, a dropdown has no label
+-- of its own, so the title must be passed in.
+local function createDropdown(parent, width, options, getVal, setVal, onSelect, tipTitle, tipBody)
     local dd = CreateFrame("Button", nil, parent, "BackdropTemplate")
     dd:SetSize(width, 22)
     applyBackdrop(dd, 1, C.panelDark, C.tabBorder)
 
     local text = dd:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     text:SetPoint("LEFT", 8, 0)
-    text:SetTextColor(unpack(C.textWhite))
+    UI.tint(text, C.textWhite)
 
     local arrow = dd:CreateTexture(nil, "OVERLAY")
     arrow:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
@@ -536,9 +956,9 @@ local function createDropdown(parent, width, options, getVal, setVal, onSelect)
         item:SetHeight(22)
         applyBackdrop(item, 1, C.panelDark, { 0, 0, 0, 0 })
         local il = item:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        il:SetPoint("LEFT", 8, 0); il:SetText(o.label); il:SetTextColor(unpack(C.textWhite))
-        item:SetScript("OnEnter", function() item:SetBackdropColor(unpack(C.tabHover)) end)
-        item:SetScript("OnLeave", function() item:SetBackdropColor(unpack(C.panelDark)) end)
+        il:SetPoint("LEFT", 8, 0); il:SetText(o.label); UI.tint(il, C.textWhite)
+        item:SetScript("OnEnter", function() UI.tintBg(item, C.tabHover) end)
+        item:SetScript("OnLeave", function() UI.tintBg(item, C.panelDark) end)
         item:SetScript("OnClick", function()
             setVal(o.value); refresh(); close()
             if onSelect then onSelect(o.value) end
@@ -548,10 +968,11 @@ local function createDropdown(parent, width, options, getVal, setVal, onSelect)
     dd:SetScript("OnClick", function()
         if menu:IsShown() then close() else menu:Show(); catcher:Show() end
     end)
-    dd:SetScript("OnEnter", function() dd:SetBackdropBorderColor(unpack(C.red)) end)
-    dd:SetScript("OnLeave", function() dd:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    dd:SetScript("OnEnter", function() UI.tintBorder(dd, C.red) end)
+    dd:SetScript("OnLeave", function() UI.tintBorder(dd, C.tabBorder) end)
     dd:SetScript("OnHide", close)
     catcher:SetScript("OnClick", close)
+    attachTooltip(dd, tipTitle, tipBody)
 
     dd.Refresh = refresh
     refresh()
@@ -570,12 +991,12 @@ local function buildRaidSettingsPanel(parent)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
     header:SetText("Raid Settings")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
     desc:SetText("Applied automatically when entering a raid instance and reverted on leaving.")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
     local enableCheck = createCheckbox(panel, "Enable Raid Settings", 260)
     enableCheck:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -14)
@@ -584,20 +1005,16 @@ local function buildRaidSettingsPanel(parent)
         if addon.Raid then addon.Raid.refresh() end
     end
 
-    local namesCheck = createCheckbox(panel, "Disable Names in Raid", 260)
+    local namesCheck = createCheckbox(panel, "Disable Names in Raid", 260,
+        "Hides friendly player, pet, guardian, and totem names.")
     namesCheck:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -18)
     namesCheck.OnChange = function(_, checked)
         raidData().disableNames = checked
         if addon.Raid then addon.Raid.refresh() end
     end
 
-    local namesDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    namesDesc:SetPoint("TOPLEFT", namesCheck, "BOTTOMLEFT", 20, -2)
-    namesDesc:SetText("Hides friendly player, pet, guardian, and totem names.")
-    namesDesc:SetTextColor(unpack(C.textDim))
-
     local bubblesCheck = createCheckbox(panel, "Disable Chat Bubbles in Raid", 260)
-    bubblesCheck:SetPoint("TOPLEFT", namesDesc, "BOTTOMLEFT", -20, -14)
+    bubblesCheck:SetPoint("TOPLEFT", namesCheck, "BOTTOMLEFT", 0, -18)
     bubblesCheck.OnChange = function(_, checked)
         raidData().disableChatBubbles = checked
         if addon.Raid then addon.Raid.refresh() end
@@ -606,19 +1023,15 @@ local function buildRaidSettingsPanel(parent)
     local debugLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     debugLabel:SetPoint("TOPLEFT", bubblesCheck, "BOTTOMLEFT", 0, -22)
     debugLabel:SetText("Debug")
-    debugLabel:SetTextColor(unpack(C.textDim))
+    UI.tint(debugLabel, C.textDim)
 
-    local debugCheck = createCheckbox(panel, "Treat Stockades as Raid", 260)
+    local debugCheck = createCheckbox(panel, "Treat Stockades as Raid", 260,
+        "Use the Stockades to test raid settings without entering a real raid.")
     debugCheck:SetPoint("TOPLEFT", debugLabel, "BOTTOMLEFT", 0, -6)
     debugCheck.OnChange = function(_, checked)
         raidData().debug = checked
         if addon.Raid then addon.Raid.refresh() end
     end
-
-    local debugDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    debugDesc:SetPoint("TOPLEFT", debugCheck, "BOTTOMLEFT", 20, -2)
-    debugDesc:SetText("Use the Stockades to test raid settings without entering a real raid.")
-    debugDesc:SetTextColor(unpack(C.textDim))
 
     local function refreshPanel()
         local d = raidData()
@@ -632,13 +1045,7 @@ local function buildRaidSettingsPanel(parent)
     return shell
 end
 
-local function raidFramesData()
-    addon.db.settings.raidFrames = addon.db.settings.raidFrames or {
-        enabled = false,
-        scale   = 1,
-    }
-    return addon.db.settings.raidFrames
-end
+local raidFramesData = addon.RaidFrames.getData
 
 local function buildRaidFramesPanel(parent)
     local shell, panel = makeScrollPanel(parent)
@@ -646,12 +1053,12 @@ local function buildRaidFramesPanel(parent)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
     header:SetText("Raid Frame Manager")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
     desc:SetText("Reposition and resize the default raid frames. Drag the box to move it, drag its corner to resize.")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
     local enableCB = createCheckbox(panel, "Enable Raid Frame Manager", 280)
     enableCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -14)
@@ -668,7 +1075,7 @@ local function buildRaidFramesPanel(parent)
     local scaleText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     scaleText:SetPoint("LEFT", moveBtn, "RIGHT", 14, 0)
     scaleText:SetText("Scale:")
-    scaleText:SetTextColor(unpack(C.textWhite))
+    UI.tint(scaleText, C.textWhite)
 
     local scaleBoxWrap = CreateFrame("Frame", nil, panel, "BackdropTemplate")
     scaleBoxWrap:SetSize(50, 22)
@@ -682,12 +1089,12 @@ local function buildRaidFramesPanel(parent)
     scaleBox:SetMaxLetters(6)
     scaleBox:SetJustifyH("CENTER")
     scaleBox:SetFontObject("GameFontNormal")
-    scaleBox:SetTextColor(unpack(C.textWhite))
+    UI.tint(scaleBox, C.textWhite)
 
     local scalePctLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     scalePctLabel:SetPoint("LEFT", scaleBoxWrap, "RIGHT", 4, 0)
     scalePctLabel:SetText("%")
-    scalePctLabel:SetTextColor(unpack(C.textWhite))
+    UI.tint(scalePctLabel, C.textWhite)
 
     local minPct = addon.RaidFrames and math.floor(addon.RaidFrames.minScale * 100) or 50
     local maxPct = addon.RaidFrames and math.floor(addon.RaidFrames.maxScale * 100) or 200
@@ -695,7 +1102,7 @@ local function buildRaidFramesPanel(parent)
     local scaleRangeNote = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     scaleRangeNote:SetPoint("LEFT", scalePctLabel, "RIGHT", 8, 0)
     scaleRangeNote:SetText(string.format("(%d - %d)", minPct, maxPct))
-    scaleRangeNote:SetTextColor(unpack(C.textDim))
+    UI.tint(scaleRangeNote, C.textDim)
 
     local function displayScale()
         local d = raidFramesData()
@@ -713,8 +1120,8 @@ local function buildRaidFramesPanel(parent)
         scaleBox:ClearFocus()
     end
 
-    scaleBoxWrap:SetScript("OnEnter", function() scaleBoxWrap:SetBackdropBorderColor(unpack(C.red)) end)
-    scaleBoxWrap:SetScript("OnLeave", function() scaleBoxWrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    scaleBoxWrap:SetScript("OnEnter", function() UI.tintBorder(scaleBoxWrap, C.red) end)
+    scaleBoxWrap:SetScript("OnLeave", function() UI.tintBorder(scaleBoxWrap, C.tabBorder) end)
     scaleBox:SetScript("OnEnterPressed", commitScale)
     scaleBox:SetScript("OnEditFocusLost", commitScale)
     scaleBox:SetScript("OnEscapePressed", function()
@@ -739,37 +1146,10 @@ end
 -- with its own sub-tab bar (General / Raid Frames), mirroring the Particles and
 -- Trinkets tabs' sub-tab layout.
 local function buildRaidTabPanel(parent)
-    local panel = CreateFrame("Frame", nil, parent)
-    panel:SetAllPoints()
-    panel:Hide()
+    local panel, _, _, addSubTab = makeSubTabPanel(parent, { hidden = true })
 
-    local subBar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subBar:SetHeight(26)
-    subBar:SetPoint("TOPLEFT", 4, -4)
-    subBar:SetPoint("TOPRIGHT", -4, -4)
-    applyBackdrop(subBar, 1, C.panelDark)
-
-    local subContent = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subContent:SetPoint("TOPLEFT", subBar, "BOTTOMLEFT", 0, -2)
-    subContent:SetPoint("BOTTOMRIGHT", -4, 4)
-    applyBackdrop(subContent, 1, C.panelDeep)
-
-    panel.subTabs   = {}
-    panel.subPanels = {}
-
-    local generalTab = createTab(subBar, "General", 80)
-    generalTab:SetHeight(22)
-    generalTab:SetPoint("LEFT", 4, 0)
-    generalTab:SetScript("OnClick", function() selectSubTab(panel, "general") end)
-    panel.subTabs["general"]   = generalTab
-    panel.subPanels["general"] = function() return buildRaidSettingsPanel(subContent) end
-
-    local framesTab = createTab(subBar, "Raid Frames", 110)
-    framesTab:SetHeight(22)
-    framesTab:SetPoint("LEFT", generalTab, "RIGHT", 4, 0)
-    framesTab:SetScript("OnClick", function() selectSubTab(panel, "raidframes") end)
-    panel.subTabs["raidframes"]   = framesTab
-    panel.subPanels["raidframes"] = function() return buildRaidFramesPanel(subContent) end
+    addSubTab("general",    "General",     80,  buildRaidSettingsPanel)
+    addSubTab("raidframes", "Raid Frames", 110, buildRaidFramesPanel)
 
     selectSubTab(panel, "general")
     return panel
@@ -777,26 +1157,19 @@ end
 
 -- ── Media previews for createScrollDropdown ─────────────────────────────────
 -- A list of font or texture NAMES tells you nothing about what you're picking,
--- so a media dropdown draws each row as a sample of itself: font rows are
--- lettered in their own font, statusbar rows show the bar texture behind the
--- name. LibSharedMedia is looked up per call rather than cached, since a media
--- pack can register more after this file has loaded.
+-- so each row is drawn as a sample of itself. LSM is looked up per call rather
+-- than cached, since a media pack can register more after this file loads.
 local PREVIEW_FONT_SIZE = 12
 -- Bar textures are near-white by design, so they're tinted down to keep the
 -- white row label legible on top of them.
 local PREVIEW_BAR_TINT  = { 0.33, 0.35, 0.48, 1 }
 
-local function fetchMedia(kind, name)
-    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
-    if not (LSM and name) then return nil end
-    return LSM:Fetch(kind, name, true)   -- noDefault: nil rather than a substitute
-end
+local fetchMedia = addon.FetchMedia
 
--- Falls back to `fallbackObject` when the font isn't installed any more, or when
--- the client rejects the file — SetFont returns false there, and a FontString
--- left holding an invalid font renders nothing at all. Entries that aren't
--- LibSharedMedia fonts in the first place ("Default", "Blizzard Default") land
--- here too, which is exactly right: they ARE the fallback font.
+-- Falls back to `fallbackObject` when the font isn't installed any more, or the
+-- client rejects the file — SetFont returns false there, and a FontString with an
+-- invalid font renders nothing. Non-LSM entries ("Default") land here too, which
+-- is right: they ARE the fallback.
 local function applyFontPreview(label, name, fallbackObject)
     local path = fetchMedia("font", name)
     if path and label:SetFont(path, PREVIEW_FONT_SIZE, "") ~= false then return end
@@ -810,12 +1183,12 @@ local function applyBarPreview(texture, name)
     texture:SetShown(path ~= nil)
 end
 
--- Scrollable dropdown that anchors cleanly beneath (or above) its button.
+-- Scrollable dropdown anchoring cleanly beneath (or above) its button.
 -- getItems() is called once on first open; onChange(name) fires on selection.
 --
--- opts.preview turns the list into a media picker that shows what it's offering:
---   "font"      — every row (and the closed button) is drawn IN the named font
---   "statusbar" — the named bar texture is drawn behind the name
+-- opts.preview makes it a media picker showing what it offers: "font" draws
+-- every row in the named font, "statusbar" draws the bar texture behind the
+-- name. opts.tipTitle/tipBody attach hover help to the closed button.
 local function createScrollDropdown(parent, width, getItems, onChange, opts)
     local ITEM_H    = 20
     local MAX_VIS   = 8
@@ -831,12 +1204,12 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
     btnText:SetPoint("LEFT", 6, 0)
     btnText:SetPoint("RIGHT", -18, 0)
     btnText:SetJustifyH("LEFT")
-    btnText:SetTextColor(unpack(C.textWhite))
+    UI.tint(btnText, C.textWhite)
 
     local arrowText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     arrowText:SetPoint("RIGHT", -5, 0)
     arrowText:SetText("v")
-    arrowText:SetTextColor(unpack(C.textDim))
+    UI.tint(arrowText, C.textDim)
 
     -- ARTWORK (not BACKGROUND) so the sample sits above the button's backdrop
     -- fill but still below the OVERLAY label. Inset by the backdrop's 1px edge
@@ -862,7 +1235,7 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
             -- applyFontPreview's fallback path goes through SetFontObject, which
             -- also drops the button's white text back to the font object's own
             -- colour. Re-assert it either way rather than only on that branch.
-            btnText:SetTextColor(unpack(C.textWhite))
+            UI.tint(btnText, C.textWhite)
         elseif btnPreview then
             applyBarPreview(btnPreview, name)
         end
@@ -902,11 +1275,10 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
     applyBackdrop(thumb, 1, C.tabIdle, C.tabBorder)
     thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)  -- placeholder; overwritten by updateThumb
 
-    -- The one definition of how far this list can scroll. A ScrollFrame does NOT
-    -- clamp SetVerticalScroll for you, so every caller has to go through
-    -- setScroll below — the wheel handler used to clamp only the top, which let
-    -- it walk the rows straight past the bottom of the popup while the thumb
-    -- slid out of its track chasing a fraction greater than 1.
+    -- The one definition of how far this list scrolls. A ScrollFrame does NOT clamp
+    -- SetVerticalScroll, so every caller goes through setScroll — the wheel handler
+    -- used to clamp only the top, walking rows past the bottom while the thumb slid
+    -- out of its track.
     local function maxScroll()
         return math.max(0, (btn._count - MAX_VIS) * ITEM_H)
     end
@@ -921,10 +1293,9 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
         local maxS   = maxScroll()
         local cur    = sf:GetVerticalScroll()
         local frac   = maxS > 0 and (cur / maxS) or 0
-        -- Clamped as well as clamping the scroll itself: the list can shrink
-        -- under a scroll offset that was valid for the longer one (the media
-        -- lists are rebuilt from LibSharedMedia on every open), and the thumb
-        -- must not be the thing that notices.
+        -- Clamped as well as clamping the scroll itself: the list can shrink under an
+        -- offset that was valid for the longer one (media lists are rebuilt on every
+        -- open), and the thumb mustn't be what notices.
         frac = math.max(0, math.min(1, frac))
         thumb:SetHeight(thumbH)
         thumb:ClearAllPoints()
@@ -962,8 +1333,8 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
             setScroll(dragStartScroll + delta * maxScroll() / (trackH - thumbH))
         end
     end)
-    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
+    thumb:SetScript("OnEnter", function(self) UI.tintBg(self, C.tabHover) end)
+    thumb:SetScript("OnLeave", function(self) UI.tintBg(self, C.tabIdle)  end)
 
     popup:EnableMouseWheel(true)
     popup:SetScript("OnMouseWheel", function(_, d)
@@ -984,10 +1355,10 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
     end
     catcher:SetScript("OnClick", close)
 
-    -- popup and catcher live on UIParent, so they survive the owning window
-    -- being hidden. OnHide fires on descendants when an ancestor hides, so this
-    -- tears the popup down with whatever panel the button belongs to —
-    -- otherwise the catcher stays up and eats every click on the world.
+    -- The popup and catcher live on UIParent, so they survive the owning window
+    -- hiding. OnHide fires on descendants when an ancestor hides, so this tears the
+    -- popup down with its panel — otherwise the catcher stays up and eats every
+    -- click on the world.
     btn:SetScript("OnHide", close)
 
     local function refreshColors()
@@ -998,10 +1369,9 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
         end
     end
 
-    -- (Re)populates the row pool from getItems() every time the popup opens, so
-    -- the list stays current when its source changes (e.g. profiles being added
-    -- or removed). Rows are pooled and reused; any surplus is hidden. btn._count
-    -- is the number of live items (the pool may be larger).
+    -- (Re)populates the row pool from getItems() on every open, so the list stays
+    -- current when its source changes. Rows are pooled and reused; surplus is
+    -- hidden. btn._count is the number of live items, since the pool may be larger.
     local function populate()
         local items = getItems()
         for i, name in ipairs(items) do
@@ -1028,7 +1398,7 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
                 row.lbl = lbl
 
                 row:SetScript("OnEnter", function(self)
-                    self.lbl:SetTextColor(unpack(C.textWhite))
+                    UI.tint(self.lbl, C.textWhite)
                 end)
                 row:SetScript("OnLeave", function(self)
                     self.lbl:SetTextColor(unpack(
@@ -1085,9 +1455,8 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
 
         popup:Show()
         catcher:Show()
-        -- Reset before anything else: the popup keeps its scroll offset between
-        -- openings, and a list that has since got shorter would open scrolled
-        -- past its own end.
+        -- Reset first: the popup keeps its scroll offset between openings, and a list
+        -- that has since got shorter would open scrolled past its own end.
         setScroll(0)
 
         -- Scroll so the selected item is centred in the visible window.
@@ -1101,8 +1470,9 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
         end
     end)
 
-    btn:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(C.red)) end)
-    btn:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    btn:SetScript("OnEnter", function(self) UI.tintBorder(self, C.red) end)
+    btn:SetScript("OnLeave", function(self) UI.tintBorder(self, C.tabBorder) end)
+    if opts then attachTooltip(btn, opts.tipTitle, opts.tipBody) end
 
     function btn:setValue(v)
         self._value = v
@@ -1114,41 +1484,22 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
     return btn
 end
 
-local function buildGeneralTabPanel(parent)
+-- Input / Debug / Minimap — the odds and ends that don't belong to a module.
+local function buildGeneralSettingsPanel(parent)
     local shell, panel = makeScrollPanel(parent)
-
-    local function getTTKData()
-        addon.db.settings.ttk = addon.db.settings.ttk or {
-            enabled  = false,
-            bossOnly = false,
-            fontSize = 24,
-            fontName = "Friz Quadrata TT",
-        }
-        return addon.db.settings.ttk
-    end
-
-    local function getLSM()
-        return LibStub and LibStub("LibSharedMedia-3.0", true)
-    end
-
-    local function getFontList()
-        local LSM = getLSM()
-        return (LSM and LSM:List("font")) or { "Friz Quadrata TT" }
-    end
 
     -- ── Input section ──────────────────────────────────────────────────────
     -- Drives Blizzard's ActionButtonUseKeyDown CVar, which decides whether a
-    -- keybind/click fires on the press (key down) or the release (key up). This
-    -- addon's action bars and trinket buttons both register for both phases and
-    -- follow this CVar, so it's the single switch for their key up/down feel.
-    -- The CVar is its own persistent store (saved by the client), so nothing is
-    -- kept in the addon DB — reading it back is always current.
+    -- keybind/click fires on press or release. The action bars and trinket buttons
+    -- register both phases and follow it, so this is the single switch for their
+    -- feel. The CVar is its own persistent store, so nothing is kept in the DB.
     local inputHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     inputHeader:SetPoint("TOPLEFT", 14, -14)
     inputHeader:SetText("Input")
-    inputHeader:SetTextColor(unpack(C.red))
+    UI.tint(inputHeader, C.red)
 
-    local keyDownCB = createCheckbox(panel, "Use abilities on key down (uncheck for key up)", 360)
+    local keyDownCB = createCheckbox(panel, "Use abilities on key down (uncheck for key up)", 360,
+        "Applies to this addon's action bars and trinket buttons. On: abilities fire the instant a key is pressed; off: on release. This is Blizzard's ActionButtonUseKeyDown setting, so it also affects the default action bars.")
     keyDownCB:SetPoint("TOPLEFT", inputHeader, "BOTTOMLEFT", 0, -10)
     keyDownCB.OnChange = function(self, checked)
         -- SetCVar for this key is blocked in combat; bounce the box back to the
@@ -1161,12 +1512,6 @@ local function buildGeneralTabPanel(parent)
         SetCVar("ActionButtonUseKeyDown", checked and "1" or "0")
     end
 
-    local keyDownHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    keyDownHint:SetPoint("TOPLEFT", keyDownCB, "BOTTOMLEFT", 20, -3)
-    keyDownHint:SetWidth(430); keyDownHint:SetJustifyH("LEFT")
-    keyDownHint:SetText("Applies to this addon's action bars and trinket buttons. On: abilities fire the instant a key is pressed; off: on release. This is Blizzard's ActionButtonUseKeyDown setting, so it also affects the default action bars.")
-    keyDownHint:SetTextColor(unpack(C.textDim))
-
     -- ── Debug section ──────────────────────────────────────────────────────
     local function getDebugData()
         addon.db.settings.particles       = addon.db.settings.particles or {}
@@ -1175,9 +1520,9 @@ local function buildGeneralTabPanel(parent)
     end
 
     local debugHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    debugHeader:SetPoint("TOPLEFT", keyDownHint, "BOTTOMLEFT", -20, -24)
+    debugHeader:SetPoint("TOPLEFT", keyDownCB, "BOTTOMLEFT", 0, -24)
     debugHeader:SetText("Debug")
-    debugHeader:SetTextColor(unpack(C.red))
+    UI.tint(debugHeader, C.red)
 
     local debugCB = createCheckbox(panel, "Show encounter messages in chat", 280)
     debugCB:SetPoint("TOPLEFT", debugHeader, "BOTTOMLEFT", 0, -10)
@@ -1189,7 +1534,7 @@ local function buildGeneralTabPanel(parent)
     local minimapHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     minimapHeader:SetPoint("TOPLEFT", debugCB, "BOTTOMLEFT", 0, -24)
     minimapHeader:SetText("Minimap")
-    minimapHeader:SetTextColor(unpack(C.red))
+    UI.tint(minimapHeader, C.red)
 
     local minimapHideCB = createCheckbox(panel, "Disable minimap button", 260)
     minimapHideCB:SetPoint("TOPLEFT", minimapHeader, "BOTTOMLEFT", 0, -10)
@@ -1201,11 +1546,38 @@ local function buildGeneralTabPanel(parent)
         end
     end
 
-    -- ── Time To Kill section ───────────────────────────────────────────────
+    local function refreshPanel()
+        keyDownCB:SetChecked(GetCVarBool("ActionButtonUseKeyDown"))
+        debugCB:SetChecked(getDebugData().enabled or false)
+        minimapHideCB:SetChecked(addon.db.minimap.hide or false)
+    end
+
+    shell:SetScript("OnShow", refreshPanel)
+
+    return shell
+end
+
+local function buildTTKPanel(parent)
+    local shell, panel = makeScrollPanel(parent)
+
+    local function getTTKData()
+        addon.db.settings.ttk = addon.db.settings.ttk or {
+            enabled  = false,
+            bossOnly = false,
+            fontSize = 24,
+            fontName = "Friz Quadrata TT",
+        }
+        return addon.db.settings.ttk
+    end
+
+    local function getFontList()
+        return addon.MediaList("font", { fallback = "Friz Quadrata TT" })
+    end
+
     local ttkHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    ttkHeader:SetPoint("TOPLEFT", minimapHideCB, "BOTTOMLEFT", 0, -24)
+    ttkHeader:SetPoint("TOPLEFT", 14, -14)
     ttkHeader:SetText("Time To Kill")
-    ttkHeader:SetTextColor(unpack(C.red))
+    UI.tint(ttkHeader, C.red)
 
     -- Enable checkbox
     local enableCB = createCheckbox(panel, "Enable Time To Kill", 260)
@@ -1231,7 +1603,7 @@ local function buildGeneralTabPanel(parent)
     local fontLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     fontLabel:SetPoint("TOPLEFT", bossOnlyCB, "BOTTOMLEFT", 0, -18)
     fontLabel:SetText("Font:")
-    fontLabel:SetTextColor(unpack(C.textWhite))
+    UI.tint(fontLabel, C.textWhite)
 
     local fontDropdown = createScrollDropdown(panel, 160, getFontList, function(name)
         getTTKData().fontName = name
@@ -1243,7 +1615,7 @@ local function buildGeneralTabPanel(parent)
     local sizeLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     sizeLabel:SetPoint("TOPLEFT", fontLabel, "BOTTOMLEFT", 0, -14)
     sizeLabel:SetText("Size:")
-    sizeLabel:SetTextColor(unpack(C.textWhite))
+    UI.tint(sizeLabel, C.textWhite)
 
     local sizeStepper = buildStepper(panel, {
         min = 10, max = 60, valueFont = "GameFontNormalLarge", valueColor = C.red,
@@ -1253,63 +1625,37 @@ local function buildGeneralTabPanel(parent)
     })
     sizeStepper:SetPoint("LEFT", sizeLabel, "RIGHT", 10, 0)
 
-    -- A clickable colour swatch opening WoW's native picker. RGB only — opacity
-    -- is a separate stepper here, so the two controls can't fight over alpha.
-    local function ttSwatch(parent, getRGB, setRGB, onChange)
-        local sw = CreateFrame("Button", nil, parent, "BackdropTemplate")
-        sw:SetSize(20, 20)
-        applyBackdrop(sw, 1, { 1, 1, 1 }, C.tabBorder)
-
-        local function paint()
-            local r, g, b = getRGB()
-            sw:SetBackdropColor(r or 1, g or 1, b or 1, 1)
-        end
-
-        sw:SetScript("OnClick", function()
-            local r, g, b = getRGB()
-            local function apply()
-                local nr, ng, nb = ColorPickerFrame:GetColorRGB()
-                setRGB(nr, ng, nb); paint(); if onChange then onChange() end
-            end
-            local function cancel()
-                setRGB(r, g, b); paint(); if onChange then onChange() end
-            end
-            if ColorPickerFrame.SetupColorPickerAndShow then
-                ColorPickerFrame:SetupColorPickerAndShow({
-                    r = r, g = g, b = b, hasOpacity = false,
-                    swatchFunc = apply, cancelFunc = cancel,
-                })
-            else
-                ColorPickerFrame.hasOpacity = false
-                ColorPickerFrame.func       = apply
-                ColorPickerFrame.cancelFunc = cancel
-                ColorPickerFrame:SetColorRGB(r, g, b)
-                ColorPickerFrame:Hide() -- force OnShow to refire with these values
-                ColorPickerFrame:Show()
-            end
-        end)
-
-        sw.Refresh = paint
-        paint()
-        return sw
+    local function refreshPanel()
+        local d  = getTTKData()
+        enableCB:SetChecked(d.enabled or false)
+        bossOnlyCB:SetChecked(d.bossOnly or false)
+        sizeStepper.Refresh()
+        fontDropdown:setValue(d.fontName or "Friz Quadrata TT")
     end
 
-    -- ── Tooltip section ──────────────────────────────────────────────────────
+    shell:SetScript("OnShow", refreshPanel)
+
+    return shell
+end
+
+local function buildTooltipPanel(parent)
+    local shell, panel = makeScrollPanel(parent)
+
     local function getTooltipData()
         addon.db.settings.tooltip = addon.db.settings.tooltip or {}
         return addon.db.settings.tooltip
     end
 
     local ttHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    ttHeader:SetPoint("TOPLEFT", sizeStepper, "BOTTOMLEFT", -10, -24)
+    ttHeader:SetPoint("TOPLEFT", 14, -14)
     ttHeader:SetText("Tooltip")
-    ttHeader:SetTextColor(unpack(C.red))
+    UI.tint(ttHeader, C.red)
 
     local ttDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     ttDesc:SetPoint("TOPLEFT", ttHeader, "BOTTOMLEFT", 0, -4)
     ttDesc:SetWidth(420); ttDesc:SetJustifyH("LEFT")
     ttDesc:SetText("Restyles the game tooltip (item/unit/etc.) to match this addon's theme.")
-    ttDesc:SetTextColor(unpack(C.textGrey))
+    UI.tint(ttDesc, C.textGrey)
 
     local ttEnableCB = createCheckbox(panel, "Enable custom tooltip skin", 300)
     ttEnableCB:SetPoint("TOPLEFT", ttDesc, "BOTTOMLEFT", 0, -10)
@@ -1336,7 +1682,6 @@ local function buildGeneralTabPanel(parent)
         getTooltipData().hideRealm = checked
     end
 
-    -- Guild name / rank on player tooltips, shown as "<Guild Name> [Guild Rank]".
     -- Rank only appears when the guild name is also shown (and the player is in a
     -- guild); both default on.
     local ttGuildCB = createCheckbox(panel, "Show guild name on unit tooltips", 340)
@@ -1363,47 +1708,38 @@ local function buildGeneralTabPanel(parent)
         getTooltipData().anchorCursor = checked
     end
 
-    local ttAnchorCB = createCheckbox(panel, "Use a movable tooltip anchor", 340)
+    local ttAnchorCB = createCheckbox(panel, "Use a movable tooltip anchor", 340,
+        "Parks the tooltip on a handle you can drag in Edit Mode. Cursor anchoring wins if both are ticked.")
     ttAnchorCB:SetPoint("TOPLEFT", ttCursorCB, "BOTTOMLEFT", 0, -6)
     ttAnchorCB.OnChange = function(_, checked)
         getTooltipData().useAnchor = checked
     end
 
-    local ttAnchorHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    ttAnchorHint:SetPoint("TOPLEFT", ttAnchorCB, "BOTTOMLEFT", 20, -4)
-    ttAnchorHint:SetWidth(420); ttAnchorHint:SetJustifyH("LEFT")
-    ttAnchorHint:SetText("Parks the tooltip on a handle you can drag in Edit Mode. Cursor anchoring wins if both are ticked.")
-    ttAnchorHint:SetTextColor(unpack(C.textDim))
-
     local function ttChanged()
         if addon.Tooltip then addon.Tooltip.refresh() end
     end
 
-    -- One colour serves two roles: it is the fallback whenever there is no
-    -- class/reaction tint to apply, and it is what the override below uses when
-    -- switched on. Two separate colours could disagree for no good reason.
+    -- One colour serves two roles: the fallback when there's no class/reaction tint,
+    -- and what the override below uses when switched on. Two separate colours could
+    -- disagree for no good reason.
     local ttBorderRow = CreateFrame("Frame", nil, panel)
     ttBorderRow:SetSize(320, 22)
-    ttBorderRow:SetPoint("TOPLEFT", ttAnchorHint, "BOTTOMLEFT", -20, -12)
+    ttBorderRow:SetPoint("TOPLEFT", ttAnchorCB, "BOTTOMLEFT", 0, -12)
     local ttBorderLbl = ttBorderRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     ttBorderLbl:SetPoint("LEFT", 0, 0); ttBorderLbl:SetWidth(150); ttBorderLbl:SetJustifyH("LEFT")
-    ttBorderLbl:SetText("Default border color:"); ttBorderLbl:SetTextColor(unpack(C.textGrey))
-    local ttBorderSwatch = ttSwatch(ttBorderRow,
+    ttBorderLbl:SetText("Default border color:"); UI.tint(ttBorderLbl, C.textGrey)
+    local ttBorderSwatch = createColorSwatch(ttBorderRow,
         function()
             local c = getTooltipData().borderColor or { 0.30, 0.31, 0.42 }
             return c[1], c[2], c[3]
         end,
         function(r, g, b) getTooltipData().borderColor = { r, g, b } end, ttChanged)
     ttBorderSwatch:SetPoint("LEFT", ttBorderLbl, "RIGHT", 6, 0)
-
-    local ttBorderHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    ttBorderHint:SetPoint("TOPLEFT", ttBorderRow, "BOTTOMLEFT", 0, -4)
-    ttBorderHint:SetWidth(420); ttBorderHint:SetJustifyH("LEFT")
-    ttBorderHint:SetText("Used whenever there is no class or reaction color to apply — items, spells, objects and the like.")
-    ttBorderHint:SetTextColor(unpack(C.textDim))
+    attachTooltip(ttBorderSwatch, "Default border color",
+        "Used whenever there is no class or reaction color to apply — items, spells, objects and the like.")
 
     local ttCustomBorderCB = createCheckbox(panel, "Use it for units too, ignoring class colors", 360)
-    ttCustomBorderCB:SetPoint("TOPLEFT", ttBorderHint, "BOTTOMLEFT", 0, -10)
+    ttCustomBorderCB:SetPoint("TOPLEFT", ttBorderRow, "BOTTOMLEFT", 0, -10)
     ttCustomBorderCB.OnChange = function(_, checked)
         getTooltipData().customBorder = checked
         ttChanged()
@@ -1414,8 +1750,8 @@ local function buildGeneralTabPanel(parent)
     ttBgRow:SetPoint("TOPLEFT", ttCustomBorderCB, "BOTTOMLEFT", 0, -10)
     local ttBgLbl = ttBgRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     ttBgLbl:SetPoint("LEFT", 0, 0); ttBgLbl:SetWidth(150); ttBgLbl:SetJustifyH("LEFT")
-    ttBgLbl:SetText("Background color:"); ttBgLbl:SetTextColor(unpack(C.textGrey))
-    local ttBgSwatch = ttSwatch(ttBgRow,
+    ttBgLbl:SetText("Background color:"); UI.tint(ttBgLbl, C.textGrey)
+    local ttBgSwatch = createColorSwatch(ttBgRow,
         function()
             local c = getTooltipData().bgColor or { 0.090, 0.098, 0.165 }
             return c[1], c[2], c[3]
@@ -1428,7 +1764,7 @@ local function buildGeneralTabPanel(parent)
     ttOpRow:SetPoint("TOPLEFT", ttBgRow, "BOTTOMLEFT", 0, -8)
     local ttOpLbl = ttOpRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     ttOpLbl:SetPoint("LEFT", 0, 0); ttOpLbl:SetWidth(150); ttOpLbl:SetJustifyH("LEFT")
-    ttOpLbl:SetText("Background opacity:"); ttOpLbl:SetTextColor(unpack(C.textGrey))
+    ttOpLbl:SetText("Background opacity:"); UI.tint(ttOpLbl, C.textGrey)
     local ttOpStepper = buildStepper(ttOpRow, {
         min = 0, max = 100, step = 5,
         get = function() return getTooltipData().bgOpacity or 100 end,
@@ -1438,19 +1774,9 @@ local function buildGeneralTabPanel(parent)
     ttOpStepper:SetPoint("LEFT", ttOpLbl, "RIGHT", 6, 0)
     local ttOpSuffix = ttOpRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     ttOpSuffix:SetPoint("LEFT", ttOpStepper.plus, "RIGHT", 6, 0)
-    ttOpSuffix:SetText("%"); ttOpSuffix:SetTextColor(unpack(C.textDim))
+    ttOpSuffix:SetText("%"); UI.tint(ttOpSuffix, C.textDim)
 
     local function refreshPanel()
-        local d  = getTTKData()
-        local fn = d.fontName or "Friz Quadrata TT"
-        keyDownCB:SetChecked(GetCVarBool("ActionButtonUseKeyDown"))
-        debugCB:SetChecked(getDebugData().enabled or false)
-        minimapHideCB:SetChecked(addon.db.minimap.hide or false)
-        enableCB:SetChecked(d.enabled or false)
-        bossOnlyCB:SetChecked(d.bossOnly or false)
-        sizeStepper.Refresh()
-        fontDropdown:setValue(fn)
-
         local td = getTooltipData()
         ttEnableCB:SetChecked(td.enabled ~= false)
         ttColorCB:SetChecked(td.colorByUnit ~= false)
@@ -1470,15 +1796,24 @@ local function buildGeneralTabPanel(parent)
     return shell
 end
 
+-- The top-level "General" tab: a sub-tab bar over the three panels above,
+-- matching how the Raid, Particles and Trinkets tabs are laid out.
+local function buildGeneralTabPanel(parent)
+    local panel, _, _, addSubTab = makeSubTabPanel(parent, { hidden = true })
 
--- Themed horizontal slider used in the Move UI bar (and the settings window's
--- own UI Scale slider, next to Edit Mode): [label] [track] [box]. The
--- typeable value box sits to the RIGHT of the track. opts = { label, min,
--- max, get, set, suffix }. Returns a row frame exposing :Refresh() to re-read
--- the current value from opts.get(). Defined ahead of createMainFrame()
--- (rather than left where it's mainly used, near the Move UI bar further
--- down) since createMainFrame's own UI Scale slider needs it as a local
--- upvalue, and Lua locals aren't visible to code written before them.
+    addSubTab("general", "General", 80, buildGeneralSettingsPanel)
+    addSubTab("ttk",     "TTK",     70, buildTTKPanel)
+    addSubTab("tooltip", "Tooltip", 90, buildTooltipPanel)
+
+    selectSubTab(panel, "general")
+    return panel
+end
+
+
+-- Themed horizontal slider for the Move UI bar and the window's UI Scale slider:
+-- [label] [track] [box]. opts = { label, min, max, get, set, suffix }; the row
+-- exposes :Refresh(). Defined ahead of createMainFrame(), which needs it as a
+-- local upvalue.
 local EDIT_SLIDER_TRACK_W = 110
 
 local function buildEditSlider(parent, opts)
@@ -1490,7 +1825,7 @@ local function buildEditSlider(parent, opts)
     label:SetPoint("LEFT", row, "LEFT", 0, 0)
     label:SetWidth(opts.labelWidth or 58); label:SetJustifyH("LEFT")
     label:SetText(opts.label)
-    label:SetTextColor(unpack(C.textWhite))
+    UI.tint(label, C.textWhite)
 
     local track = CreateFrame("Frame", nil, row, "BackdropTemplate")
     track:SetSize(EDIT_SLIDER_TRACK_W, 8)
@@ -1500,7 +1835,7 @@ local function buildEditSlider(parent, opts)
 
     local fill = track:CreateTexture(nil, "ARTWORK")
     fill:SetTexture(WHITE)
-    fill:SetVertexColor(unpack(C.red))
+    UI.tintTexture(fill, C.red)
     fill:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -1)
     fill:SetPoint("BOTTOMLEFT", track, "BOTTOMLEFT", 1, 1)
     fill:SetWidth(1)
@@ -1519,12 +1854,12 @@ local function buildEditSlider(parent, opts)
     box:SetSize(32, 16); box:SetPoint("CENTER")
     box:SetAutoFocus(false); box:SetMaxLetters(3)
     box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormal")
-    box:SetTextColor(unpack(C.textWhite))
+    UI.tint(box, C.textWhite)
 
     if opts.suffix then
         local suf = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         suf:SetPoint("LEFT", boxWrap, "RIGHT", 3, 0)
-        suf:SetText(opts.suffix); suf:SetTextColor(unpack(C.textGrey))
+        suf:SetText(opts.suffix); UI.tint(suf, C.textGrey)
     end
 
     local value    = mn
@@ -1549,28 +1884,20 @@ local function buildEditSlider(parent, opts)
     local function valFromCursor()
         local left = track:GetLeft()
         if not left then return value end
-        -- track:GetLeft() is reported in the track's OWN effective-scale
-        -- coordinate space, so the raw cursor position must be divided by that
-        -- same scale — NOT UIParent's. They're equal for sliders on an
-        -- unscaled parent (the Move UI bar), which is why this was fine there;
-        -- but the settings window's Scale slider lives inside a frame we
-        -- SetScale() ourselves, so using UIParent's scale here left the cursor
-        -- math off by a factor of the window's scale (unusable at 150%, jumpy
-        -- elsewhere). track:GetEffectiveScale() is correct in every case.
+        -- track:GetLeft() is in the track's OWN effective-scale space, so the cursor
+        -- position must be divided by that scale, NOT UIParent's. They're equal on an
+        -- unscaled parent, which is why this was fine for the Move UI bar — but the
+        -- Scale slider lives inside a frame we SetScale() ourselves.
         local x = GetCursorPosition() / track:GetEffectiveScale()
         local frac = math.max(0, math.min(1, (x - left) / EDIT_SLIDER_TRACK_W))
         return mn + frac * (mx - mn)
     end
 
-    -- opts.deferSet: for a slider whose opts.set() rescales one of the
-    -- slider's own ancestors (e.g. the UI Scale slider, which SetScale()s the
-    -- whole settings window it lives in), calling opts.set on every OnUpdate
-    -- tick during a drag is self-referential — rescaling the window mid-drag
-    -- shifts track:GetLeft()/width under the cursor, which throws off the
-    -- very next valFromCursor() call and spirals (observed as the thumb
-    -- jumping to max on a single click, or refusing to move at all once
-    -- already scaled up). Deferring the real opts.set() until the drag ends
-    -- keeps the track's geometry stable for the whole drag.
+    -- opts.deferSet: for a slider whose set() rescales one of its own ancestors (UI
+    -- Scale rescales the window it lives in), calling set every OnUpdate tick is
+    -- self-referential — rescaling mid-drag shifts track:GetLeft() under the cursor,
+    -- throwing off the next valFromCursor() and spiralling. Deferring the real set()
+    -- to drag end keeps the track's geometry stable.
     thumb:SetScript("OnMouseDown", function(_, b)
         if b ~= "LeftButton" then return end
         dragging = true
@@ -1580,11 +1907,11 @@ local function buildEditSlider(parent, opts)
         if b ~= "LeftButton" then return end
         dragging = false
         thumb:SetScript("OnUpdate", nil)
-        thumb:SetBackdropBorderColor(unpack(C.tabBorder))
+        UI.tintBorder(thumb, C.tabBorder)
         if opts.deferSet and opts.set then opts.set(value) end
     end)
-    thumb:SetScript("OnEnter", function() thumb:SetBackdropBorderColor(unpack(C.red)) end)
-    thumb:SetScript("OnLeave", function() if not dragging then thumb:SetBackdropBorderColor(unpack(C.tabBorder)) end end)
+    thumb:SetScript("OnEnter", function() UI.tintBorder(thumb, C.red) end)
+    thumb:SetScript("OnLeave", function() if not dragging then UI.tintBorder(thumb, C.tabBorder) end end)
 
     track:SetScript("OnMouseDown", function(_, b) if b == "LeftButton" then setValue(valFromCursor()) end end)
     track:EnableMouseWheel(true)
@@ -1598,8 +1925,8 @@ local function buildEditSlider(parent, opts)
     box:SetScript("OnEnterPressed", commit)
     box:SetScript("OnEditFocusLost", commit)
     box:SetScript("OnEscapePressed", function() box:SetText(tostring(value)); box:ClearFocus() end)
-    boxWrap:SetScript("OnEnter", function() boxWrap:SetBackdropBorderColor(unpack(C.red)) end)
-    boxWrap:SetScript("OnLeave", function() boxWrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    boxWrap:SetScript("OnEnter", function() UI.tintBorder(boxWrap, C.red) end)
+    boxWrap:SetScript("OnLeave", function() UI.tintBorder(boxWrap, C.tabBorder) end)
 
     function row:Refresh() setValue((opts.get and opts.get()) or mn, true) end
 
@@ -1607,10 +1934,9 @@ local function buildEditSlider(parent, opts)
     return row
 end
 
--- Compact [label] [-] [box] [+] [px] stepper used in the top bar for the window
--- width/height (moved there from the General tab). opts = { label, min, max,
--- step, get, set }. Returns a row frame exposing :Refresh() to re-read the
--- current value (e.g. after a corner-drag resize).
+-- Compact [label] [-] [box] [+] [px] stepper for the top bar's window
+-- width/height. Returns a row frame exposing :Refresh(), e.g. after a
+-- corner-drag resize.
 local function buildSizeStepper(parent, opts)
     local mn, mx, step = opts.min, opts.max, opts.step or 10
     local function cur() return (opts.get and opts.get()) or mn end
@@ -1622,14 +1948,14 @@ local function buildSizeStepper(parent, opts)
     label:SetPoint("LEFT", 0, 0)
     label:SetWidth(12); label:SetJustifyH("LEFT")
     label:SetText(opts.label)
-    label:SetTextColor(unpack(C.textWhite))
+    UI.tint(label, C.textWhite)
 
     local minus = CreateFrame("Button", nil, row, "BackdropTemplate")
     minus:SetSize(20, 20)
     minus:SetPoint("LEFT", label, "RIGHT", 6, 0)
     applyBackdrop(minus, 1, C.panelDark, C.tabBorder)
     local minusLbl = minus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    minusLbl:SetPoint("CENTER"); minusLbl:SetText("-"); minusLbl:SetTextColor(unpack(C.textWhite))
+    minusLbl:SetPoint("CENTER"); minusLbl:SetText("-"); UI.tint(minusLbl, C.textWhite)
 
     local boxWrap = CreateFrame("Frame", nil, row, "BackdropTemplate")
     boxWrap:SetSize(46, 20)
@@ -1638,25 +1964,23 @@ local function buildSizeStepper(parent, opts)
 
     local box = CreateFrame("EditBox", nil, boxWrap)
     box:SetSize(38, 16); box:SetPoint("CENTER")
-    -- Not SetNumeric(true): that WoW EditBox flag only allows digits 0-9,
-    -- silently stripping the "-" from any negative value (including one set
-    -- programmatically via SetText), which breaks any stepper whose range
-    -- dips below 0. tonumber() on commit below already rejects anything
-    -- that isn't a valid number, so free-form text is safe here.
+    -- Not SetNumeric(true): that flag allows only digits 0-9 and silently strips the
+    -- "-" from negative values (even ones set via SetText), breaking any stepper
+    -- whose range dips below 0. tonumber() on commit already rejects non-numbers.
     box:SetAutoFocus(false); box:SetMaxLetters(5)
     box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormalSmall")
-    box:SetTextColor(unpack(C.textWhite))
+    UI.tint(box, C.textWhite)
 
     local plus = CreateFrame("Button", nil, row, "BackdropTemplate")
     plus:SetSize(20, 20)
     plus:SetPoint("LEFT", boxWrap, "RIGHT", 4, 0)
     applyBackdrop(plus, 1, C.panelDark, C.tabBorder)
     local plusLbl = plus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    plusLbl:SetPoint("CENTER"); plusLbl:SetText("+"); plusLbl:SetTextColor(unpack(C.textWhite))
+    plusLbl:SetPoint("CENTER"); plusLbl:SetText("+"); UI.tint(plusLbl, C.textWhite)
 
     local suffix = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     suffix:SetPoint("LEFT", plus, "RIGHT", 4, 0)
-    suffix:SetText("px"); suffix:SetTextColor(unpack(C.textGrey))
+    suffix:SetText("px"); UI.tint(suffix, C.textGrey)
 
     local function refresh()
         if not box:HasFocus() then box:SetText(tostring(math.floor(cur() + 0.5))) end
@@ -1669,10 +1993,10 @@ local function buildSizeStepper(parent, opts)
 
     minus:SetScript("OnClick", function() commit(cur() - step) end)
     plus:SetScript("OnClick",  function() commit(cur() + step) end)
-    minus:SetScript("OnEnter", function() minus:SetBackdropBorderColor(unpack(C.red)) end)
-    minus:SetScript("OnLeave", function() minus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-    plus:SetScript("OnEnter",  function() plus:SetBackdropBorderColor(unpack(C.red)) end)
-    plus:SetScript("OnLeave",  function() plus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    minus:SetScript("OnEnter", function() UI.tintBorder(minus, C.red) end)
+    minus:SetScript("OnLeave", function() UI.tintBorder(minus, C.tabBorder) end)
+    plus:SetScript("OnEnter",  function() UI.tintBorder(plus, C.red) end)
+    plus:SetScript("OnLeave",  function() UI.tintBorder(plus, C.tabBorder) end)
 
     box:SetScript("OnEnterPressed", function()
         local n = tonumber(box:GetText())
@@ -1681,12 +2005,306 @@ local function buildSizeStepper(parent, opts)
     end)
     box:SetScript("OnEditFocusLost", refresh)
     box:SetScript("OnEscapePressed", function() refresh(); box:ClearFocus() end)
-    boxWrap:SetScript("OnEnter", function() boxWrap:SetBackdropBorderColor(unpack(C.red)) end)
-    boxWrap:SetScript("OnLeave", function() boxWrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    boxWrap:SetScript("OnEnter", function() UI.tintBorder(boxWrap, C.red) end)
+    boxWrap:SetScript("OnLeave", function() UI.tintBorder(boxWrap, C.tabBorder) end)
 
     row.Refresh = refresh
     refresh()
     return row
+end
+
+-- ── Colours popup ───────────────────────────────────────────────────────────
+-- Three levels, coarse to fine: whole-palette themes, accent presets that re-hue
+-- whatever is on, then one swatch per entry with its own opacity, plus window
+-- opacity and a reset. A floating window rather than a settings tab because it
+-- recolours the settings window itself, so it must stay readable while what's
+-- underneath changes — and it's themed from the palette it edits, so the swatch
+-- grid doubles as the preview.
+
+local SWATCH_ROWS  = 8    -- per column; UI.paletteOrder fills them top-down
+local SWATCH_ROW_H = 24
+local SWATCH_COL_W = 190
+-- Anchored at a fixed offset from the top rather than chained off the element
+-- before it: the hint wraps to two lines, and a chain would let a re-worded or
+-- localised one push the grid into the footer.
+local SWATCH_TOP   = 156
+local SWATCH_OPAC  = 36   -- the window-opacity row, between grid and footer
+
+-- Theme buttons: two rows of three, indented past the "Theme:" label.
+local THEME_BTN_W, THEME_BTN_H = 76, 20
+local THEME_PER_ROW = 3
+local THEME_X       = 68
+local SWATCH_FOOT  = 46
+
+-- Blizzard has shipped two colour-picker APIs and they disagree about alpha. The
+-- modern one returns the real value from GetColorAlpha(); the pre-10.2.5 one
+-- kept 1 - alpha, so that path is inverted in both directions.
+local function pickerAlpha()
+    if ColorPickerFrame.GetColorAlpha then return ColorPickerFrame:GetColorAlpha() end
+    local slider = _G.OpacitySliderFrame
+    if slider and slider.GetValue then return 1 - slider:GetValue() end
+    return 1
+end
+
+local function getColorsPopup()
+    if UI.colorsPopup then return UI.colorsPopup end
+
+    local panel = CreateFrame("Frame", "DrievColorsPopup", UIParent, "BackdropTemplate")
+    -- DIALOG, not the TOOLTIP the other floating panels use: it must sit above the
+    -- settings window (HIGH) but below ColorPickerFrame (FULLSCREEN_DIALOG), which
+    -- every swatch opens on top of it.
+    panel:SetFrameStrata("DIALOG")
+    applyBackdrop(panel, 2, C.panelBG, C.red)
+    panel:EnableMouse(true)
+    panel:SetMovable(true)
+    panel:RegisterForDrag("LeftButton")
+    panel:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    panel:SetScript("OnDragStop",  function(self) self:StopMovingOrSizing() end)
+    panel:Hide()
+
+    local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 14, -12)
+    title:SetText("Colors")
+    UI.tint(title, C.red)
+
+    closeButton(panel)
+
+    local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hint:SetPoint("TOPLEFT", 14, -38)
+    hint:SetWidth(SWATCH_COL_W * 2 - 14); hint:SetJustifyH("LEFT")
+    hint:SetText("Click a swatch to pick a color and its opacity, right-click it for that entry's default. Saved with the active profile.")
+    UI.tint(hint, C.textDim)
+
+    local swatches = {}
+
+    -- Refresh is the panel's rather than the swatch loop's, because a theme moves
+    -- the window-opacity readout too.
+    local themeLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    themeLbl:SetPoint("TOPLEFT", 14, -78)
+    themeLbl:SetText("Theme:")
+    UI.tint(themeLbl, C.textGrey)
+
+    -- Three to a row, which puts one accent's ramp on each row and keeps the popup
+    -- as wide as its two swatch columns rather than six buttons in a line.
+    for i, theme in ipairs(UI.themePresets) do
+        local col = (i - 1) % THEME_PER_ROW
+        local row = math.floor((i - 1) / THEME_PER_ROW)
+        local btn = flatButton(panel, theme.name, THEME_BTN_W, THEME_BTN_H, "GameFontNormalSmall")
+        btn:SetPoint("TOPLEFT", panel, "TOPLEFT",
+            THEME_X + col * (THEME_BTN_W + 5),
+            -74 - row * (THEME_BTN_H + 4))
+        btn:SetScript("OnClick", function()
+            UI.ApplyTheme(theme)
+            panel:Refresh()
+        end)
+    end
+
+    -- One click sets the accent and the two entries that shadow it, without touching
+    -- the neutral shades — so it re-hues the current theme rather than replacing it.
+    local presetLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    presetLbl:SetPoint("TOPLEFT", 14, -132)
+    presetLbl:SetText("Accent:")
+    UI.tint(presetLbl, C.textGrey)
+
+    local prevPreset
+    for _, preset in ipairs(UI.palettePresets) do
+        local btn = CreateFrame("Button", nil, panel, "BackdropTemplate")
+        btn:SetSize(16, 16)
+        applyBackdrop(btn, 1, preset.rgb, C.tabBorder)
+        if prevPreset then
+            btn:SetPoint("LEFT", prevPreset, "RIGHT", 5, 0)
+        else
+            btn:SetPoint("LEFT", presetLbl, "RIGHT", 8, 0)
+        end
+        btn:SetScript("OnEnter", function(self)
+            UI.tintBorder(self, C.textWhite)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(preset.name)
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnLeave", function(self)
+            UI.tintBorder(self, C.tabBorder)
+            GameTooltip:Hide()
+        end)
+        btn:SetScript("OnClick", function()
+            UI.ApplyPalettePreset(preset.rgb)
+            for _, sw in ipairs(swatches) do sw.Refresh() end
+        end)
+        prevPreset = btn
+    end
+
+    -- Left-click opens the native picker (live-previewing as you drag, opacity
+    -- included); right-click restores that entry's shipped colour.
+    local function paletteSwatch(key, labelText)
+        local sw = CreateFrame("Button", nil, panel, "BackdropTemplate")
+        sw:SetSize(18, 18)
+        -- Border only, no backdrop fill: the colour is a texture instead, so it
+        -- can be drawn *over* the two-tone backing below and show its alpha.
+        applyBackdrop(sw, 1, { 0, 0, 0, 0 }, C.tabBorder)
+        sw:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+
+        -- Half dark, half light: a colour below full alpha reads as a visible split down
+        -- the middle, which is the only way a flat swatch can show transparency.
+        local backDark = sw:CreateTexture(nil, "BACKGROUND")
+        backDark:SetColorTexture(0.13, 0.13, 0.16, 1)
+        backDark:SetPoint("TOPLEFT", 1, -1)
+        backDark:SetPoint("BOTTOMRIGHT", sw, "BOTTOM", 0, 1)
+
+        local backLight = sw:CreateTexture(nil, "BACKGROUND")
+        backLight:SetColorTexture(0.78, 0.78, 0.82, 1)
+        backLight:SetPoint("TOPLEFT", sw, "TOP", 0, -1)
+        backLight:SetPoint("BOTTOMRIGHT", -1, 1)
+
+        local fill = sw:CreateTexture(nil, "ARTWORK")
+        fill:SetPoint("TOPLEFT", 1, -1)
+        fill:SetPoint("BOTTOMRIGHT", -1, 1)
+
+        local function paint()
+            local r, g, b, a = UI.GetPaletteColor(key)
+            fill:SetColorTexture(r, g, b, a)
+            -- The percentage only earns its place once there's something to
+            -- say; at full opacity it would be noise on all sixteen rows.
+            if sw.rowLabel then
+                if a < 0.995 then
+                    sw.rowLabel:SetText(labelText .. "  " .. math.floor(a * 100 + 0.5) .. "%")
+                else
+                    sw.rowLabel:SetText(labelText)
+                end
+            end
+        end
+
+        sw:SetScript("OnClick", function(_, button)
+            if button == "RightButton" then
+                UI.ResetPaletteColor(key)
+                for _, s in ipairs(swatches) do s.Refresh() end
+                if panel.opacityStepper then panel.opacityStepper.Refresh() end
+                return
+            end
+            local r, g, b, a = UI.GetPaletteColor(key)
+            -- The stored override as it was before the picker opened (nil if this entry was
+            -- still on its default). Restoring that exact value on cancel keeps "never
+            -- touched" different from "set back to the default by hand", which is what lets
+            -- a future change to the shipped palette still reach this entry.
+            local s    = addon.db and addon.db.settings
+            local prev = s and s.uiColors and s.uiColors[key]
+            local function refreshAll()
+                for _, sw2 in ipairs(swatches) do sw2.Refresh() end
+                if panel.opacityStepper then panel.opacityStepper.Refresh() end
+            end
+            local function apply()
+                local nr, ng, nb = ColorPickerFrame:GetColorRGB()
+                UI.SetPaletteColor(key, nr, ng, nb, pickerAlpha())
+                refreshAll()
+            end
+            local function cancel()
+                if s then
+                    s.uiColors = s.uiColors or {}
+                    s.uiColors[key] = prev
+                    UI.ApplyPalette()
+                end
+                refreshAll()
+            end
+            if ColorPickerFrame.SetupColorPickerAndShow then
+                ColorPickerFrame:SetupColorPickerAndShow({
+                    r = r, g = g, b = b, opacity = a, hasOpacity = true,
+                    swatchFunc = apply, opacityFunc = apply, cancelFunc = cancel,
+                })
+            else
+                ColorPickerFrame.hasOpacity  = true
+                -- Inverted on this path: see pickerAlpha above.
+                ColorPickerFrame.opacity     = 1 - a
+                ColorPickerFrame.func        = apply
+                ColorPickerFrame.opacityFunc = apply
+                ColorPickerFrame.cancelFunc  = cancel
+                ColorPickerFrame:SetColorRGB(r, g, b)
+                ColorPickerFrame:Hide() -- force OnShow to refire with these values
+                ColorPickerFrame:Show()
+            end
+        end)
+
+        sw.Refresh = paint
+        paint()
+        return sw
+    end
+
+    for i, entry in ipairs(UI.paletteOrder) do
+        local col = math.floor((i - 1) / SWATCH_ROWS)
+        local row = (i - 1) % SWATCH_ROWS
+        local sw  = paletteSwatch(entry.key, entry.label)
+        sw:SetPoint("TOPLEFT", panel, "TOPLEFT",
+            14 + col * SWATCH_COL_W, -SWATCH_TOP - row * SWATCH_ROW_H)
+
+        local lbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        lbl:SetPoint("LEFT", sw, "RIGHT", 8, 0)
+        lbl:SetWidth(SWATCH_COL_W - 34); lbl:SetJustifyH("LEFT")
+        lbl:SetText(entry.label)
+        UI.tint(lbl, C.textGrey)
+
+        -- Handed to the swatch so its paint can append the opacity percentage.
+        sw.rowLabel = lbl
+        sw.Refresh()
+
+        swatches[#swatches + 1] = sw
+    end
+
+    -- One control for the three background shades at once, since doing it entry by
+    -- entry means keeping three alphas in step by hand.
+    local opacityLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    opacityLbl:SetPoint("TOPLEFT", 14, -(SWATCH_TOP + SWATCH_ROWS * SWATCH_ROW_H + 8))
+    opacityLbl:SetText("Window opacity:")
+    UI.tint(opacityLbl, C.textGrey)
+
+    local opacityStepper = buildStepper(panel, {
+        min = 10, max = 100, step = 5,
+        get = function() return UI.GetWindowOpacity() end,
+        set = function(v) UI.SetWindowOpacity(v) end,
+        onChange = function()
+            for _, sw in ipairs(swatches) do sw.Refresh() end
+        end,
+    })
+    opacityStepper:SetPoint("LEFT", opacityLbl, "RIGHT", 8, 0)
+    panel.opacityStepper = opacityStepper
+
+    local opacitySuffix = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    opacitySuffix:SetPoint("LEFT", opacityStepper.plus, "RIGHT", 6, 0)
+    opacitySuffix:SetText("%")
+    UI.tint(opacitySuffix, C.textDim)
+
+    local resetBtn = flatButton(panel, "Reset all", 90, 22)
+    resetBtn:SetPoint("BOTTOMLEFT", 14, 12)
+    resetBtn:SetScript("OnClick", function()
+        -- UI.showConfirmPopup rather than the local: the dialog is defined
+        -- further down the file and a plain local isn't visible from up here.
+        UI.showConfirmPopup({
+            title       = "Reset colors",
+            message     = "Put every color back to the addon default?",
+            confirmText = "Reset",
+            onConfirm   = function()
+                UI.ResetPalette()
+                panel:Refresh()
+            end,
+        })
+    end)
+
+    local doneBtn = flatButton(panel, "Done", 90, 22)
+    doneBtn:SetPoint("BOTTOMRIGHT", -14, 12)
+    doneBtn:SetScript("OnClick", function() panel:Hide() end)
+
+    panel:SetSize(SWATCH_COL_W * 2 + 28,
+        SWATCH_TOP + SWATCH_ROWS * SWATCH_ROW_H + SWATCH_OPAC + SWATCH_FOOT)
+    -- Same relaxed clamp as the settings window it anchors to — a strictly clamped
+    -- popup would visibly snap away from that anchor near the right edge. Applied
+    -- here rather than with the other frame setup, since the insets derive from size.
+    addon.ApplyOffscreenClamp(panel, true, true)
+
+    function panel:Refresh()
+        for _, sw in ipairs(swatches) do sw.Refresh() end
+        opacityStepper.Refresh()
+    end
+
+    tinsert(UISpecialFrames, "DrievColorsPopup")
+    UI.colorsPopup = panel
+    return panel
 end
 
 local SIDEBAR_W = 150
@@ -1695,10 +2313,9 @@ local MAX_WIN_W, MAX_WIN_H = 1800, 1200
 
 local function createMainFrame()
     local f = CreateFrame("Frame", "DrievSettingsFrame", UIParent, "BackdropTemplate")
-    -- Wider than before to make room for the left nav sidebar while keeping the
-    -- content area roughly the same width the panels were designed against.
-    -- Falls back to that default size until the user drags the resize grip
-    -- (see `sizer` below), which persists whatever size they land on.
+    -- Wider than before to make room for the nav sidebar while keeping the content
+    -- area roughly the width the panels were designed against. Used until the resize
+    -- grip persists something else.
     local savedW = addon.db and addon.db.settings and addon.db.settings.settingsWinW
     local savedH = addon.db and addon.db.settings and addon.db.settings.settingsWinH
     f:SetSize(savedW or 1000, savedH or 560)
@@ -1713,7 +2330,13 @@ local function createMainFrame()
         f:SetMinResize(MIN_WIN_W, MIN_WIN_H)
         if f.SetMaxResize then f:SetMaxResize(MAX_WIN_W, MAX_WIN_H) end
     end
-    f:SetClampedToScreen(true)
+    -- Draggable most of the way off screen, keeping a strip of the top bar to grab
+    -- it back by. Re-applied on every size change, since the insets derive from the
+    -- window's dimensions.
+    addon.ApplyOffscreenClamp(f, true, true)
+    f:HookScript("OnSizeChanged", function(self)
+        addon.ApplyOffscreenClamp(self, true, true)
+    end)
     f:EnableMouse(true)
     f:SetScale(addon.GetUIScale())
     applyBackdrop(f, 2, C.panelBG, C.red)
@@ -1722,7 +2345,9 @@ local function createMainFrame()
     -- Full-height left sidebar: brand header at the top, vertical nav below.
     -- Draggable (grabbing anywhere not on a nav button moves the window).
     local sidebar = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    sidebar:SetWidth(SIDEBAR_W)
+    -- +2 so the sidebar covers what was a 2px gutter down its right edge, rather
+    -- than the window backdrop showing through as a slit.
+    sidebar:SetWidth(SIDEBAR_W + 2)
     sidebar:SetPoint("TOPLEFT", 2, -2)
     sidebar:SetPoint("BOTTOMLEFT", 2, 2)
     applyBackdrop(sidebar, 1, C.panelDark)
@@ -1731,23 +2356,24 @@ local function createMainFrame()
     sidebar:SetScript("OnMouseDown", function() f:StartMoving() end)
     sidebar:SetScript("OnMouseUp",   function() f:StopMovingOrSizing() end)
 
+    -- Centred rather than left-aligned: anchoring by TOP centres each string on its
+    -- own width, so the version line sits under the middle of the title rather than
+    -- under its first letter.
     local title = sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 12, -12)
+    title:SetPoint("TOP", sidebar, "TOP", 0, -12)
     title:SetText("|cfffb2c36Driev's|r |cffffffffEssentials|r")
 
     local version = sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    version:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+    version:SetPoint("TOP", title, "BOTTOM", 0, -3)
     version:SetText("|cffaaaaaav" .. addon.version .. "|r")
 
     -- Top bar spanning only the content area (right of the sidebar). Holds the
     -- Edit Mode + close buttons; also draggable.
     local topBar = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    -- 40 (rather than 34): the extra height lets the content box sit just 2px
-    -- below the top bar — matching the 2px sidebar↔content gap — while still
-    -- dropping each panel's tab bar down far enough to line up with the first
-    -- sidebar nav button (see the content anchor below).
+    -- 40 rather than 34: the extra height lets the content box sit 2px below the top
+    -- bar while still lining each panel's tab bar up with the first nav button.
     topBar:SetHeight(40)
-    topBar:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 2, 0)
+    topBar:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 0, 0)
     topBar:SetPoint("TOPRIGHT", -2, -2)
     applyBackdrop(topBar, 1, C.panelDark)
     topBar:EnableMouse(true)
@@ -1761,9 +2387,9 @@ local function createMainFrame()
     local closeLabel = close:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     closeLabel:SetPoint("CENTER")
     closeLabel:SetText("X")
-    closeLabel:SetTextColor(unpack(C.red))
-    close:SetScript("OnEnter", function() closeLabel:SetTextColor(unpack(C.textWhite)) end)
-    close:SetScript("OnLeave", function() closeLabel:SetTextColor(unpack(C.red)) end)
+    UI.tint(closeLabel, C.red)
+    close:SetScript("OnEnter", function() UI.tint(closeLabel, C.textWhite) end)
+    close:SetScript("OnLeave", function() UI.tint(closeLabel, C.red) end)
     close:SetScript("OnClick", function() f:Hide() end)
 
     local moveUIBtn = flatButton(topBar, "Edit Mode", 90, 22)
@@ -1777,9 +2403,8 @@ local function createMainFrame()
     })
     scaleSlider:SetPoint("RIGHT", moveUIBtn, "LEFT", -14, 0)
 
-    -- Window width/height steppers, left of the Scale slider. They write the
-    -- same saved settingsWinW/H the resize grip persists (and are refreshed from
-    -- it — see sizer below), so typed size and corner-drag stay in sync.
+    -- These write the same saved settingsWinW/H the resize grip persists (and are
+    -- refreshed from it), so typed size and corner-drag stay in sync.
     local heightStepper = buildSizeStepper(topBar, {
         label = "H", min = MIN_WIN_H, max = MAX_WIN_H, step = 10,
         get = function() return math.floor(f:GetHeight() + 0.5) end,
@@ -1800,19 +2425,36 @@ local function createMainFrame()
     })
     widthStepper:SetPoint("RIGHT", heightStepper, "LEFT", -10, 0)
 
+    -- Anchored to the settings window rather than parented to it, so it stays put
+    -- and readable while the window it is recolouring redraws underneath.
+    local colorsBtn = flatButton(topBar, "Colors", 70, 22)
+    colorsBtn:SetPoint("RIGHT", widthStepper, "LEFT", -14, 0)
+    colorsBtn:SetScript("OnClick", function()
+        local popup = getColorsPopup()
+        if popup:IsShown() then
+            popup:Hide()
+        else
+            popup:SetScale(addon.GetUIScale())
+            popup:ClearAllPoints()
+            popup:SetPoint("TOPLEFT", f, "TOPRIGHT", 8, 0)
+            popup:Refresh()
+            popup:Show()
+        end
+    end)
+    f:HookScript("OnHide", function()
+        if UI.colorsPopup then UI.colorsPopup:Hide() end
+    end)
+
     local content = CreateFrame("Frame", nil, f, "BackdropTemplate")
-    -- 2px gap below the top bar, matching the 2px sidebar↔content gap. The tab
-    -- bars still line up with the sidebar nav because the top bar is 6px taller
-    -- than its contents need (see topBar:SetHeight above).
+    -- 2px gap below the top bar. The tab bars still line up with the sidebar nav
+    -- because the top bar is 6px taller than its contents need.
     content:SetPoint("TOPLEFT", topBar, "BOTTOMLEFT", 0, -2)
     content:SetPoint("BOTTOMRIGHT", -2, 2)
     applyBackdrop(content, 1, C.panelDeep)
 
-    -- Resize grip, bottom-right corner. Leaves the window's own edges alone
-    -- (no visible frame of its own) and just starts/stops a native resize;
-    -- every panel already re-anchors off `content`'s edges, and
-    -- attachScrollTrack's SCROLLBAR_BOTTOM_CLEARANCE keeps this from
-    -- overlapping a tab's scrollbar.
+    -- Resize grip, bottom-right. Leaves the window's edges alone and just
+    -- starts/stops a native resize; every panel re-anchors off `content`, and
+    -- attachScrollTrack's bottom clearance keeps this off a tab's scrollbar.
     local sizer = CreateFrame("Button", nil, f)
     sizer:SetSize(16, 16)
     sizer:SetPoint("BOTTOMRIGHT", -3, 3)
@@ -1845,10 +2487,9 @@ local function createMainFrame()
 end
 
 -- ── Profile export/import popup ─────────────────────────────────────────────
--- One shared floating window, repurposed for both showing an export string
--- (read-focused, pre-selected for Ctrl+C) and pasting an import string
--- (empty, with an Import button). Mirrors getPositionEditor's floating-panel
--- style (draggable TOOLTIP-strata BackdropTemplate frame with an "X" close).
+-- One shared floating window for both showing an export string (pre-selected for
+-- Ctrl+C) and pasting an import string. Same floating-panel style as
+-- getPositionEditor.
 
 local function getTextPopup()
     if UI.textPopup then return UI.textPopup end
@@ -1866,34 +2507,26 @@ local function getTextPopup()
     panel:SetScript("OnDragStop",  function(self) self:StopMovingOrSizing() end)
     panel:Hide()
 
-    -- Every element below is a fixed size and anchored via single-point
-    -- TOP/BOTTOM chains centered on the previous element, rather than
-    -- TOPLEFT+TOPRIGHT pairs relative to the (variable-width) title text —
-    -- otherwise the popup's width would shift depending on how long the
-    -- title/hint text happens to be (e.g. a long profile name).
+    -- Every element is a fixed size anchored via single-point TOP/BOTTOM chains
+    -- centred on the previous one, rather than TOPLEFT+TOPRIGHT pairs relative to
+    -- the variable-width title — otherwise the popup's width would shift with how
+    -- long the title happens to be.
     local CONTENT_W = 420
 
     local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", panel, "TOP", 0, -12)
     title:SetWidth(CONTENT_W)
     title:SetJustifyH("CENTER")
-    title:SetTextColor(unpack(C.red))
+    UI.tint(title, C.red)
     panel.title = title
 
-    local closeBtn = CreateFrame("Button", nil, panel)
-    closeBtn:SetSize(18, 18)
-    closeBtn:SetPoint("TOPRIGHT", -8, -8)
-    local closeLbl = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    closeLbl:SetPoint("CENTER"); closeLbl:SetText("X"); closeLbl:SetTextColor(unpack(C.red))
-    closeBtn:SetScript("OnEnter", function() closeLbl:SetTextColor(unpack(C.textWhite)) end)
-    closeBtn:SetScript("OnLeave", function() closeLbl:SetTextColor(unpack(C.red)) end)
-    closeBtn:SetScript("OnClick", function() panel:Hide() end)
+    closeButton(panel)
 
     local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("TOP", title, "BOTTOM", 0, -8)
     hint:SetWidth(CONTENT_W)
     hint:SetJustifyH("CENTER")
-    hint:SetTextColor(unpack(C.textGrey))
+    UI.tint(hint, C.textGrey)
     panel.hint = hint
 
     -- Import-only: profile name to import into. Hidden for Export, where the
@@ -1909,7 +2542,7 @@ local function getTextPopup()
     nameEdit:SetAutoFocus(false)
     nameEdit:SetMaxLetters(32)
     nameEdit:SetFontObject("GameFontNormal")
-    nameEdit:SetTextColor(unpack(C.textWhite))
+    UI.tint(nameEdit, C.textWhite)
     nameEdit:SetTextInsets(4, 4, 0, 0)
     nameEdit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     panel.nameRow, panel.nameEdit = nameRow, nameEdit
@@ -1927,9 +2560,8 @@ local function getTextPopup()
     applyBackdrop(scrollWrap, 1, C.panelDark, C.tabBorder)
     panel.scrollWrap = scrollWrap
 
-    -- Plain ScrollFrame (no template) — the scrollbar below is hand-built to
-    -- match the themed track/thumb used by the font-picker dropdown
-    -- (createScrollDropdown) instead of the default Blizzard scrollbar.
+    -- Plain ScrollFrame (no template): the scrollbar below is hand-built to match
+    -- the themed track/thumb used elsewhere rather than Blizzard's default.
     local scroll = CreateFrame("ScrollFrame", nil, scrollWrap)
     scroll:SetPoint("TOPLEFT", 6, -6)
     scroll:SetPoint("BOTTOMRIGHT", -(SB_W + 8), 6)
@@ -1938,7 +2570,7 @@ local function getTextPopup()
     box:SetMultiLine(true)
     box:SetAutoFocus(false)
     box:SetFontObject("ChatFontNormal")
-    box:SetTextColor(unpack(C.textWhite))
+    UI.tint(box, C.textWhite)
     box:SetWidth(CONTENT_W - SB_W - 40)
     box:SetHeight(500)
     box:EnableMouse(true)
@@ -2002,8 +2634,8 @@ local function getTextPopup()
             updateThumb()
         end
     end)
-    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
+    thumb:SetScript("OnEnter", function(self) UI.tintBg(self, C.tabHover) end)
+    thumb:SetScript("OnLeave", function(self) UI.tintBg(self, C.tabIdle)  end)
 
     scrollWrap:EnableMouseWheel(true)
     scrollWrap:SetScript("OnMouseWheel", function(_, d)
@@ -2012,10 +2644,8 @@ local function getTextPopup()
         updateThumb()
     end)
 
-    -- The visible area is much shorter than the box itself (SetHeight(500)),
-    -- so clicking on blank space below short text still needs to focus it —
-    -- forward clicks on the wrapper/scroll frame to the EditBox explicitly
-    -- rather than relying solely on the box's own (smaller) hit region.
+    -- The visible area is much shorter than the box itself, so clicking blank space
+    -- below short text still needs to focus it — forward those clicks explicitly.
     scrollWrap:EnableMouse(true)
     scrollWrap:SetScript("OnMouseDown", function() box:SetFocus() end)
     scroll:EnableMouse(true)
@@ -2025,7 +2655,7 @@ local function getTextPopup()
     errText:SetPoint("TOP", scrollWrap, "BOTTOM", 0, -8)
     errText:SetWidth(CONTENT_W)
     errText:SetJustifyH("CENTER")
-    errText:SetTextColor(unpack(C.red))
+    UI.tint(errText, C.red)
     panel.errText = errText
 
     local actionBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
@@ -2033,9 +2663,9 @@ local function getTextPopup()
     actionBtn:SetPoint("BOTTOM", panel, "BOTTOM", 0, 14)
     applyBackdrop(actionBtn, 1, C.panelDark, C.tabBorder)
     local actionLbl = actionBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    actionLbl:SetPoint("CENTER"); actionLbl:SetTextColor(unpack(C.textWhite))
-    actionBtn:SetScript("OnEnter", function() actionBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    actionBtn:SetScript("OnLeave", function() actionBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    actionLbl:SetPoint("CENTER"); UI.tint(actionLbl, C.textWhite)
+    actionBtn:SetScript("OnEnter", function() UI.tintBorder(actionBtn, C.red) end)
+    actionBtn:SetScript("OnLeave", function() UI.tintBorder(actionBtn, C.tabBorder) end)
     panel.actionBtn, panel.actionLbl = actionBtn, actionLbl
 
     UI.textPopup = panel
@@ -2043,14 +2673,14 @@ local function getTextPopup()
 end
 
 -- The one big-text-box dialog, driven entirely by its caller so it covers both
--- directions: showing a string to copy, and taking one to paste. Exposed to
--- module addons through UI.widgets (Item Rack exports its sets with it).
+-- directions: showing a string to copy and taking one to paste. Exposed to
+-- modules via UI.widgets (Item Rack exports its sets with it).
 --
 -- opts = {
 --   title, hint, text, error,   -- what to display
---   showName, name,             -- show (and prefill) the name row above the box
+--   showName, name,             -- show (and prefill) the name row
 --   actionText,                 -- label on the bottom button
---   selectAll,                  -- focus the box and pre-select it, for exports
+--   selectAll,                  -- focus and pre-select the box, for exports
 --   onAction(name, text)        -- true to close, or nil + message to stay open
 -- }
 local function showTextPopup(opts)
@@ -2141,14 +2771,14 @@ local function getConfirmPopup()
     title:SetPoint("TOP", panel, "TOP", 0, -14)
     title:SetWidth(CONTENT_W)
     title:SetJustifyH("CENTER")
-    title:SetTextColor(unpack(C.red))
+    UI.tint(title, C.red)
     panel.title = title
 
     local message = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     message:SetPoint("TOP", title, "BOTTOM", 0, -16)
     message:SetWidth(CONTENT_W)
     message:SetJustifyH("CENTER")
-    message:SetTextColor(unpack(C.textWhite))
+    UI.tint(message, C.textWhite)
     panel.message = message
 
     local cancelBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
@@ -2156,9 +2786,9 @@ local function getConfirmPopup()
     cancelBtn:SetPoint("BOTTOMLEFT", panel, "BOTTOM", 6, 16)
     applyBackdrop(cancelBtn, 1, C.panelDark, C.tabBorder)
     local cancelLbl = cancelBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cancelLbl:SetPoint("CENTER"); cancelLbl:SetText("Cancel"); cancelLbl:SetTextColor(unpack(C.textWhite))
-    cancelBtn:SetScript("OnEnter", function() cancelBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    cancelBtn:SetScript("OnLeave", function() cancelBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    cancelLbl:SetPoint("CENTER"); cancelLbl:SetText("Cancel"); UI.tint(cancelLbl, C.textWhite)
+    cancelBtn:SetScript("OnEnter", function() UI.tintBorder(cancelBtn, C.red) end)
+    cancelBtn:SetScript("OnLeave", function() UI.tintBorder(cancelBtn, C.tabBorder) end)
     cancelBtn:SetScript("OnClick", function() panel:Hide() end)
     panel.cancelBtn = cancelBtn
 
@@ -2175,9 +2805,9 @@ local function getConfirmPopup()
     confirmBtn:SetPoint("BOTTOMRIGHT", panel, "BOTTOM", -6, 16)
     applyBackdrop(confirmBtn, 1, C.panelDark, C.tabBorder)
     local confirmLbl = confirmBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    confirmLbl:SetPoint("CENTER"); confirmLbl:SetTextColor(unpack(C.textWhite))
-    confirmBtn:SetScript("OnEnter", function() confirmBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    confirmBtn:SetScript("OnLeave", function() confirmBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    confirmLbl:SetPoint("CENTER"); UI.tint(confirmLbl, C.textWhite)
+    confirmBtn:SetScript("OnEnter", function() UI.tintBorder(confirmBtn, C.red) end)
+    confirmBtn:SetScript("OnLeave", function() UI.tintBorder(confirmBtn, C.tabBorder) end)
     panel.confirmBtn, panel.confirmLbl = confirmBtn, confirmLbl
 
     UI.confirmPopup = panel
@@ -2207,13 +2837,10 @@ end
 UI.showConfirmPopup = showConfirmPopup
 
 -- ── Themed check-list popup ──────────────────────────────────────────────────
--- Same floating-panel look as the two dialogs above, but the body is a
--- scrollable list of tickable rows: "pick which of these to act on". Item Rack
--- uses it both for choosing which sets to export and for deciding, set by set,
--- which incoming sets may overwrite one of the same name.
---
--- Rows are pooled on the shared panel and re-labelled per call, so reopening
--- the dialog never leaks frames.
+-- Same floating-panel look as the dialogs above, but the body is a scrollable
+-- list of tickable rows. Item Rack uses it to choose which sets to export, and
+-- to decide set by set which incoming sets may overwrite one of the same name.
+-- Rows are pooled and re-labelled per call, so reopening never leaks frames.
 
 local LIST_ROW_H = 22
 
@@ -2239,23 +2866,16 @@ local function getListPopup()
     title:SetPoint("TOP", panel, "TOP", 0, -12)
     title:SetWidth(CONTENT_W)
     title:SetJustifyH("CENTER")
-    title:SetTextColor(unpack(C.red))
+    UI.tint(title, C.red)
     panel.title = title
 
-    local closeBtn = CreateFrame("Button", nil, panel)
-    closeBtn:SetSize(18, 18)
-    closeBtn:SetPoint("TOPRIGHT", -8, -8)
-    local closeLbl = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    closeLbl:SetPoint("CENTER"); closeLbl:SetText("X"); closeLbl:SetTextColor(unpack(C.red))
-    closeBtn:SetScript("OnEnter", function() closeLbl:SetTextColor(unpack(C.textWhite)) end)
-    closeBtn:SetScript("OnLeave", function() closeLbl:SetTextColor(unpack(C.red)) end)
-    closeBtn:SetScript("OnClick", function() panel:Hide() end)
+    closeButton(panel)
 
     local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("TOP", title, "BOTTOM", 0, -8)
     hint:SetWidth(CONTENT_W)
     hint:SetJustifyH("CENTER")
-    hint:SetTextColor(unpack(C.textGrey))
+    UI.tint(hint, C.textGrey)
     panel.hint = hint
 
     -- Hung off the hint rather than a fixed offset from the top: the hint is a
@@ -2282,7 +2902,7 @@ local function getListPopup()
 
     local countText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     countText:SetPoint("BOTTOMRIGHT", listWrap, "TOPRIGHT", -2, 9)
-    countText:SetTextColor(unpack(C.textGrey))
+    UI.tint(countText, C.textGrey)
     panel.countText = countText
 
     local scroll = CreateFrame("ScrollFrame", nil, listWrap)
@@ -2305,7 +2925,7 @@ local function getListPopup()
     emptyText:SetPoint("TOPLEFT", 4, -8)
     emptyText:SetWidth(CONTENT_W - SCROLLBAR_W - 28)
     emptyText:SetJustifyH("LEFT")
-    emptyText:SetTextColor(unpack(C.textDim))
+    UI.tint(emptyText, C.textDim)
     emptyText:Hide()
     panel.emptyText = emptyText
 
@@ -2313,7 +2933,7 @@ local function getListPopup()
     errText:SetPoint("BOTTOM", panel, "BOTTOM", 0, 46)
     errText:SetWidth(CONTENT_W)
     errText:SetJustifyH("CENTER")
-    errText:SetTextColor(unpack(C.red))
+    UI.tint(errText, C.red)
     panel.errText = errText
 
     -- Two buttons side by side when the caller wants a secondary action
@@ -2352,7 +2972,7 @@ local function listPopupRow(panel, index)
     local hl = row:CreateTexture(nil, "BACKGROUND")
     hl:SetAllPoints()
     hl:SetTexture(WHITE)
-    hl:SetVertexColor(unpack(C.tabHover))
+    UI.tintTexture(hl, C.tabHover)
     hl:SetAlpha(0.35)
     hl:Hide()
 
@@ -2365,7 +2985,7 @@ local function listPopupRow(panel, index)
     fill:SetTexture(WHITE)
     fill:SetPoint("TOPLEFT", 2, -2)
     fill:SetPoint("BOTTOMRIGHT", -2, 2)
-    fill:SetVertexColor(unpack(C.red))
+    UI.tintTexture(fill, C.red)
     fill:Hide()
 
     local icon = row:CreateTexture(nil, "ARTWORK")
@@ -2378,17 +2998,17 @@ local function listPopupRow(panel, index)
     text:SetPoint("LEFT", box, "RIGHT", 6, 0)
     text:SetPoint("RIGHT", row, "RIGHT", -6, 0)
     text:SetJustifyH("LEFT")
-    text:SetTextColor(unpack(C.textWhite))
+    UI.tint(text, C.textWhite)
 
     row.box, row.fill, row.icon, row.text = box, fill, icon, text
 
     row:SetScript("OnEnter", function(self)
         hl:Show()
-        box:SetBackdropBorderColor(unpack(C.red))
+        UI.tintBorder(box, C.red)
     end)
     row:SetScript("OnLeave", function()
         hl:Hide()
-        box:SetBackdropBorderColor(unpack(C.checkBorder))
+        UI.tintBorder(box, C.checkBorder)
     end)
     row:SetScript("OnClick", function(self)
         if not self.item then return end
@@ -2409,11 +3029,11 @@ end
 --   title, hint, emptyText,
 --   items = { { key, label, icon, checked }, ... },   -- `key` defaults to label
 --   actionText, onAction(keys, items)  -- true closes, nil + message stays open
---   altText,    onAlt()                -- optional second button (e.g. Export All)
---   onCancel,                          -- fires on any dismissal without acting
+--   altText,    onAlt()                -- optional second button
+--   onCancel,                          -- fires on dismissal without acting
 -- }
--- Item `checked` flags are mutated in place, so a caller holding onto `items`
--- can read the final state itself instead of the key array.
+-- Item `checked` flags are mutated in place, so a caller holding `items` can
+-- read the final state itself.
 local function showCheckListPopup(opts)
     local panel = getListPopup()
     local items = opts.items or {}
@@ -2537,19 +3157,19 @@ local function buildProfilesPanel(parent)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
     header:SetText("Profiles")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
     desc:SetWidth(560); desc:SetJustifyH("LEFT")
     desc:SetText("Every setting and saved position belongs to a profile. Switch profiles to use a different setup on this character — handy for separate configs per character or class.")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
     -- ── Create new profile ────────────────────────────────────────────────
     local newHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     newHeader:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -20)
     newHeader:SetText("New Profile")
-    newHeader:SetTextColor(unpack(C.red))
+    UI.tint(newHeader, C.red)
 
     local nameBoxWrap = CreateFrame("Frame", nil, panel, "BackdropTemplate")
     nameBoxWrap:SetSize(220, 24)
@@ -2562,7 +3182,7 @@ local function buildProfilesPanel(parent)
     nameBox:SetAutoFocus(false)
     nameBox:SetMaxLetters(32)
     nameBox:SetFontObject("GameFontNormal")
-    nameBox:SetTextColor(unpack(C.textWhite))
+    UI.tint(nameBox, C.textWhite)
     nameBox:SetTextInsets(4, 4, 0, 0)
 
     local createBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
@@ -2570,44 +3190,44 @@ local function buildProfilesPanel(parent)
     createBtn:SetPoint("LEFT", nameBoxWrap, "RIGHT", 8, 0)
     applyBackdrop(createBtn, 1, C.panelDark, C.tabBorder)
     local createLbl = createBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    createLbl:SetPoint("CENTER"); createLbl:SetText("Create"); createLbl:SetTextColor(unpack(C.textWhite))
-    createBtn:SetScript("OnEnter", function() createBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    createBtn:SetScript("OnLeave", function() createBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    createLbl:SetPoint("CENTER"); createLbl:SetText("Create"); UI.tint(createLbl, C.textWhite)
+    createBtn:SetScript("OnEnter", function() UI.tintBorder(createBtn, C.red) end)
+    createBtn:SetScript("OnLeave", function() UI.tintBorder(createBtn, C.tabBorder) end)
 
     local importBtn = CreateFrame("Button", nil, panel, "BackdropTemplate")
     importBtn:SetSize(120, 24)
     importBtn:SetPoint("LEFT", createBtn, "RIGHT", 8, 0)
     applyBackdrop(importBtn, 1, C.panelDark, C.tabBorder)
     local importLbl = importBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    importLbl:SetPoint("CENTER"); importLbl:SetText("Import Profile"); importLbl:SetTextColor(unpack(C.textWhite))
-    importBtn:SetScript("OnEnter", function() importBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    importBtn:SetScript("OnLeave", function() importBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    importLbl:SetPoint("CENTER"); importLbl:SetText("Import Profile"); UI.tint(importLbl, C.textWhite)
+    importBtn:SetScript("OnEnter", function() UI.tintBorder(importBtn, C.red) end)
+    importBtn:SetScript("OnLeave", function() UI.tintBorder(importBtn, C.tabBorder) end)
 
     local errText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     errText:SetPoint("TOPLEFT", nameBoxWrap, "BOTTOMLEFT", 0, -6)
-    errText:SetTextColor(unpack(C.red))
+    UI.tint(errText, C.red)
     errText:SetText("")
 
     -- ── Copy profile ──────────────────────────────────────────────────────
-    -- Pick a source and a destination profile, then Copy (with a confirm
-    -- prompt) to overwrite the destination with the source's settings.
+    -- Pick a source and destination, then Copy (with a confirm prompt) to overwrite
+    -- the destination with the source's settings.
     local copyHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     copyHeader:SetPoint("TOPLEFT", errText, "BOTTOMLEFT", 0, -20)
     copyHeader:SetText("Copy Profile")
-    copyHeader:SetTextColor(unpack(C.red))
+    UI.tint(copyHeader, C.red)
 
     local copyDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     copyDesc:SetPoint("TOPLEFT", copyHeader, "BOTTOMLEFT", 0, -4)
     copyDesc:SetWidth(560); copyDesc:SetJustifyH("LEFT")
     copyDesc:SetText("Overwrite one profile's settings with a copy of another's.")
-    copyDesc:SetTextColor(unpack(C.textGrey))
+    UI.tint(copyDesc, C.textGrey)
 
     local copyFrom, copyTo
 
     local fromLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     fromLbl:SetPoint("TOPLEFT", copyDesc, "BOTTOMLEFT", 0, -12)
     fromLbl:SetText("From:")
-    fromLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(fromLbl, C.textGrey)
 
     local fromDD = createScrollDropdown(panel, 150,
         function() return addon.GetProfileList() end,
@@ -2617,7 +3237,7 @@ local function buildProfilesPanel(parent)
     local toLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     toLbl:SetPoint("LEFT", fromDD, "RIGHT", 14, 0)
     toLbl:SetText("To:")
-    toLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(toLbl, C.textGrey)
 
     local toDD = createScrollDropdown(panel, 150,
         function() return addon.GetProfileList() end,
@@ -2626,7 +3246,7 @@ local function buildProfilesPanel(parent)
 
     local copyErr = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     copyErr:SetPoint("TOPLEFT", fromLbl, "BOTTOMLEFT", 0, -12)
-    copyErr:SetTextColor(unpack(C.red))
+    UI.tint(copyErr, C.red)
     copyErr:SetText("")
 
     local copyBtn = flatButton(panel, "Copy", 80, 22)
@@ -2657,7 +3277,7 @@ local function buildProfilesPanel(parent)
     local listHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     listHeader:SetPoint("TOPLEFT", copyErr, "BOTTOMLEFT", 0, -20)
     listHeader:SetText("Existing Profiles")
-    listHeader:SetTextColor(unpack(C.red))
+    UI.tint(listHeader, C.red)
 
     local rows = {}
     local ROW_W, ROW_H = 540, 26
@@ -2669,13 +3289,13 @@ local function buildProfilesPanel(parent)
 
         local nameFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         nameFS:SetPoint("LEFT", 8, 0)
-        nameFS:SetTextColor(unpack(C.textWhite))
+        UI.tint(nameFS, C.textWhite)
         row.nameFS = nameFS
 
         local activeFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         activeFS:SetPoint("LEFT", nameFS, "RIGHT", 8, 0)
         activeFS:SetText("(active on this character)")
-        activeFS:SetTextColor(unpack(C.red))
+        UI.tint(activeFS, C.red)
         row.activeFS = activeFS
 
         local deleteBtn = CreateFrame("Button", nil, row, "BackdropTemplate")
@@ -2684,8 +3304,8 @@ local function buildProfilesPanel(parent)
         applyBackdrop(deleteBtn, 1, C.panelDark, C.tabBorder)
         local deleteLbl = deleteBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         deleteLbl:SetPoint("CENTER"); deleteLbl:SetText("Delete")
-        deleteBtn:SetScript("OnEnter", function() if row.canDelete then deleteBtn:SetBackdropBorderColor(unpack(C.red)) end end)
-        deleteBtn:SetScript("OnLeave", function() deleteBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        deleteBtn:SetScript("OnEnter", function() if row.canDelete then UI.tintBorder(deleteBtn, C.red) end end)
+        deleteBtn:SetScript("OnLeave", function() UI.tintBorder(deleteBtn, C.tabBorder) end)
         row.deleteBtn, row.deleteLbl = deleteBtn, deleteLbl
 
         local switchBtn = CreateFrame("Button", nil, row, "BackdropTemplate")
@@ -2693,9 +3313,9 @@ local function buildProfilesPanel(parent)
         switchBtn:SetPoint("RIGHT", deleteBtn, "LEFT", -6, 0)
         applyBackdrop(switchBtn, 1, C.panelDark, C.tabBorder)
         local switchLbl = switchBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        switchLbl:SetPoint("CENTER"); switchLbl:SetText("Use"); switchLbl:SetTextColor(unpack(C.textWhite))
-        switchBtn:SetScript("OnEnter", function() switchBtn:SetBackdropBorderColor(unpack(C.red)) end)
-        switchBtn:SetScript("OnLeave", function() switchBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        switchLbl:SetPoint("CENTER"); switchLbl:SetText("Use"); UI.tint(switchLbl, C.textWhite)
+        switchBtn:SetScript("OnEnter", function() UI.tintBorder(switchBtn, C.red) end)
+        switchBtn:SetScript("OnLeave", function() UI.tintBorder(switchBtn, C.tabBorder) end)
         row.switchBtn = switchBtn
 
         local exportBtn = CreateFrame("Button", nil, row, "BackdropTemplate")
@@ -2703,9 +3323,9 @@ local function buildProfilesPanel(parent)
         exportBtn:SetPoint("RIGHT", switchBtn, "LEFT", -6, 0)
         applyBackdrop(exportBtn, 1, C.panelDark, C.tabBorder)
         local exportLbl = exportBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        exportLbl:SetPoint("CENTER"); exportLbl:SetText("Export"); exportLbl:SetTextColor(unpack(C.textWhite))
-        exportBtn:SetScript("OnEnter", function() exportBtn:SetBackdropBorderColor(unpack(C.red)) end)
-        exportBtn:SetScript("OnLeave", function() exportBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        exportLbl:SetPoint("CENTER"); exportLbl:SetText("Export"); UI.tint(exportLbl, C.textWhite)
+        exportBtn:SetScript("OnEnter", function() UI.tintBorder(exportBtn, C.red) end)
+        exportBtn:SetScript("OnLeave", function() UI.tintBorder(exportBtn, C.tabBorder) end)
         row.exportBtn = exportBtn
 
         return row
@@ -2751,11 +3371,11 @@ local function buildProfilesPanel(parent)
             row.canDelete = (profName ~= "Default") and not isActive
             row.deleteBtn:SetEnabled(row.canDelete)
             if row.canDelete then
-                row.deleteLbl:SetTextColor(unpack(C.textWhite))
+                UI.tint(row.deleteLbl, C.textWhite)
             else
-                row.deleteLbl:SetTextColor(unpack(C.textDim))
+                UI.tint(row.deleteLbl, C.textDim)
             end
-            row.deleteBtn:SetBackdropBorderColor(unpack(C.tabBorder))
+            UI.tintBorder(row.deleteBtn, C.tabBorder)
             if row.canDelete then
                 row.deleteBtn:SetScript("OnClick", function()
                     showConfirmPopup({
@@ -2806,30 +3426,21 @@ local function buildProfilesPanel(parent)
 end
 
 -- ── Nav tab registry ─────────────────────────────────────────────────────────
--- Every sidebar tab registers itself here instead of GetFrame hardcoding a list,
--- so a separate module addon (Particles, Trinkets) can contribute its own tab
--- just by calling UI.RegisterTab at load time. Registration must happen before
--- the settings window is first opened, which is always the case: addons finish
--- loading long before the user can click anything.
---   def = { key, label, order, build = function(parent) -> panel frame,
---           status = function() -> boolean }
--- `order` sorts the sidebar top→down (ties fall back to registration order).
--- `status` is optional: when supplied, the nav button gets a green/grey dot
--- (same look as the per-raid dots in Particles → Raids) reflecting whether that
--- module is currently enabled. Tabs that aren't a toggleable module (General,
--- Profiles) simply omit it and get no dot.
+-- Every sidebar tab registers here rather than GetFrame hardcoding a list, so a
+-- module addon contributes its own via UI.RegisterTab at load time.
+--   def = { key, label, order, build = function(parent) -> panel, status = fn }
+-- `order` sorts top→down. `status` is optional: with it the nav button gets a
+-- green/grey enabled dot.
 UI.tabRegistry = {}
 
--- Names of addon.X tables (TTK, RaidFrames, Trinkets, ...) that expose the
--- movable interface (getFrame/enterMoveMode/leaveMoveMode/savePosition/
--- getPosition/setPosition — see TTK.lua for the reference shape) and should
--- be included whenever UI.EnterMoveMode() is called with no explicit list
--- (the "Edit Mode" button). A module addon calls UI.RegisterMovable("Name")
--- once at load time instead of core needing to know it exists.
+-- Names of addon.X tables exposing the movable interface (TTK.lua is the
+-- reference shape), included whenever UI.EnterMoveMode() runs with no explicit
+-- list. A module calls UI.RegisterMovable("Name") rather than core knowing it.
 UI.movableNames = { "TTK", "RaidFrames", "Trinkets", "Tooltip" }
 
 -- Display names for the Modules list in Edit Mode. Keyed by the addon.X name;
--- anything missing falls back to the key itself.
+-- anything missing falls back to the key itself. A module addon adds its own
+-- entry here alongside its UI.RegisterMovable call.
 UI.movableLabels = {
     TTK        = "Time to Kill",
     RaidFrames = "Raid Frames",
@@ -2837,9 +3448,8 @@ UI.movableLabels = {
     Tooltip    = "Tooltip Anchor",
 }
 
--- A movable's name for that list. Runtime-created movables (DataText bars,
--- chat panels) supply their own getLabel, since their names are user-editable
--- and there is no fixed addon.X key to look them up by.
+-- Runtime-created movables (DataText bars, chat panels) supply their own
+-- getLabel, since their names are user-editable and there's no fixed addon.X key.
 function UI.MovableLabel(m)
     if type(m.getLabel) == "function" then
         local ok, text = pcall(m.getLabel)
@@ -2860,11 +3470,9 @@ function UI.RegisterMovable(name)
     UI.movableNames[#UI.movableNames + 1] = name
 end
 
--- For movables that don't exist as a fixed addon.X table — things the user
--- creates at runtime (DataText bars, chat docks), where the set changes as
--- they add/remove them. A provider is a function returning a list of movable
--- objects; it's called fresh every time Edit Mode opens, so newly-created
--- objects are picked up without re-registering anything.
+-- For movables that aren't a fixed addon.X table — things the user creates at
+-- runtime. A provider returns a list, and is called fresh every time Edit Mode
+-- opens, so new objects are picked up without re-registering.
 UI.movableProviders = {}
 
 function UI.RegisterMovableProvider(fn)
@@ -2910,9 +3518,8 @@ function UI.GetFrame()
         end
         tab:SetScript("OnClick", function() selectTab(f, def.key) end)
 
-        -- Enabled/disabled status dot, right-aligned in the button. The label
-        -- gets a matching right bound so a long name truncates instead of
-        -- running under the dot.
+        -- Right-aligned status dot. The label gets a matching right bound so a long name
+        -- truncates instead of running under it.
         if def.status then
             local dot = tab:CreateTexture(nil, "OVERLAY")
             dot:SetTexture(WHITE)
@@ -2927,9 +3534,8 @@ function UI.GetFrame()
         prevNav = tab
     end
 
-    -- Deferred: each tab's panel is built by activateTab the first time it's
-    -- selected (see resolvePanel), so opening the window only pays for the one
-    -- tab it lands on instead of every module's entire settings tree.
+    -- Deferred: each panel is built by activateTab on first selection, so opening
+    -- the window pays only for the tab it lands on.
     for _, def in ipairs(defs) do
         f.panels[def.key] = function() return def.build(f.content) end
     end
@@ -2958,15 +3564,13 @@ function UI.RefreshTabDots()
     end
 end
 
--- Core's own tabs. Every module addon registers its own from its own file, so
--- they slot into the gaps below — and disappear entirely when those addons are
--- disabled. The sidebar order is fixed and lives across all of them:
+-- Core's own tabs. Module addons register theirs from their own files, so they
+-- slot into the gaps and disappear when those addons are disabled:
 --
---   10 General · 20 Particles · 30 Raid · 40 Trinkets · 50 Item Rack
---   60 Action Bars · 65 Nameplates · 70 Chat · 90 Profiles
+--   10 General · 15 Swingtimer · 20 Particles · 30 Raid · 40 Trinkets
+--   50 Item Rack · 60 Action Bars · 65 Nameplates · 70 Chat · 90 Profiles
 --
--- Spaced out rather than 1..9 so a module can be slipped in between two of them
--- later without renumbering the rest.
+-- Spaced out rather than 1..9 so a module can be slipped between two later.
 UI.RegisterTab({ key = "general",   label = "General",   order = 10, build = buildGeneralTabPanel })
 UI.RegisterTab({ key = "raid",      label = "Raid",      order = 30, build = buildRaidTabPanel,
     -- Raid Frames is the one toggleable module on this tab.
@@ -2981,10 +3585,9 @@ function addon.ToggleUI()
     if f:IsShown() then f:Hide() else f:Show() end
 end
 
--- Small floating popup opened by clicking (not dragging) a movable element
--- while in edit mode: precise X/Y entry plus a directional nudge pad
--- (1 unit per click) arranged left/right/top/bottom around the boxes.
--- Works against any movable object exposing getPosition()/setPosition(x,y).
+-- Opened by clicking (not dragging) a movable in edit mode: precise X/Y entry
+-- plus a 1-unit nudge pad. Works against any movable exposing
+-- getPosition()/setPosition(x, y).
 local function getPositionEditor()
     if UI.positionEditor then return UI.positionEditor end
 
@@ -3003,25 +3606,16 @@ local function getPositionEditor()
     local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", panel, "TOP", 0, -8)
     title:SetText("Position")
-    title:SetTextColor(unpack(C.textWhite))
+    UI.tint(title, C.textWhite)
 
-    local closeBtn = CreateFrame("Button", nil, panel)
-    closeBtn:SetSize(18, 18)
-    closeBtn:SetPoint("TOPRIGHT", -6, -6)
-    local closeLbl = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    closeLbl:SetPoint("CENTER")
-    closeLbl:SetText("X")
-    closeLbl:SetTextColor(unpack(C.red))
-    closeBtn:SetScript("OnEnter", function() closeLbl:SetTextColor(unpack(C.textWhite)) end)
-    closeBtn:SetScript("OnLeave", function() closeLbl:SetTextColor(unpack(C.red)) end)
-    closeBtn:SetScript("OnClick", function() panel:Hide() end)
+    closeButton(panel, 6)
 
     local function makeBox(parent)
         local wrap = CreateFrame("Frame", nil, parent, "BackdropTemplate")
         wrap:SetSize(50, 22)
         applyBackdrop(wrap, 1, C.panelDark, C.tabBorder)
-        wrap:SetScript("OnEnter", function() wrap:SetBackdropBorderColor(unpack(C.red)) end)
-        wrap:SetScript("OnLeave", function() wrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        wrap:SetScript("OnEnter", function() UI.tintBorder(wrap, C.red) end)
+        wrap:SetScript("OnLeave", function() UI.tintBorder(wrap, C.tabBorder) end)
 
         local box = CreateFrame("EditBox", nil, wrap)
         box:SetSize(42, 18)
@@ -3030,7 +3624,7 @@ local function getPositionEditor()
         box:SetJustifyH("CENTER")
         box:SetMaxLetters(7)
         box:SetFontObject("GameFontNormal")
-        box:SetTextColor(unpack(C.textWhite))
+        UI.tint(box, C.textWhite)
         return wrap, box
     end
 
@@ -3041,15 +3635,14 @@ local function getPositionEditor()
         local lbl = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         lbl:SetPoint("CENTER")
         lbl:SetText(glyph)
-        lbl:SetTextColor(unpack(C.textWhite))
-        btn:SetScript("OnEnter", function() btn:SetBackdropBorderColor(unpack(C.red)) end)
-        btn:SetScript("OnLeave", function() btn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        UI.tint(lbl, C.textWhite)
+        btn:SetScript("OnEnter", function() UI.tintBorder(btn, C.red) end)
+        btn:SetScript("OnLeave", function() UI.tintBorder(btn, C.tabBorder) end)
         return btn
     end
 
-    -- Invisible reference frame the boxes sit on, so the four arrows can
-    -- anchor to its LEFT/RIGHT/TOP/BOTTOM edges and end up symmetrically
-    -- placed around the whole X/Y pair instead of around just one box.
+    -- Invisible reference frame the boxes sit on, so the four arrows anchor to its
+    -- edges and end up symmetrical around the whole X/Y pair rather than one box.
     local row = CreateFrame("Frame", nil, panel)
     row:SetSize(140, 22)
     row:SetPoint("TOP", title, "BOTTOM", 0, -34)
@@ -3057,7 +3650,7 @@ local function getPositionEditor()
     local xLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     xLabel:SetPoint("LEFT", row, "LEFT", 0, 0)
     xLabel:SetText("X:")
-    xLabel:SetTextColor(unpack(C.textWhite))
+    UI.tint(xLabel, C.textWhite)
 
     local xBoxWrap, xBox = makeBox(panel)
     xBoxWrap:SetPoint("LEFT", xLabel, "RIGHT", 4, 0)
@@ -3065,7 +3658,7 @@ local function getPositionEditor()
     local yLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     yLabel:SetPoint("LEFT", xBoxWrap, "RIGHT", 12, 0)
     yLabel:SetText("Y:")
-    yLabel:SetTextColor(unpack(C.textWhite))
+    UI.tint(yLabel, C.textWhite)
 
     local yBoxWrap, yBox = makeBox(panel)
     yBoxWrap:SetPoint("LEFT", yLabel, "RIGHT", 4, 0)
@@ -3135,10 +3728,9 @@ function UI.OpenPositionEditor(movable, anchorFrame)
     editor:Show()
 end
 
--- Applies moveBgOpacity / moveBgEnabled to the Move UI dimmed backdrop + grid
--- lines. SetAlpha multiplies on top of each texture's own baked-in vertex
--- alpha (0.55 for the dim, 0.07 per grid line), so 100% reproduces the
--- original fixed look and 0% fades everything out uniformly.
+-- SetAlpha multiplies on top of each texture's baked-in vertex alpha (0.55 for
+-- the dim, 0.07 per grid line), so 100% reproduces the original look and 0%
+-- fades everything out uniformly.
 function UI.RefreshMoveOverlay()
     local overlay = UI.moveOverlay
     if not overlay then return end
@@ -3154,14 +3746,29 @@ function UI.RefreshMoveOverlay()
     end
 end
 
+-- Pushes "Allow dragging off screen" onto every element in Edit Mode. Frames are
+-- sized by their own modules, so insets are re-derived on every entry.
+--
+-- Deliberately not reverted on exit: an element left mostly off screen keeps its
+-- insets, so nothing yanks it back when the client next re-clamps.
+function UI.RefreshMovableClamps()
+    local allowed = addon.GetEditOffscreen()
+    for _, m in ipairs(UI.activeMovables or {}) do
+        local f = m.getFrame and m.getFrame()
+        -- Only elements that clamp themselves have anything to relax. One that was never
+        -- clamped can already be dragged anywhere, and clamping it here to then loosen
+        -- it would leave it MORE restricted than it is today.
+        if f and f.IsClampedToScreen and f:IsClampedToScreen() then
+            addon.ApplyOffscreenClamp(f, allowed)
+        end
+    end
+end
+
 function UI.EnterMoveMode(movables)
     if not movables then
-        -- Collect by name rather than building { addon.TTK, ... } directly: a
-        -- module addon (Trinkets) can be disabled, and a nil inside a table
-        -- constructor silently truncates it for ipairs.
-        -- A movable can opt out of Edit Mode entirely via isEnabled() (e.g. the
-        -- "Enable Time to Kill" checkbox off) — skip it here so a disabled
-        -- feature's box never appears, rather than filtering it out later.
+        -- Collect by name rather than building { addon.TTK, ... } directly: a module can
+        -- be disabled, and a nil inside a table constructor silently truncates it for
+        -- ipairs. A movable can also opt out via isEnabled().
         movables = {}
         for _, name in ipairs(UI.movableNames) do
             local m = addon[name]
@@ -3184,14 +3791,9 @@ function UI.EnterMoveMode(movables)
 
     if UI.frame then UI.frame:Hide() end
 
-    -- Each movable's own enterMoveMode() wires up OnMouseDown/OnMouseUp itself
-    -- (instant StartMoving() + click-vs-drag detection that opens the precise
-    -- position editor), so this loop just shows the frame and hands off.
-    --
-    -- Whether an element starts parked (unticked in the Modules tab) is
-    -- persisted per label via addon.SetEditParked, so a box tucked out of the
-    -- way stays tucked away on the next Edit Mode entry instead of resetting
-    -- to movable every time.
+    -- Each movable's enterMoveMode() wires up its own OnMouseDown/OnMouseUp, so this
+    -- loop just shows the frame and hands off. Parked state is persisted per label
+    -- via addon.SetEditParked.
     for _, m in ipairs(movables) do
         local parked = addon.IsEditParked(UI.MovableLabel(m))
         m.__editEnabled = not parked
@@ -3208,10 +3810,9 @@ function UI.EnterMoveMode(movables)
         local overlay = CreateFrame("Frame", "DrievMoveOverlay", UIParent)
         overlay:SetAllPoints(UIParent)
         overlay:SetFrameStrata("DIALOG")
-        -- Click-through: the grid is purely visual. Mouse stays disabled so
-        -- camera rotation / character turning still works while editing;
-        -- the individual draggable boxes and the lock bar sit on top with
-        -- their own mouse handling and remain interactive regardless.
+        -- Click-through: the grid is purely visual, so the mouse stays disabled and
+        -- camera rotation still works while editing. The draggable boxes and lock bar
+        -- sit on top with their own handling.
         overlay:EnableMouse(false)
 
         local bg = overlay:CreateTexture(nil, "BACKGROUND")
@@ -3251,10 +3852,8 @@ function UI.EnterMoveMode(movables)
         bar:SetFrameStrata("TOOLTIP")
         applyBackdrop(bar, 2, C.panelBG, C.red)
 
-        -- Draggable, and it remembers where it was left. With the grid covering
-        -- the screen this box can easily sit on top of whatever you are trying
-        -- to position, and being unable to shift it out of the way is the whole
-        -- problem.
+        -- Draggable, and it remembers where it was left: with the grid covering the
+        -- screen this box can easily sit on top of what you're trying to position.
         bar:SetClampedToScreen(true)
         bar:EnableMouse(true)
         bar:SetMovable(true)
@@ -3271,7 +3870,7 @@ function UI.EnterMoveMode(movables)
         local hint = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         hint:SetPoint("TOP", bar, "TOP", 0, -7)
         hint:SetText("Drag this box to move it")
-        hint:SetTextColor(unpack(C.textGrey))
+        UI.tint(hint, C.textGrey)
 
         -- Tabs
         bar.tabs, bar.panels = {}, {}
@@ -3294,9 +3893,8 @@ function UI.EnterMoveMode(movables)
 
         local settingsPanel = makeBarPanel()
 
-        -- The Modules list grows with however many bars/movables exist (14
-        -- action bars alone), which can easily run taller than the fixed-size
-        -- lock bar — even off the bottom of the screen. Scrollable, unlike the
+        -- The Modules list grows with however many movables exist (14 action bars
+        -- alone), easily taller than the fixed lock bar, so it scrolls — unlike the
         -- Settings tab's fixed set of sliders.
         local modulesHost = makeBarPanel()
         modulesHost:Show()
@@ -3314,7 +3912,7 @@ function UI.EnterMoveMode(movables)
         local boxHeader = settingsPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         boxHeader:SetPoint("TOP", settingsPanel, "TOP", 0, -2)
         boxHeader:SetText("Edit Box")
-        boxHeader:SetTextColor(unpack(C.red))
+        UI.tint(boxHeader, C.red)
 
         local opacity = buildEditSlider(settingsPanel, {
             label = "Opacity", min = 0, max = 100, suffix = "%",
@@ -3342,7 +3940,7 @@ function UI.EnterMoveMode(movables)
         local bgHeader = settingsPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         bgHeader:SetPoint("TOP", border, "BOTTOM", 0, -16)
         bgHeader:SetText("Background")
-        bgHeader:SetTextColor(unpack(C.red))
+        UI.tint(bgHeader, C.red)
 
         local bgOpacity = buildEditSlider(settingsPanel, {
             label = "Opacity", min = 0, max = 100, suffix = "%",
@@ -3358,8 +3956,8 @@ function UI.EnterMoveMode(movables)
         applyBackdrop(bgToggleBtn, 1, C.panelDark, C.tabBorder)
         local bgToggleLabel = bgToggleBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         bgToggleLabel:SetPoint("CENTER")
-        bgToggleBtn:SetScript("OnEnter", function() bgToggleBtn:SetBackdropBorderColor(unpack(C.red)) end)
-        bgToggleBtn:SetScript("OnLeave", function() bgToggleBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        bgToggleBtn:SetScript("OnEnter", function() UI.tintBorder(bgToggleBtn, C.red) end)
+        bgToggleBtn:SetScript("OnLeave", function() UI.tintBorder(bgToggleBtn, C.tabBorder) end)
         local function refreshBgToggle()
             local on = addon.GetMoveBgEnabled()
             bgToggleLabel:SetText(on and "Grid & Background: ON" or "Grid & Background: OFF")
@@ -3371,12 +3969,22 @@ function UI.EnterMoveMode(movables)
         end)
         UI.refreshBgToggle = refreshBgToggle
 
+        local moveHeader = settingsPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        moveHeader:SetPoint("TOP", bgToggleBtn, "BOTTOM", 0, -16)
+        moveHeader:SetText("Movement")
+        UI.tint(moveHeader, C.red)
+
+        local offscreenCb = createCheckbox(settingsPanel, "Allow dragging off screen", 220)
+        offscreenCb:SetPoint("TOP", moveHeader, "BOTTOM", 0, -8)
+        offscreenCb.OnChange = function(_, checked) addon.SetEditOffscreen(checked) end
+        UI.offscreenCheckbox = offscreenCb
+
         -- Modules tab
         local modHint = modulesPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         modHint:SetPoint("TOPLEFT", modulesPanel, "TOPLEFT", 4, -2)
         modHint:SetWidth(250); modHint:SetJustifyH("LEFT")
         modHint:SetText("Untick an element to park it, so you can reach whatever sits underneath it.")
-        modHint:SetTextColor(unpack(C.textGrey))
+        UI.tint(modHint, C.textGrey)
 
         local modRows = {}
 
@@ -3405,9 +4013,8 @@ function UI.EnterMoveMode(movables)
                         if f then f:Show() end
                         m.enterMoveMode()
                     else
-                        -- leaveMoveMode clears the element's mouse handlers and
-                        -- hides its edit box, which is exactly what stops it
-                        -- intercepting clicks meant for what sits beneath.
+                        -- leaveMoveMode clears the element's mouse handlers and hides its edit box,
+                        -- which is what stops it intercepting clicks meant for what's beneath.
                         m.leaveMoveMode()
                     end
                 end
@@ -3426,18 +4033,17 @@ function UI.EnterMoveMode(movables)
         local lockLabel = lockBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         lockLabel:SetPoint("CENTER")
         lockLabel:SetText("Lock")
-        lockLabel:SetTextColor(unpack(C.red))
-        lockBtn:SetScript("OnEnter", function() lockLabel:SetTextColor(unpack(C.textWhite)) end)
-        lockBtn:SetScript("OnLeave", function() lockLabel:SetTextColor(unpack(C.red)) end)
+        UI.tint(lockLabel, C.red)
+        lockBtn:SetScript("OnEnter", function() UI.tint(lockLabel, C.textWhite) end)
+        lockBtn:SetScript("OnLeave", function() UI.tint(lockLabel, C.red) end)
         lockBtn:SetScript("OnClick", function() UI.ExitMoveMode() end)
 
         activateTab(bar.tabs, bar.panels, "settings")
         UI.lockBar = bar
     end
 
-    -- Position is applied on every entry rather than only at creation: the
-    -- saved coordinates live in addon.db, which may not have loaded at the
-    -- moment the frame was first built.
+    -- Applied on every entry rather than at creation: the saved coordinates live in
+    -- addon.db, which may not have loaded when the frame was first built.
     UI.lockBar:ClearAllPoints()
     local bx = addon.db and addon.db.settings and addon.db.settings.editBarX
     local by = addon.db and addon.db.settings and addon.db.settings.editBarY
@@ -3451,6 +4057,8 @@ function UI.EnterMoveMode(movables)
     end
     if UI.bgOpacitySlider then UI.bgOpacitySlider:Refresh() end
     if UI.refreshBgToggle then UI.refreshBgToggle() end
+    if UI.offscreenCheckbox then UI.offscreenCheckbox:SetChecked(addon.GetEditOffscreen()) end
+    UI.RefreshMovableClamps()
     if UI.RefreshModuleList then UI.RefreshModuleList() end
     UI.lockBar:Show()
 end
@@ -3472,19 +4080,21 @@ function UI.ExitMoveMode()
 end
 
 -- ── Shared widget toolkit ────────────────────────────────────────────────────
--- Everything above is file-local, which is invisible to a separate addon. A
--- module addon (Particles, Trinkets) builds its tab with these so its panels
--- look identical to core's, e.g.:
+-- Everything above is file-local, invisible to a separate addon. A module addon
+-- builds its tab with these so its panels look identical to core's:
 --     local UI = _G.DrievEssentials.UI
 --     local w, C = UI.widgets, UI.colors
---     local cb = w.createCheckbox(panel, "Enable thing", 260)
--- Declared at the very end of the file so every helper it references is defined.
--- Core's own code keeps using the plain locals — this table is purely an export.
+-- Declared at the very end so every helper it references is defined.
+--
+-- Paint with UI.tint / tintBg / tintBorder / tintTexture rather than
+-- SetTextColor(unpack(C.x)): same result, but it records the palette entry so
+-- the colour picker can repaint later.
 UI.colors  = C
 UI.WHITE   = WHITE
 UI.widgets = {
     -- backdrops / buttons
     applyBackdrop       = applyBackdrop,
+    attachTooltip       = attachTooltip,
     flatButton          = flatButton,
     createTab           = createTab,
     createSideTab       = createSideTab,
@@ -3492,6 +4102,7 @@ UI.widgets = {
     activateTab         = activateTab,
     selectTab           = selectTab,
     selectSubTab        = selectSubTab,
+    makeSubTabPanel     = makeSubTabPanel,
     -- scrolling
     attachScrollTrack   = attachScrollTrack,
     fitInnerHeight      = fitInnerHeight,
@@ -3499,6 +4110,7 @@ UI.widgets = {
     scrollbarWidth      = SCROLLBAR_W,
     -- inputs
     createCheckbox      = createCheckbox,
+    createColorSwatch   = createColorSwatch,
     createDropdown      = createDropdown,
     createScrollDropdown= createScrollDropdown,
     buildStepper        = buildStepper,

@@ -1,9 +1,6 @@
--- Driev's Essentials — Action Bars module: settings UI.
---
--- Layout: a left sidebar lists Action Bar 1-10; the selected bar's panel has its
--- own top tab bar — General / Visibility / Position — each holding the relevant
--- knobs. A global Keybind Mode toggle sits in the header above the sidebar.
--- Built entirely on core's shared widget toolkit.
+-- Action Bars module: settings UI. A left sidebar lists Action Bar 1-10; the
+-- selected bar's panel has its own General / Visibility / Position tabs. A
+-- global Keybind Mode toggle sits above the sidebar. Built on core's widgets.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -21,6 +18,7 @@ local activateTab         = W.activateTab
 local buildStepper        = W.buildStepper
 local flatButton          = W.flatButton
 local makeScrollPanel     = W.makeScrollPanel
+local attachTooltip       = W.attachTooltip
 
 local AB = function() return addon.ActionBars end
 
@@ -36,9 +34,8 @@ local function apply(key)
 end
 
 -- ── Form helper ──────────────────────────────────────────────────────────────
--- Stacks controls top-to-bottom on a panel and tracks a list of refreshers so
--- the panel can re-read stored values on show. Each adder anchors under the
--- previous control automatically.
+-- Stacks controls top-to-bottom and tracks refreshers so the panel can re-read
+-- stored values on show. Each adder anchors under the previous control.
 local function makeForm(panel)
     local prev
     local refreshers = {}
@@ -53,8 +50,11 @@ local function makeForm(panel)
 
     local F = { refreshers = refreshers }
 
-    function F.check(text, getf, setf)
-        local cb = createCheckbox(panel, text, 240)
+    -- `desc` on the adders below is hover help: what a setting does lives in its
+    -- tooltip rather than as a paragraph of grey text under it, so the panel
+    -- stays a scannable list of settings.
+    function F.check(text, getf, setf, desc)
+        local cb = createCheckbox(panel, text, 240, desc)
         place(cb)
         cb.OnChange = function(_, checked) setf(checked) end
         refreshers[#refreshers + 1] = function() cb:SetChecked(getf()) end
@@ -65,7 +65,7 @@ local function makeForm(panel)
     function F.stepper(text, opts)
         local lbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         place(lbl)
-        lbl:SetText(text); lbl:SetTextColor(unpack(C.textWhite))
+        lbl:SetText(text); UI.tint(lbl, C.textWhite)
         lbl:SetWidth(120); lbl:SetJustifyH("LEFT")
         local st = buildStepper(panel, opts)
         st:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
@@ -86,48 +86,44 @@ local function makeForm(panel)
         return r
     end
 
-    -- Like F.stepper, but the value is an editable number box (type a value and
-    -- press Enter) with [-]/[+] adjusting by opts.step. opts.suffix (e.g. "%") is
-    -- drawn as a static label after the box. get() returns / set(v) takes a
-    -- plain number, clamped to [opts.min, opts.max].
+    -- Like F.stepper, but the value is an editable number box with [-]/[+] adjusting
+    -- by opts.step. opts.suffix is drawn as a static label after it.
     function F.editStepper(text, opts)
         local step = opts.step or 1
         local minv, maxv = opts.min or 0, opts.max or 100
 
         local lbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         place(lbl)
-        lbl:SetText(text); lbl:SetTextColor(unpack(C.textWhite))
+        lbl:SetText(text); UI.tint(lbl, C.textWhite)
         lbl:SetWidth(120); lbl:SetJustifyH("LEFT")
 
         local minus = CreateFrame("Button", nil, panel, "BackdropTemplate")
         minus:SetSize(22, 22); minus:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
         applyBackdrop(minus, 1, C.panelDark, C.tabBorder)
         local ml = minus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        ml:SetPoint("CENTER"); ml:SetText("-"); ml:SetTextColor(unpack(C.textWhite))
+        ml:SetPoint("CENTER"); ml:SetText("-"); UI.tint(ml, C.textWhite)
 
         local wrap = CreateFrame("Frame", nil, panel, "BackdropTemplate")
         wrap:SetSize(46, 22); wrap:SetPoint("LEFT", minus, "RIGHT", 6, 0)
         applyBackdrop(wrap, 1, C.panelDark, C.tabBorder)
         local box = CreateFrame("EditBox", nil, wrap)
         box:SetSize(38, 18); box:SetPoint("CENTER")
-        -- Not SetNumeric(true): that WoW EditBox flag only allows digits 0-9,
-        -- silently stripping the "-" from any negative value (including one
-        -- set programmatically via SetText), which breaks any stepper whose
-        -- range dips below 0. commitBox's tonumber() already rejects
-        -- anything that isn't a valid number, so free-form text is safe here.
+        -- Not SetNumeric(true): that flag allows only digits 0-9 and silently strips the
+        -- "-" from negative values (even ones set via SetText), breaking any stepper
+        -- whose range dips below 0. commitBox's tonumber() already rejects non-numbers.
         box:SetAutoFocus(false); box:SetMaxLetters(5)
         box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormal")
-        box:SetTextColor(unpack(C.textWhite))
+        UI.tint(box, C.textWhite)
 
         local suffix = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         suffix:SetPoint("LEFT", wrap, "RIGHT", 3, 0)
-        suffix:SetText(opts.suffix or ""); suffix:SetTextColor(unpack(C.textGrey))
+        suffix:SetText(opts.suffix or ""); UI.tint(suffix, C.textGrey)
 
         local plus = CreateFrame("Button", nil, panel, "BackdropTemplate")
         plus:SetSize(22, 22); plus:SetPoint("LEFT", suffix, "RIGHT", 6, 0)
         applyBackdrop(plus, 1, C.panelDark, C.tabBorder)
         local pl = plus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        pl:SetPoint("CENTER"); pl:SetText("+"); pl:SetTextColor(unpack(C.textWhite))
+        pl:SetPoint("CENTER"); pl:SetText("+"); UI.tint(pl, C.textWhite)
 
         local function display()
             if not box:HasFocus() then box:SetText(tostring(opts.get())) end
@@ -145,13 +141,13 @@ local function makeForm(panel)
 
         minus:SetScript("OnClick", function() commit(opts.get() - step) end)
         plus:SetScript("OnClick",  function() commit(opts.get() + step) end)
-        minus:SetScript("OnEnter", function() minus:SetBackdropBorderColor(unpack(C.red)) end)
-        minus:SetScript("OnLeave", function() minus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-        plus:SetScript("OnEnter",  function() plus:SetBackdropBorderColor(unpack(C.red)) end)
-        plus:SetScript("OnLeave",  function() plus:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        minus:SetScript("OnEnter", function() UI.tintBorder(minus, C.red) end)
+        minus:SetScript("OnLeave", function() UI.tintBorder(minus, C.tabBorder) end)
+        plus:SetScript("OnEnter",  function() UI.tintBorder(plus, C.red) end)
+        plus:SetScript("OnLeave",  function() UI.tintBorder(plus, C.tabBorder) end)
         box:SetScript("OnEnterPressed",    function(self) commitBox(self); self:ClearFocus() end)
-        box:SetScript("OnEditFocusLost",   function(self) commitBox(self); wrap:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-        box:SetScript("OnEditFocusGained", function() wrap:SetBackdropBorderColor(unpack(C.red)) end)
+        box:SetScript("OnEditFocusLost",   function(self) commitBox(self); UI.tintBorder(wrap, C.tabBorder) end)
+        box:SetScript("OnEditFocusGained", function() UI.tintBorder(wrap, C.red) end)
         box:SetScript("OnEscapePressed",   function(self) display(); self:ClearFocus() end)
 
         refreshers[#refreshers + 1] = display
@@ -160,12 +156,12 @@ local function makeForm(panel)
         return box
     end
 
-    function F.dropdown(text, options, getf, setf, onChange)
+    function F.dropdown(text, options, getf, setf, onChange, desc)
         local lbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         place(lbl)
-        lbl:SetText(text); lbl:SetTextColor(unpack(C.textWhite))
+        lbl:SetText(text); UI.tint(lbl, C.textWhite)
         lbl:SetWidth(120); lbl:SetJustifyH("LEFT")
-        local dd = createDropdown(panel, 130, options, getf, setf, onChange)
+        local dd = createDropdown(panel, 130, options, getf, setf, onChange, text, desc)
         dd:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
         refreshers[#refreshers + 1] = function() dd.Refresh() end
         prev = lbl
@@ -204,9 +200,8 @@ local function onShowRefresh(shell, form)
 end
 
 -- ── General tab: layout / appearance knobs ───────────────────────────────────
--- Action bars get the full knob set; the special bars (stance/micro/bag) drop
--- the ones that don't apply — button count is fixed or dynamic, and icon size /
--- flyout direction are action-button-only.
+-- Action bars get the full set; the special bars (stance/micro/bag) drop what
+-- doesn't apply — fixed button count, and action-button-only icon size/flyout.
 local function buildGeneralPanel(parent, def)
     local shell, panel = makeScrollPanel(parent)
     local key = def.key
@@ -253,7 +248,7 @@ local function buildGeneralPanel(parent, def)
             local lbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
             lbl:SetPoint("LEFT", 0, 0)
             lbl:SetWidth(48); lbl:SetJustifyH("LEFT")
-            lbl:SetText("Build:"); lbl:SetTextColor(unpack(C.textWhite))
+            lbl:SetText("Build:"); UI.tint(lbl, C.textWhite)
 
             hBtn = flatButton(r, "Horizontal", 84, 20)
             hBtn:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
@@ -410,9 +405,8 @@ local function buildPositionPanel(parent, def)
 end
 
 -- ── Paging tab (action bars only): per-stance action-page switching ──────────
--- Warriors are hardcoded to their three stances (so all three show even before
--- Defensive/Berserker are learned, matching how the player thinks about them);
--- other stance/form classes are read live from the shapeshift API.
+-- Warriors are hardcoded to their three stances so all three show before
+-- Defensive/Berserker are learned; other classes are read live from the API.
 local function getStanceList()
     local _, class = UnitClass("player")
     if class == "WARRIOR" then
@@ -441,6 +435,10 @@ local function buildPagingPanel(parent, def)
     end
     local F = makeForm(panel)
 
+    local PAGING_DESC =
+        "While in a stance/form, switch this bar to another bar's page. " ..
+        "\"No paging\" keeps this bar's own page in that stance."
+
     -- Master toggle for this bar's stance paging (default on for the Main bar,
     -- off for every other bar). While off, the bar ignores the per-stance choices
     -- below and always shows its own page.
@@ -453,10 +451,8 @@ local function buildPagingPanel(parent, def)
         function(c)
             data().pagingEnabled = c
             if AB() then AB().applyPaging(key) end
-        end)
-
-    F.text("While in a stance/form, switch this bar to another bar's page. " ..
-           "\"No paging\" keeps this bar's own page in that stance.")
+        end,
+        PAGING_DESC)
 
     local stances = getStanceList()
     if #stances == 0 then
@@ -465,11 +461,10 @@ local function buildPagingPanel(parent, def)
         return shell
     end
 
-    -- "Page N" means "switch to Action Bar N's page". Our bars don't own action
-    -- pages in numeric order (see BAR_PAGE in ActionBars.lua — e.g. Bar 2 owns
-    -- action page 6), so each label maps to the real action page that Bar N shows;
-    -- otherwise picking "Page 2" would page to the wrong bar's abilities. The
-    -- stored value stays a raw action page, which is what the paging driver wants.
+    -- "Page N" means "switch to Action Bar N's page". Our bars don't own pages in
+    -- numeric order (see BAR_PAGE in ActionBars.lua — Bar 2 owns page 6), so each
+    -- label maps to the real page Bar N shows, otherwise "Page 2" would page to the
+    -- wrong bar. The stored value stays a raw action page, which the driver wants.
     local pageOptions = { { value = false, label = "No paging" } }
     for i = 1, 10 do
         local bdef = AB().bars[i]
@@ -486,7 +481,8 @@ local function buildPagingPanel(parent, def)
             -- default-merge — otherwise a warrior's saved "No paging" would be
             -- re-filled by the Bar 1 stance defaults on next login.
             function(v) data().paging[st.index] = v end,
-            function() if AB() then AB().applyPaging(key) end end)
+            function() if AB() then AB().applyPaging(key) end end,
+            PAGING_DESC)
     end
 
     onShowRefresh(shell, F)
@@ -543,12 +539,7 @@ end
 
 -- LSM font list with a leading "Default" (= game default hotkey font).
 local function getFontList()
-    local list = { "Default" }
-    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
-    if LSM then
-        for _, name in ipairs(LSM:List("font")) do list[#list + 1] = name end
-    end
-    return list
+    return addon.MediaList("font", { lead = "Default" })
 end
 
 -- ── Top-level "General" tab: addon-wide keybind-text settings ────────────────
@@ -563,12 +554,12 @@ local function buildGlobalPanel(parent)
     -- so it sits at the top with its own explanation.
     F.check("Use Blizzard's action bar keybinds",
         function() return AB() and AB().getBlizzBindings() end,
-        function(c) if AB() then AB().setBlizzBindings(c) end end)
-    F.text("Bars 1-5 match Blizzard's Action Bars 1-5 (same abilities and keys), so " ..
-           "the keybinds you set in Escape → Key Bindings → Action Bar drive them " ..
-           "directly — no re-binding when switching over. Every bar can also be bound " ..
-           "individually under \"Driev's ActionBars\" in that same panel, or with " ..
-           "Keybind Mode above.")
+        function(c) if AB() then AB().setBlizzBindings(c) end end,
+        "Bars 1-5 match Blizzard's Action Bars 1-5 (same abilities and keys), so " ..
+        "the keybinds you set in Escape → Key Bindings → Action Bar drive them " ..
+        "directly — no re-binding when switching over. Every bar can also be bound " ..
+        "individually under \"Driev's ActionBars\" in that same panel, or with " ..
+        "Keybind Mode above.")
 
     F.text("Keybind (hotkey) text styling. Turn it on per bar with each bar's " ..
            "\"Use General settings\" checkbox (in that bar's General tab).")
@@ -578,7 +569,7 @@ local function buildGlobalPanel(parent)
     F.customRow(24, function(r)
         local lbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         lbl:SetPoint("LEFT", 0, 0); lbl:SetWidth(90); lbl:SetJustifyH("LEFT")
-        lbl:SetText("Font"); lbl:SetTextColor(unpack(C.textWhite))
+        lbl:SetText("Font"); UI.tint(lbl, C.textWhite)
         fontDD = createScrollDropdown(r, 150, getFontList, function(name)
             setg("keybindFont", name ~= "Default" and name or nil)
         end, { preview = "font" })
@@ -621,9 +612,9 @@ local function buildBlizzardArtPanel(parent)
 
     F.check("Show Blizzard button art",
         function() return AB() and AB().getBlizzardArt() end,
-        function(c) if AB() then AB().setBlizzardArt(c) end end)
-    F.text("Restores Blizzard's decorative border / slot art on the Stance and Pet " ..
-           "buttons. Off by default for a clean look.")
+        function(c) if AB() then AB().setBlizzardArt(c) end end,
+        "Restores Blizzard's decorative border / slot art on the Stance and Pet " ..
+        "buttons. Off by default for a clean look.")
 
     shell:SetScript("OnShow", F.refresh)
     return shell
@@ -638,19 +629,15 @@ local function buildActionBarsTab(parent)
     local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", 8, -8)
     title:SetText("Action Bars")
-    title:SetTextColor(unpack(C.red))
+    UI.tint(title, C.red)
 
-    local enableCB = createCheckbox(panel, "Enable Action Bars", 260)
+    local enableCB = createCheckbox(panel, "Enable Action Bars", 260,
+        "Replaces Blizzard's bars with this addon's own. Enabling is instant; disabling needs a /reload.")
     enableCB:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     enableCB.OnChange = function(_, checked)
         if AB() then AB().setEnabled(checked) end
         UI.RefreshTabDots()
     end
-
-    local enableHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    enableHint:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 20, -3)
-    enableHint:SetText("Replaces Blizzard's bars with this addon's own. Enabling is instant; disabling needs a /reload.")
-    enableHint:SetTextColor(unpack(C.textDim))
 
     local keybindBtn = flatButton(panel, "Keybind Mode: OFF", 170, 22)
     keybindBtn:SetPoint("TOPRIGHT", -8, -6)
@@ -669,17 +656,15 @@ local function buildActionBarsTab(parent)
         AB().setKeybindChangedCallback(refreshKeybindBtn)
     end
 
-    local hint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    hint:SetPoint("TOPRIGHT", keybindBtn, "BOTTOMRIGHT", 0, -3)
-    hint:SetText("Hover a button, press a key to bind")
-    hint:SetTextColor(unpack(C.textDim))
+    attachTooltip(keybindBtn, "Keybind Mode",
+        "Hover a button, press a key to bind.")
 
     -- Drag-to-move modifier: hold this to drag an ability off a button without
     -- the on-keydown press casting it.
     local dragLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    dragLabel:SetPoint("TOPLEFT", enableHint, "BOTTOMLEFT", -20, -12)
+    dragLabel:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -14)
     dragLabel:SetText("Drag modifier:")
-    dragLabel:SetTextColor(unpack(C.textWhite))
+    UI.tint(dragLabel, C.textWhite)
 
     local dragDD = createDropdown(panel, 110,
         { { value = "SHIFT", label = "Shift" },
@@ -687,19 +672,14 @@ local function buildActionBarsTab(parent)
           { value = "ALT",   label = "Alt"   } },
         function() return AB() and AB().getDragModifier() or "SHIFT" end,
         function(v) if AB() then AB().setDragModifier(v) end end,
-        nil)
+        nil,
+        "Drag modifier",
+        "Hold to drag an ability without activating it.")
     dragDD:SetPoint("LEFT", dragLabel, "RIGHT", 8, 0)
 
-    local dragHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    dragHint:SetPoint("TOPLEFT", dragLabel, "BOTTOMLEFT", 0, -3)
-    dragHint:SetText("Hold to drag an ability without activating it.")
-    dragHint:SetTextColor(unpack(C.textDim))
-
-    -- Sidebar: a "General" entry first, then each bar. With ten action bars
-    -- plus stance/pet/micro/bag, this list easily runs taller than the fixed
-    -- box (or the whole window, once resized smaller) — scrollable, and the
-    -- inner list is re-fit whenever the panel is shown or the window resizes
-    -- (see makeScrollPanel/attachScrollTrack in core's UI.lua).
+    -- Sidebar: "General" first, then each bar. Fourteen entries easily runs taller
+    -- than the box, so it's scrollable and re-fit whenever the panel is shown or the
+    -- window resizes.
     local sidebarHost = CreateFrame("Frame", nil, panel, "BackdropTemplate")
     sidebarHost:SetWidth(132)
     sidebarHost:SetPoint("TOPLEFT", panel, "TOPLEFT", 4, -118)
@@ -754,10 +734,9 @@ local function buildActionBarsTab(parent)
             tab.dot = dot
         end
         panel.barTabs[ndef.key] = tab
-        -- Each entry's panel is built the first time it's selected (see
-        -- resolvePanel in core's UI.lua). Fifteen nav entries, each with its own
-        -- General/Visibility/Position/Paging sub-panels, is far too much work to
-        -- do in the single frame that opens the settings window.
+        -- Each entry's panel is built the first time it's selected. Fifteen nav entries,
+        -- each with its own sub-panels, is far too much to do in the frame that opens
+        -- the settings window.
         if ndef.general then
             panel.barPanels[ndef.key] = function() return buildGlobalPanel(content) end
         elseif ndef.blizzart then

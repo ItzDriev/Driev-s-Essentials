@@ -1,17 +1,12 @@
 local addonName, addon = ...
 
--- Bosses are { name, id, default?, linger? }. `id` is the WoW encounter ID
--- emitted by ENCOUNTER_START/ENCOUNTER_END. `default = true` means the checkbox
--- is pre-ticked on first init (matches the original WeakAura's encounter list).
--- `linger = N` is the built-in "keep particles on for N seconds after the
--- encounter ends" default (Viscidus slime puddle, Ouro residue, etc.); bosses
--- without it default to no linger. Both are only starting values — Particles →
--- Raids lets the user toggle and retime linger per boss.
+-- Bosses are { name, id, default?, linger? }. `id` is the encounter ID from
+-- ENCOUNTER_START/END. `default` pre-ticks the checkbox on first init; `linger`
+-- is the built-in "keep particles on for N seconds after the encounter" default.
+-- Both are only starting values — Particles → Raids overrides them per boss.
 --
--- IDs marked with -- ✓ are confirmed (came from the user's WeakAura or the
--- Stockades list). The rest are best-guess at Classic Era encounter IDs —
--- enable the Debug master toggle in-game and the addon will print live
--- ENCOUNTER_START ids to chat so wrong ones can be corrected here.
+-- IDs marked -- ✓ are confirmed; the rest are best-guess. The Debug master
+-- toggle prints live ENCOUNTER_START ids to chat so wrong ones can be fixed.
 addon.RAIDS = {
     {
         key   = "naxx",

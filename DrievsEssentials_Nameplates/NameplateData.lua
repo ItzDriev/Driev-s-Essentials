@@ -1,20 +1,16 @@
--- Driev's Essentials — Nameplates module: saved settings and the NPC registry.
---
--- Split out from the engine and the settings UI so both share one definition of
--- the defaults, the seeded NPC list, and the helpers that read/write per-NPC
--- colour entries. `...` would hand us this addon's OWN private table, so reach
--- for core's shared namespace instead — the .toc's ## Dependencies guarantees
--- core has already loaded and set this global.
+-- Nameplates module: saved settings and the NPC registry. Split out from the
+-- engine and the settings UI so both share one definition of the defaults, the
+-- seeded NPC list and the per-NPC colour helpers.
 local addon = _G.DrievEssentials
 if not addon then return end
 
 local Data = {}
 addon.NameplatesData = Data
 
--- ── Named colour palette ─────────────────────────────────────────────────────
--- The NPC list's "Select Color" column picks from these by name, but every
--- entry stores a plain {r, g, b} triple — so a colour picked straight out of the
--- swatch (with no name at all) is just as valid as one of these.
+-- ── Named color palette ─────────────────────────────────────────────────────
+-- The NPC list's "Select Color" column picks from these by name, but every entry
+-- stores a plain {r, g, b}, so a colour picked freehand from the swatch is just
+-- as valid.
 Data.COLORS = {
     { name = "white",   rgb = { 1.00, 1.00, 1.00 } },
     { name = "red",     rgb = { 0.95, 0.15, 0.15 } },
@@ -34,7 +30,7 @@ Data.COLORS = {
 local byName = {}
 for _, c in ipairs(Data.COLORS) do byName[c.name] = c.rgb end
 
--- Returns a FRESH copy — callers store the result straight into SavedVariables,
+-- Returns a FRESH copy: callers store the result straight into SavedVariables,
 -- and handing out the palette's own table would make every NPC coloured
 -- "magenta" share (and then mutate) one table.
 function Data.ColorByName(name)
@@ -42,8 +38,8 @@ function Data.ColorByName(name)
     return { rgb[1], rgb[2], rgb[3] }
 end
 
--- Reverse lookup for the list's colour column: the palette name whose triple
--- matches, or nil for a colour the user picked freehand out of the swatch.
+-- Reverse lookup for the list's color column: the palette name whose triple
+-- matches, or nil for a color the user picked freehand out of the swatch.
 function Data.ColorName(rgb)
     if type(rgb) ~= "table" then return nil end
     for _, c in ipairs(Data.COLORS) do
@@ -57,28 +53,25 @@ function Data.ColorName(rgb)
 end
 
 -- ── Defaults ─────────────────────────────────────────────────────────────────
--- Registered into core's defaults at load time and merged into the active
--- profile at PLAYER_LOGIN, so disabling this addon simply leaves the (harmless)
--- saved values untouched.
---
--- Off by default, same as every other module's master toggle: a fresh install
--- leaves Blizzard's nameplates completely alone until explicitly turned on.
+-- Registered into core's defaults at load and merged at PLAYER_LOGIN. Off by
+-- default, like every module's master toggle.
 
--- One aura row's settings. A function rather than a table shared by all four
--- rows: core's applyDefaults copies scalars but recurses into tables, so a
--- shared borderColor (or list) would end up as the SAME table on every row, and
--- recolouring one would recolour the lot.
-local function auraRowDefaults(y)
+-- A function rather than a table shared by all four rows: core's applyDefaults
+-- copies scalars but recurses into tables, so a shared borderColor (or list)
+-- would be the SAME table on every row and recolouring one would recolour all.
+local function auraRowDefaults(y, size)
     return {
         enabled     = true,
-        size        = 20,
+        size        = size,
         spacing     = 2,
         max         = 8,
         growth      = "center",  -- a value from Data.AURA_GROWTHS below
         x           = 0,
         y           = y,         -- up from the top edge of the health bar
         onlyMine    = false,
-        showTimer   = true,
+        -- Off: at this icon size the swipe alone says how long is left, and a
+        -- number on top of it is one more thing in the middle of a pull.
+        showTimer   = false,
         showStacks  = true,
         timerSize   = 9,
         borderSize  = 1,
@@ -89,23 +82,26 @@ local function auraRowDefaults(y)
 end
 
 local DEFAULTS = {
-    enabled = false,
+    -- On: this module is the reason to install the addon for most of the people
+    -- who install it, and a nameplate module that does nothing until it is found
+    -- in a settings tree is one nobody ever sees. Everything below is set up to
+    -- be usable the moment it comes on.
+    enabled = true,
 
     general = {
-        -- Shared media, applied to every plate regardless of unit type.
-        -- "Clean" and "Expressway" come from LibSharedMedia and are only there
-        -- if a media pack supplying them is installed; barTexture/fontPath both
-        -- fall back to the Blizzard originals when a name can't be resolved, so
-        -- this is a preference rather than a dependency.
+        -- Shared media for every plate. "Clean" and "Expressway" come from
+        -- LibSharedMedia and are only present if a pack supplying them is installed;
+        -- barTexture/fontPath fall back to the Blizzard originals, so this is a
+        -- preference rather than a dependency.
         texture      = "Clean",
         castTexture  = "Clean",
         font         = "Expressway",
         fontSize     = 9,
         fontOutline  = "OUTLINE",
 
-        -- Per-element overrides of `font` above. Each keeps its own picked font
-        -- alongside the flag rather than using nil to mean "off", so unticking
-        -- and re-ticking gets the same font back instead of a reset.
+        -- Per-element overrides of `font`. Each keeps its own picked font alongside the
+        -- flag rather than using nil to mean "off", so unticking and re-ticking gets the
+        -- same font back instead of a reset.
         nameFontEnabled   = false,
         nameFont          = "Friz Quadrata TT",
         healthFontEnabled = false,
@@ -128,6 +124,73 @@ local DEFAULTS = {
         dimInactive    = true,
         inactiveAlpha  = 50,   -- % for plates not engaged with you or your group
 
+        -- Who each unit is swinging at, under the bottom right of its plate. `tot*`
+        -- throughout, because that's what elementFont() reads.
+        --
+        -- Off, alone among the settings on this page, which are otherwise a
+        -- working setup out of the box: this one puts a second line of text on
+        -- every plate on screen, which is a real change to what the game looks
+        -- like and wants asking for. Everything below it is sized and placed for
+        -- the moment it is asked for.
+        totEnabled     = false,
+        totFontEnabled = false,
+        totFont        = "Friz Quadrata TT",
+        totSize        = 15,
+        -- Its own outline and opacity, not the general ones: this line sits over the
+        -- world rather than on a bar, so readability is a different question. Starts
+        -- matching the general outline and fully opaque.
+        totOutline     = "OUTLINE",   -- a value from OUTLINE_OPTIONS in the UI
+        totAlpha       = 100,         -- %
+        -- Which bottom corner the name (and its bar) hangs off. Either way the name is
+        -- pinned by the end nearest that corner and grows inwards, so the corner holds
+        -- still and a long name never drags the element off the plate.
+        totAnchor      = "bottomRight",   -- "bottomRight" | "bottomLeft"
+        -- Nudges in screen directions rather than mirrored ones: +X is right on both
+        -- sides. Applied to the anchor point rather than the text, so moving it moves
+        -- the corner it grows from instead of flipping the direction.
+        totX           = 0,
+        totY           = 7,
+        -- What decides the name's colour. One setting rather than a stack of switches,
+        -- since the three are alternatives and only one can win.
+        --
+        --   "class"  the class colour of whatever is being hit, which only a player has.
+        --            Falls back to `totColor` for anything else.
+        --   "health" green at full through yellow to red at empty.
+        --   "drain"  the same ramp spent right to left across the letters: the name is
+        --            drawn twice and the coloured copy clipped to health left. Needs
+        --            SetClipsChildren; falls back to "health".
+        --   "custom" `totColor`, flat.
+        totColorMode   = "class",   -- "class" | "health" | "drain" | "custom"
+        totColor       = { 0.80, 0.80, 0.80 },
+
+        -- The health ramp, used by whichever of the name and bar is set to it. Three
+        -- colours, not two: a fade to the middle then off it, so green and red ends
+        -- don't put a muddy olive at half health. Set the middle to the halfway blend of
+        -- the ends and it becomes one plain fade.
+        totRampFull    = { 0.00, 1.00, 0.00 },   -- at full health
+        totRampMid     = { 1.00, 1.00, 0.00 },   -- at half
+        totRampEmpty   = { 1.00, 0.00, 0.00 },   -- at empty
+        -- What the spent part of a draining name is left wearing.
+        totSpentColor  = { 0.35, 0.35, 0.35 },
+
+        -- A health bar for that unit, under or over its name. `totBarWidth = 0` means
+        -- "as wide as the name", so a bar ending where the name ends reads as part of
+        -- it; any other value is a fixed pixel width.
+        -- Off with the name it belongs to, and for the same reason.
+        totBarEnabled   = false,
+        -- Colours the bar by how much is left rather than taking the name's colour. On
+        -- by default, since the ramp answers "how hurt is it" without being looked at.
+        -- Unticking hands it back to the name's colour.
+        totBarGradient  = true,
+        totBarTexture   = "Clean",
+        totBarHeight    = 8,
+        -- Fixed rather than name-width: above the name, a bar that changed width
+        -- with every unit read as the plate itself twitching.
+        totBarWidth     = 75,
+        totBarPlacement = "above",   -- "above" | "below", relative to the name
+        totBarX         = 0,
+        totBarY         = 4,
+
         -- CVar-backed engine settings. Applied on login and whenever they
         -- change; deferred out of combat when the game refuses them.
         showEnemies  = true,
@@ -137,14 +200,20 @@ local DEFAULTS = {
         stacking     = true,   -- nameplateMotion: stacked instead of overlapping
         overlapV     = 110,    -- % vertical spacing when stacking
 
-        -- Pins the engine's own distance and target scaling to 1, so this
-        -- module's scale settings are the only thing sizing a plate. On by
-        -- default: the engine's scaling compounds with ours, which is not what
-        -- anyone means when they set a target scale of 110%.
+        -- Pins the engine's own distance and target scaling to 1, so this module's
+        -- settings are the only thing sizing a plate. On by default: the engine's
+        -- scaling compounds with ours.
         constantSize = true,
         -- Snapshot of the scale CVars as they were before the pin, so unticking
         -- gives back what you had. Written by the engine, not a preference.
         savedScaleCVars = nil,
+
+        -- The same for the engine's fading. The client dims every plate that isn't your
+        -- target (nameplateNotSelectedAlpha, 0.5) and fades distant ones, on the BASE
+        -- plate our frame is a child of — so it lands on top of everything the Fade
+        -- settings decide, and turning "fade the other nameplates" off doesn't stop it.
+        constantAlpha = true,
+        savedAlphaCVars = nil,
     },
 
     enemyNPC = {
@@ -155,8 +224,8 @@ local DEFAULTS = {
         showName      = true,
         nameSize      = 8,
         -- On the bar rather than above it, which is what the 22px height and the
-        -- 15-character truncation below are sized for: the name shares the bar
-        -- with the health text, so it has to be small and bounded.
+        -- 15-character truncation are sized for: the name shares the bar with the health
+        -- text, so it must be small and bounded.
         namePlacement = "innerLeft",  -- a value from Data.NAME_PLACEMENTS below
         nameX         = 0,
         nameY         = 0,
@@ -179,18 +248,23 @@ local DEFAULTS = {
 
     enemyPlayer = {
         enabled       = true,
-        width         = 150,
-        height        = 17,
+        -- The same rect as an enemy NPC's. Two plate sizes on screen at once
+        -- reads as two addons, and in the open world the players and the mobs
+        -- are stood among each other.
+        width         = 180,
+        height        = 22,
         scale         = 100,
-        classColor    = true,   -- health bar takes the class colour
+        classColor    = true,   -- health bar takes the class color
         classColorName = true,  -- so does the name text
         -- Players you can't attack lose the bar entirely and keep just a name.
         nameOnlyWhenSafe = true,
+        -- Its own size here, because the one above is sized to share the bar with the
+        -- level and health text. With those gone the name is the whole plate.
+        nameOnlySize     = 12,
         showName      = true,
         nameSize      = 10,
-        -- Matching enemyNPC: on the bar, not above it. A player plate that
-        -- labels itself in a different place from every mob plate next to it
-        -- reads as two different addons.
+        -- Matching enemyNPC: on the bar, not above it. A player plate labelling itself
+        -- somewhere different from every mob plate beside it reads as two addons.
         namePlacement = "innerLeft",  -- a value from Data.NAME_PLACEMENTS below
         nameX         = 0,
         nameY         = 0,
@@ -214,8 +288,13 @@ local DEFAULTS = {
     threat = {
         enabled             = true,
         tankMode            = false,
-        combatOnly          = true,  -- only recolour units actually in combat
-        overrideNpcColors   = true,  -- threat beats a custom NPC colour…
+        -- Only recolor mobs that are fighting YOU or your group. Everything else
+        -- keeps the reaction color below — hostile red, neutral yellow — which is
+        -- what a mob you have nothing to do with should be saying. Without this,
+        -- anything in combat with anybody reports the bottom of a threat table
+        -- you are not on, i.e. reassuring green on a mob that would still eat you.
+        combatOnly          = true,
+        overrideNpcColors   = true,  -- threat beats a custom NPC color…
         overrideOnlyOnAggro = true,  -- …but only once you've actually pulled it
         overrideOnGaining   = true,  -- …counting "about to pull" as pulled too
         colors = {
@@ -223,10 +302,9 @@ local DEFAULTS = {
             noThreat   = { 0.25, 0.80, 0.35 },
             gaining    = { 0.95, 0.80, 0.20 },
             aggro      = { 0.90, 0.15, 0.15 },
-            -- Sitting on a raid member assigned Main Tank. Deliberately a cool,
-            -- desaturated slate: it has to read as "not your problem" at a
-            -- glance, which means not competing with the green/amber/red ladder
-            -- that everything else on screen is using.
+            -- Sitting on a raid member assigned Main Tank. A cool desaturated slate
+            -- deliberately: it must read as "not your problem" without competing with the
+            -- green/amber/red ladder everything else uses.
             mainTank   = { 0.45, 0.58, 0.72 },
             -- Tank mode inverts the meaning of the same three states.
             tankSecure = { 0.25, 0.55, 0.95 },
@@ -246,81 +324,63 @@ local DEFAULTS = {
         highlight      = true,
         highlightColor = { 1.00, 1.00, 1.00 },
         highlightSize  = 2,
-        -- Ornament drawn around the targeted plate, picked from
-        -- Data.TARGET_INDICATORS below. "None" is the off switch, so this needs
-        -- no separate enable flag.
+        -- Ornament around the targeted plate, from Data.TARGET_INDICATORS. "None" is the
+        -- off switch, so this needs no separate enable flag.
         indicator             = "Pins",
-        indicatorColorEnabled = false,   -- each preset carries its own colour
-        indicatorColor        = { 0.48, 0.66, 0.88 },
+        indicatorColorEnabled = false,   -- each preset carries its own color
+        indicatorColor        = { 0.00, 0.44, 1.00 },
         scale          = 110,   -- % on top of the group scale
         alpha          = 100,   -- % for the targeted plate
-        -- Off, with the others at full: the "fade bystanders" setting in general
-        -- covers dimming by what's actually fighting you, which is a better
-        -- reason to push a plate back than merely not being the current target.
+        -- Off, with the others at full: the "fade bystanders" setting in general covers
+        -- dimming by what's actually fighting you, which is a better reason to push a
+        -- plate back than merely not being the current target.
         dimOthers      = false,
-        othersAlpha    = 100,   -- % for every other plate while you have a target
+        othersAlpha    = 50,    -- % for every other plate, if dimOthers is switched on
         raise          = true,  -- draw the target's plate above the others
     },
 
-    -- Markers hung off the health bar. Each is placed by picking a point on the
-    -- bar and nudging the icon's CENTRE from there, so "LEFT, x = -10" reads as
-    -- "ten out from the left edge" whatever size the bar is — anchoring the
-    -- icon's own matching edge instead would make every offset depend on the
-    -- icon's size as well.
+    -- Markers hung off the health bar, each placed by picking a point on the bar and
+    -- nudging the icon's CENTRE from there — so "LEFT, x = -10" means "ten out from
+    -- the left edge" at any bar size.
+    --
+    -- Elite and rare ship off: the dragon is a big piece of art to hang on every
+    -- plate in a raid, and their placements below are still what they land on the
+    -- moment either is ticked. The other four are on, sat clear of each other —
+    -- the marker and the faction badge out to the left of the bar, the quest icon
+    -- and the pet icon above it.
     icons = {
-        raidMarker = { enabled = true, anchor = "LEFT",  x = -20, y = 0, size = 30 },
-        quest      = { enabled = true, anchor = "RIGHT", x =  10, y = 0, size = 14 },
+        raidMarker = { enabled = true,  anchor = "LEFT",     x = -20, y =  0, size = 30 },
+        faction    = { enabled = true,  anchor = "LEFT",     x =  -8, y =  0, size = 16 },
+        quest      = { enabled = true,  anchor = "TOPLEFT",  x =   6, y = 11, size = 16 },
+        pet        = { enabled = true,  anchor = "TOPLEFT",  x =   8, y = 10, size = 14 },
+        elite      = { enabled = false, anchor = "RIGHT",    x =  17, y =  0, size = 24 },
+        rare       = { enabled = false, anchor = "TOPRIGHT", x =  10, y =  8, size = 16 },
     },
 
-    -- ── Aura tracking ────────────────────────────────────────────────────────
-    -- Two independent rows of icons above the health bar, buffs and debuffs,
-    -- each with its own whitelist. A whitelist rather than a blacklist because
-    -- a nameplate has room for a handful of icons at most: showing everything
-    -- and then hiding what you don't want round is the wrong way round at that
-    -- size, and in a raid it is the difference between "the two debuffs I care
-    -- about" and an unreadable strip.
+    -- ── Aura tracking ────────────────────────────────────────────────────────────
+    -- Four independent rows, one per (unit type × buffs/debuffs), each with its own
+    -- whitelist. A whitelist rather than a blacklist because a nameplate has room
+    -- for a handful of icons at most.
     --
-    -- Both lists start EMPTY, so nothing is drawn until something is added.
-    -- That's deliberate — this is a nameplate replacement, not an aura addon,
-    -- and switching it on should never paper the screen with icons.
+    -- Split by unit type first, because that's where the answers differ: debuffs
+    -- stuck on a boss and what an enemy healer is running with are different lists,
+    -- wanted at different sizes and places. Friendly units borrow the matching enemy
+    -- block, as they borrow its styling group.
     --
-    -- The two rows default to stacking: debuffs just off the bar, buffs a row
-    -- above them, so turning both on doesn't pile one on top of the other.
-    -- Four independent rows of icons, one per (unit type × buffs/debuffs). The
-    -- split is by unit type first because that is where the answers genuinely
-    -- differ: the debuffs you have stuck on a boss and what the enemy healer is
-    -- running around with are different lists, wanted at different sizes, in
-    -- different places, and a single pair of rows could only ever be a
-    -- compromise between the two.
+    -- Every list starts EMPTY, so nothing draws until something is added. Within a
+    -- unit type the rows stack, so turning both on doesn't pile one on the other.
     --
-    -- Every list starts EMPTY, so nothing is drawn until something is added.
-    -- That's deliberate — this is a nameplate replacement, not an aura addon,
-    -- and switching it on should never paper the screen with icons.
-    --
-    -- Within a unit type the two rows default to stacking: debuffs just off the
-    -- bar, buffs a row above them, so turning both on doesn't pile one on top
-    -- of the other.
-    --
-    -- Friendly units borrow the matching enemy block, exactly as they borrow
-    -- its styling group (see unitKind in the engine).
-    --
-    -- `fromEvents` is off for NPCs and on for players because that is where the
-    -- client differs: debuffs on an NPC come back off the unit fine, and a
-    -- hostile player's buffs never do (see the engine's inference block).
-    -- Inferring what can be read properly would only be a worse copy of it.
+    -- `fromEvents` is off for NPCs and on for players: debuffs on an NPC come back
+    -- off the unit fine, a hostile player's buffs never do.
     auras = {
         enabled = true,
 
-        -- Every aura the module has seen on a nameplate, kept so the whitelists
-        -- can be filled from a list of things you have actually met rather than
-        -- from memory or a database site. Same idea as the auto-detected NPC
-        -- list, and on by default for the same reason: a catalogue you have to
-        -- switch on before it starts collecting is empty exactly when you first
-        -- go looking for it.
+        -- Every aura seen on a nameplate, so whitelists can be filled from things
+        -- actually met. On by default, like the auto-detected NPC list: a catalogue you
+        -- must switch on first is empty exactly when you go looking for it.
         --
-        -- Collapsed by spell NAME, not by ID. Ranks would otherwise fill it with
-        -- eight rows of the same shout, and the name is what a whitelist entry
-        -- made from one of these rows will match on anyway.
+        -- Collapsed by spell NAME, not ID — ranks would fill it with eight rows of the
+        -- same shout, and the name is what a whitelist entry matches on anyway.
         learn = true,
         learned = {
             buffs   = { list = {}, n = 0 },
@@ -328,17 +388,58 @@ local DEFAULTS = {
         },
 
         units = {
+            -- Buffs sit a full row above the debuffs (the y is measured from the
+            -- top of the health bar, so it has to clear the debuff row's own
+            -- icons), and the player rows run slightly larger than the NPC ones
+            -- because there are never forty players on screen at once.
             enemyPlayer = {
                 fromEvents = true,
-                buffs      = auraRowDefaults(28),
-                debuffs    = auraRowDefaults(4),
+                buffs      = auraRowDefaults(40, 32),
+                debuffs    = auraRowDefaults(4,  32),
             },
             enemyNPC = {
                 fromEvents = false,
-                buffs      = auraRowDefaults(28),
-                debuffs    = auraRowDefaults(4),
+                buffs      = auraRowDefaults(36, 28),
+                debuffs    = auraRowDefaults(4,  28),
             },
         },
+    },
+
+    -- ── Boss mod timers ──────────────────────────────────────────────────────────
+    -- A fifth strip of icons off the health bar's top-left, fed by DBM and BigWigs
+    -- rather than the game: both run a countdown bar for the mechanic you're waiting
+    -- on, and both can say which unit it's about. That GUID is the whole feature —
+    -- it turns a line on a list off to one side into an icon on the mob it belongs
+    -- to, which is the difference between four identical Shield Wall bars and
+    -- knowing which horseman.
+    --
+    -- Top-left rather than above the bar, since the aura rows are already there and
+    -- this has to be readable on a plate wearing both.
+    bossMods = {
+        enabled     = true,
+        -- One switch per boss mod. Having both installed and reporting the same pull is
+        -- a real state, hence two switches rather than one dropdown.
+        dbm         = true,
+        bigwigs     = true,
+
+        -- Bigger than the aura icons on the same plate, deliberately: these are
+        -- the mechanic you are waiting on, and they are competing with a screen
+        -- full of everything else during a pull.
+        size        = 32,
+        spacing     = 3,
+        max         = 3,
+        -- Leftwards, away from the corner it is pinned to, so a second timer
+        -- grows out into empty space instead of over the health bar.
+        growth      = "left",
+        x           = -4,
+        y           = 4,
+        -- Off: the swipe on an icon this size is readable on its own, and the
+        -- number sits over the art it is counting down.
+        showTimer   = false,
+        showStacks  = false,
+        timerSize   = 10,
+        borderSize  = 1,
+        borderColor = { 0.00, 0.00, 0.00 },
     },
 
     -- [npcID] = { name, zone, rename, enabled, color = {r,g,b}, auto }
@@ -349,20 +450,49 @@ local DEFAULTS = {
 
 addon.RegisterDefaults("nameplates", DEFAULTS)
 
+-- This module is why profile exports got unwieldy: a raid night's worth of
+-- learned auras and auto-detected mobs is local discovery, and it outweighed
+-- the actual settings five to one. So an exported profile carries only what the
+-- profile is actually SET to watch — the whitelists under auras.units, and the
+-- NPC rows that are switched on. Everything else is this account's record of
+-- what it has met, and refills itself on whoever imports the string.
+--
+-- Registered defensively: an older core has neither registry (they arrived
+-- together, so one check covers both).
+if addon.RegisterExportPruner and addon.RegisterImportFiller then
+    addon.RegisterExportPruner("nameplates", function(np)
+        -- The catalogue of every aura seen. The whitelists it exists to be
+        -- picked from live elsewhere (auras.units) and travel untouched.
+        if type(np.auras) == "table" then np.auras.learned = nil end
+
+        -- Switched-off rows go, whether auto-detected or hand-made: a disabled
+        -- entry changes nothing about how the importer's plates look, so it's
+        -- the same "seen it" note the auto rows are.
+        if type(np.npcs) == "table" then
+            for id, e in pairs(np.npcs) do
+                if not (type(e) == "table" and e.enabled) then np.npcs[id] = nil end
+            end
+        end
+    end)
+
+    -- And on the way back in, those whitelists append themselves to the Learned
+    -- tab, so it lists what the profile watches for rather than nothing at all.
+    -- Only the names it doesn't already hold — see AddListsToLearned. The NPC
+    -- side needs no counterpart: its rows ARE the list, so the ones that
+    -- travelled are in it already, and an import can only add to it.
+    addon.RegisterImportFiller("nameplates", function(np)
+        Data.AddListsToLearned(np)
+    end)
+end
+
 -- ── Health text formats ──────────────────────────────────────────────────────
 -- One ordered list drives both the dropdown and the engine, so a format can't
--- exist in one and not the other.
+-- exist in one and not the other. The label IS the example, since the six differ
+-- only in looks.
 --
--- The label IS the example. "Current + percent" tells you less about what ends
--- up on the bar than "6.7k  100%" does, and the whole reason to have six of
--- these is that the difference between them is purely how they look.
---
--- `build` takes the already-shortened numbers rather than the raw ones: the
--- engine owns how 6723 becomes "6.7k", and a format that re-derived that would
--- be free to disagree with the others.
---
--- The first four values are the ones that shipped originally, kept spelled
--- exactly as they were so existing profiles keep the format they chose.
+-- `build` takes the already-shortened numbers — the engine owns how 6723 becomes
+-- "6.7k", and a format re-deriving it could disagree. The first four values are
+-- spelled exactly as they shipped, so existing profiles keep their choice.
 Data.HEALTH_FORMATS = {
     { value = "percent",     label = "100%",        build = function(_, p) return p .. "%" end },
     { value = "current",     label = "6.7k",        build = function(c) return c end },
@@ -381,19 +511,13 @@ for _, e in ipairs(Data.HEALTH_FORMATS) do
 end
 
 -- ── Name placement ───────────────────────────────────────────────────────────
--- Where the unit's name sits relative to the health bar. Each entry is the pair
--- of anchor points that puts it there, plus the justification that matches — a
--- name anchored by its right edge and left-justified drifts away from its anchor
--- as the text gets shorter, so the two are never picked independently.
+-- Each entry is the pair of anchor points plus the matching justification: a
+-- name anchored by its right edge and left-justified drifts as the text
+-- shortens, so the two are never picked independently.
 --
--- `dx`/`dy` are the built-in breathing room, not a preference: "above" wants a
--- few pixels of gap or the text sits on the border, and the inner placements
--- want an inset so the text isn't flush against the bar's outline. The user's
--- own nudge is added on top of these.
---
--- `row` is what the layout code needs to know beyond the anchoring: whether the
--- name is sharing the strip above the bar with the level text (and so has to
--- leave room for it), or is on the bar itself (and is bounded by it).
+-- `dx`/`dy` are built-in breathing room, not a preference — the user's own nudge
+-- is added on top. `row` tells the layout code whether the name shares the strip
+-- above the bar with the level text or is on the bar itself.
 Data.NAME_PLACEMENTS = {
     { value = "aboveLeft",   label = "Above — left",   point = "BOTTOMLEFT",  rel = "TOPLEFT",     justify = "LEFT",   row = "above", dx =  0, dy =  3 },
     { value = "aboveCenter", label = "Above — centre", point = "BOTTOM",      rel = "TOP",         justify = "CENTER", row = "above", dx =  0, dy =  3 },
@@ -417,24 +541,17 @@ function Data.NamePlacement(value)
 end
 
 -- ── Target indicators ────────────────────────────────────────────────────────
--- Ornaments placed around the targeted plate's health bar, ported from the
--- preset table in ClassicNameplatesPlus (which took them from Plater), so the
--- looks are the familiar ones.
+-- Ported from ClassicNameplatesPlus (which took them from Plater), so the looks
+-- are familiar.
 --
--- `coords` decides the shape: four entries are drawn one per corner (top-left,
--- bottom-left, bottom-right, top-right, in that order), two entries are drawn at
--- the left and right edges. Some coord pairs run high→low on purpose — that
--- mirrors the crop, which is how one piece of art serves all four corners.
--- `x`/`y` push each piece outwards from its anchor, and scale with the art.
+-- `coords` decides the shape: four entries draw one per corner (TL, BL, BR, TR),
+-- two draw at the left and right edges. Some pairs run high→low on purpose, which
+-- mirrors the crop so one piece of art serves all four corners.
 --
--- Sizes are in the art's own units, not pixels: `autoScale` measures them
--- against the health bar's height so an indicator keeps its proportions at any
--- nameplate size, while `scale` pins a fixed multiplier instead.
---
--- Every preset here crops art the game itself ships, so this module needs no
--- media files of its own. ClassicNameplatesPlus's three Arrow presets are
--- deliberately absent: those read .tga files out of that addon's media folder,
--- and this module doesn't carry them.
+-- Sizes are in the art's own units: `autoScale` measures against the bar height
+-- so proportions hold at any plate size, `scale` pins a fixed multiplier. Every
+-- preset crops art the game ships, so no media files are needed — CNP's Arrow
+-- presets are absent because they read .tga files from that addon's folder.
 Data.TARGET_INDICATORS = {
     ["Magneto"] = {
         path   = "Interface\\Artifacts\\RelicIconFrame",
@@ -539,7 +656,7 @@ Data.TARGET_INDICATOR_ORDER = {
     "Ornament", "Golden", "Ornament Gray", "Epic",
 }
 
--- Named preset colours. Only these two are used above; anything unrecognised
+-- Named preset colors. Only these two are used above; anything unrecognised
 -- falls back to white.
 Data.INDICATOR_COLORS = {
     white = { 1, 1, 1 },
@@ -547,13 +664,9 @@ Data.INDICATOR_COLORS = {
 }
 
 -- ── Aura tracking ────────────────────────────────────────────────────────────
--- Which way a row of icons grows out of its anchor point. "Centred" keeps the
--- whole strip centred on the bar and widens both ways; the other two pin the
--- FIRST icon to one edge and add the rest behind it, so the icon you look at
--- first never moves as auras come and go.
--- `short` is what a half-width column's dropdown can actually show. The long
--- form says what each one does and is the one worth reading once; the short
--- form is the one you pick from afterwards.
+-- Which way a row grows from its anchor. "Centred" widens both ways; the other
+-- two pin the FIRST icon to one edge, so the icon you look at first never moves.
+-- `short` is what a half-width column's dropdown can show.
 Data.AURA_GROWTHS = {
     { value = "center", label = "Centred — grows both ways",      short = "Centred"    },
     { value = "right",  label = "From the left edge, rightwards", short = "Rightwards" },
@@ -576,8 +689,7 @@ Data.AURA_UNITS = {
 }
 
 -- The four unit kinds the engine sorts plates into, folded onto the two blocks
--- above — friendly units borrow the matching enemy block the same way they
--- borrow its styling group.
+-- above — friendly units borrow the matching enemy block.
 Data.AURA_UNIT_FOR_KIND = {
     enemyPlayer    = "enemyPlayer",
     friendlyPlayer = "enemyPlayer",
@@ -585,9 +697,8 @@ Data.AURA_UNIT_FOR_KIND = {
     friendlyNPC    = "enemyNPC",
 }
 
--- Name and icon for a spell ID *or* a spell name. Classic Era still has the
--- global getters, but C_Spell is what newer builds expect, so prefer it and
--- fall back — a client with neither costs this feature and nothing else.
+-- Name and icon for a spell ID *or* name. Classic Era still has the global
+-- getters, but C_Spell is what newer builds expect, so prefer it and fall back.
 function Data.SpellInfo(key)
     if not key then return nil end
     if C_Spell and C_Spell.GetSpellInfo then
@@ -629,22 +740,16 @@ function Data.AuraList(unitKey, which)
 end
 
 -- ── Migration: one pair of rows to four ──────────────────────────────────────
--- The buffs/debuffs settings used to live at auras.buffs and auras.debuffs and
--- apply to every nameplate. Splitting them by unit type would otherwise throw
--- away whatever was already whitelisted, so the old block is copied onto BOTH
--- unit types and then removed. Copied rather than moved because there is no
--- basis for guessing which type the entries were meant for — they applied to
--- everything, so they keep applying to everything.
+-- buffs/debuffs used to live at auras.buffs/auras.debuffs and apply to every
+-- plate. The old block is copied onto BOTH unit types and then removed — copied,
+-- not moved, since there's no basis for guessing which type entries were for.
 --
 -- Self-limiting with no version flag: the old keys are gone afterwards and
 -- DEFAULTS no longer carries them, so applyDefaults can't put them back.
 --
--- The test for "has this profile already been split" is whether the target row
--- has a whitelist of its own, NOT whether it exists. It always exists by the
--- time this runs: core's applyDefaults has been over the profile first and has
--- filled every new row in with the shipped defaults, so an "is it there yet"
--- check would answer yes on exactly the profiles that still need migrating —
--- and the entries would then be deleted along with the old block.
+-- The "already split?" test is whether the target row has a whitelist of its
+-- own, NOT whether it exists — it always exists by now, since applyDefaults has
+-- already filled every new row with the shipped defaults.
 local function copyDeep(src)
     if type(src) ~= "table" then return src end
     local out = {}
@@ -662,9 +767,8 @@ function Data.MigrateAuras()
     for _, def in ipairs(Data.AURA_UNITS) do
         local u = a.units[def.key] or {}
         a.units[def.key] = u
-        -- The one flag of the intermediate shape that survives applyDefaults
-        -- (nothing in the new defaults refills it), and the only one worth
-        -- carrying: a unit type switched off entirely is now both its rows off.
+        -- The one flag of the intermediate shape that survives applyDefaults, and the
+        -- only one worth carrying: a unit type switched off entirely is now both rows off.
         local typeOff = (u.enabled == false)
 
         for _, which in ipairs({ "buffs", "debuffs" }) do
@@ -689,10 +793,9 @@ function Data.MigrateAuras()
     Data.InvalidateAuras()
 end
 
--- One whitelist entry is keyed by what it matches on: the spell ID as a string
--- for a numeric entry, the lowercased spell name for a written one. Keying on
--- the *matching* form is what stops "Rend" and "rend" becoming two rows that
--- both fire on the same aura.
+-- An entry is keyed by what it matches on: the spell ID as a string for a
+-- numeric entry, the lowercased name for a written one. Keying on the *matching*
+-- form is what stops "Rend" and "rend" becoming two rows firing on one aura.
 function Data.AuraKeyFor(text)
     if type(text) == "number" then text = tostring(text) end
     if type(text) ~= "string" then return nil end
@@ -706,13 +809,9 @@ function Data.AuraKeyFor(text)
     return text:lower(), nil, text
 end
 
--- Adds a spell to one of the whitelists. `text` is whatever was typed: a spell
--- ID or a spell name, since both are things people have to hand (an ID off a
--- database site, a name off the combat log). Returns the entry, or nil plus a
--- message to show.
---
--- The messages are terse because of where they land: a half-width column has
--- room for one short line beside the search box and nothing more.
+-- `text` is whatever was typed: an ID or a name, since both are things people
+-- have to hand. Returns the entry, or nil plus a message — terse, because a
+-- half-width column has room for one short line beside the search box.
 function Data.AddAura(unitKey, which, text)
     local list = Data.AuraList(unitKey, which)
     if not list then return nil, "Not ready yet." end
@@ -722,15 +821,13 @@ function Data.AddAura(unitKey, which, text)
     if list[key] then return nil, "Already on the list." end
 
     local entry = { enabled = true, id = id, name = name }
-    -- An ID is resolvable to a name only if the client has that spell cached,
-    -- which it usually does for anything you have seen. Left nil otherwise and
-    -- backfilled by Data.AuraDisplay the next time the list is drawn.
+    -- An ID resolves to a name only if the client has that spell cached. Left nil
+    -- otherwise and backfilled by Data.AuraDisplay next time the list is drawn.
     if id then entry.name = (Data.SpellInfo(id)) end
 
-    -- Seeded from the catalogue when the module has already met this spell. Not
-    -- an optimisation: without it a name added straight off the Learned tab
-    -- shows a question mark on the very list you just added it to, while the
-    -- page you added it from displays it perfectly — because the icon lives on
+    -- Seeded from the catalogue when the module has already met this spell. Not an
+    -- optimisation: without it a name added straight off the Learned tab shows a
+    -- question mark on the very list you just added it to, because the icon lives on
     -- the catalogue record and the new entry was built without one.
     local rec = Data.LearnedFor(entry.name or name, which)
     if rec then
@@ -754,11 +851,10 @@ function Data.RemoveAura(unitKey, which, key)
     end
 end
 
--- How long the aura lasts, in seconds, for the one case where the game won't
--- say: an aura the engine had to infer from events rather than read off the
--- unit. Nothing to do with real auras — those carry their own duration, and it
--- always wins. Blank (nil) means "no idea", which draws the icon with no swipe
--- and no countdown rather than a made-up one.
+-- Duration for the one case where the game won't say: an aura inferred from
+-- events rather than read off the unit. Real auras carry their own and it always
+-- wins. Blank means "no idea", drawing the icon with no swipe or countdown
+-- rather than a made-up one.
 Data.AURA_DURATION_MAX = 3600
 
 function Data.SetAuraDuration(unitKey, which, key, text)
@@ -777,21 +873,16 @@ function Data.SetAuraDuration(unitKey, which, key, text)
 end
 
 -- ── Learning what a name matches ─────────────────────────────────────────────
--- The client will only resolve a spell NAME that is in your own spellbook, and
--- the effects worth watching on an enemy are exactly the ones that aren't: a
--- triggered stun like "Intercept Stun", another class's shout, a rank you have
--- never trained. So a by-name entry starts with no ID and no art, and there is
--- no table anywhere that could give it one.
+-- The client only resolves a spell NAME in your own spellbook, and the effects
+-- worth watching on an enemy are exactly the ones that aren't. So a by-name
+-- entry starts with no ID and no art, and no table could give it one.
 --
--- What there is, is the aura itself. Every time the engine matches a name entry
--- against a real aura it has both the spell ID and the icon in hand, and writes
--- them back here. The entry teaches itself, once, the first time the thing it is
--- watching for actually turns up — and because entries live in saved variables,
--- it stays taught.
+-- What there is, is the aura itself: every time the engine matches a name entry
+-- against a real one it has the ID and icon in hand and writes them back. Since
+-- entries live in saved variables, it stays taught.
 --
 -- Every ID is kept, not just the first: matching by name is a deliberate "every
--- rank of this", and which ranks that turned out to mean is the one thing the
--- entry can't otherwise tell you.
+-- rank of this", and which ranks that meant is what the entry couldn't tell you.
 function Data.NoteAuraSeen(entry, spellID, icon)
     if type(entry) ~= "table" or type(spellID) ~= "number" then return false end
 
@@ -803,9 +894,8 @@ function Data.NoteAuraSeen(entry, spellID, icon)
     return true
 end
 
--- The IDs this entry has been seen to match, lowest first. Sorted here rather
--- than stored in order: it's read when a tooltip opens and written in the
--- middle of a combat scan, so the cost belongs on the reader.
+-- Sorted here rather than stored in order: it's read when a tooltip opens and
+-- written mid-combat-scan, so the cost belongs on the reader.
 function Data.AuraSeenIDs(entry)
     local out = {}
     if type(entry) == "table" and entry.seen then
@@ -815,20 +905,18 @@ function Data.AuraSeenIDs(entry)
     return out
 end
 
--- What the settings list shows for a row: a readable name and an icon. Both are
--- derived rather than stored for ID entries, and the resolved name is written
--- back so an entry added before the client knew the spell stops being "Spell
--- 12345" once it does.
+-- What the settings list shows for a row. Both derived rather than stored for ID
+-- entries, and the resolved name is written back so an entry added before the
+-- client knew the spell stops being "Spell 12345" once it does.
 function Data.AuraDisplay(entry)
     if type(entry) ~= "table" then return "", nil end
     local lookupKey = entry.id or entry.name
     local name, icon = Data.SpellInfo(lookupKey)
     if name and entry.id and entry.name ~= name then entry.name = name end
 
-    -- Whatever the client wouldn't give us, taken from what the entry has
-    -- learned instead. The stored icon covers the usual case; the walk over the
-    -- seen IDs is for an entry that learned an ID before this code existed, or
-    -- one whose art the client had not cached at the moment it was recorded.
+    -- Whatever the client wouldn't give us, from what the entry has learned. The
+    -- stored icon covers the usual case; the walk over seen IDs is for an entry that
+    -- learned an ID before this code existed, or whose art wasn't cached then.
     if not icon then
         icon = entry.icon
         if not icon and entry.seen then
@@ -841,10 +929,9 @@ function Data.AuraDisplay(entry)
                 end
             end
         end
-        -- Last resort, and the one that catches entries added before any of
-        -- this existed: the catalogue may well have met the spell even though
-        -- this entry never has. Cached onto the entry so it survives the
-        -- catalogue being cleared.
+        -- Last resort, catching entries added before any of this existed: the catalogue
+        -- may have met the spell even though this entry never has. Cached onto the entry
+        -- so it survives the catalogue being cleared.
         if not icon then
             local rec = Data.LearnedFor(entry.name)
             if rec and rec.icon then
@@ -882,19 +969,23 @@ function Data.SortedAuras(unitKey, which, filter)
 end
 
 -- ── Learned aura catalogue ───────────────────────────────────────────────────
--- What the module has seen, as opposed to what it has been told to watch for.
--- The whitelists answer "show me this"; this answers "what is there to ask
--- for", which is the question you actually have when a debuff you want has no
--- name you can spell and no ID you can find.
+-- What the module has SEEN, as opposed to what it's been told to watch for. The
+-- whitelists answer "show me this"; this answers "what is there to ask for".
 --
--- Capped, because a raid night meets more auras than anyone will scroll
--- through, and an unbounded saved variable is a saved variable that eventually
--- becomes a problem. Once full it stops taking NEW names but keeps filling in
--- extra ranks and missing art for the ones it has.
+-- Capped, because a raid night meets more auras than anyone will scroll through.
+-- Once full it stops taking NEW names but keeps filling in extra ranks and
+-- missing art for the ones it has.
 Data.LEARNED_CAP = 400
 
-function Data.LearnedBucket(which)
-    local d = Data.Get()
+-- How many distinct NPCs one record names before it stops collecting. A debuff
+-- you apply yourself is seen on everything you fight, so uncapped a single row
+-- would list every mob in the game. Players collapse to the one word "Player",
+-- since which player wore it is never the question.
+Data.LEARNED_SOURCE_CAP = 12
+
+-- Takes the settings block explicitly, because the import rebuilder fills a
+-- profile that isn't the active one (and may never be).
+local function learnedBucketIn(d, which)
     if not d then return nil end
     d.auras = d.auras or {}
     d.auras.learned = d.auras.learned or {}
@@ -908,10 +999,18 @@ function Data.LearnedBucket(which)
     return b
 end
 
--- Returns true when something was actually recorded, so the caller can tell an
--- open settings list to redraw. False is the overwhelmingly common answer —
--- this is called for every aura on every plate — and costs a hash lookup.
-function Data.NoteLearnedAura(which, spellID, name, icon)
+function Data.LearnedBucket(which)
+    return learnedBucketIn(Data.Get(), which)
+end
+
+-- Returns true when something was actually recorded, so the caller can redraw an
+-- open settings list. False is the overwhelmingly common answer — this runs for
+-- every aura on every plate — and costs a hash lookup.
+--
+-- `isPlayer` and `unitName` describe what was WEARING the aura, which is what
+-- turns a bare list of names into something actionable: "Free Action" next to
+-- Player reads differently from "Bile Sludge" next to a boss.
+function Data.NoteLearnedAura(which, spellID, name, icon, isPlayer, unitName)
     if type(name) ~= "string" or name == "" then return false end
     local b = Data.LearnedBucket(which)
     if not b then return false end
@@ -937,7 +1036,102 @@ function Data.NoteLearnedAura(which, spellID, name, icon)
         rec.icon = icon or select(2, Data.SpellInfo(spellID or name))
         if rec.icon then learned = true end
     end
+
+    if isPlayer then
+        -- One flag, not a list of names. See LEARNED_SOURCE_CAP.
+        if not rec.player then
+            rec.player = true
+            learned = true
+        end
+    elseif type(unitName) == "string" and unitName ~= "" then
+        rec.npcs = rec.npcs or {}
+        if not rec.npcs[unitName] and (rec.npcN or 0) < Data.LEARNED_SOURCE_CAP then
+            rec.npcs[unitName] = true
+            rec.npcN = (rec.npcN or 0) + 1
+            learned = true
+        end
+    end
+
     return learned
+end
+
+-- Adds a profile's tracked auras to its own catalogue, for a profile that
+-- arrived as an import. The export drops the catalogue — it's an account's
+-- record of what it has met, and it was most of the string — so without this the
+-- Learned tab of an imported profile is empty even though its rows are already
+-- being tracked, and the importer can't see what the profile watches for except
+-- by opening each whitelist. Every tracked aura goes in, enabled or not: a row
+-- switched off is still one the profile knows about and offers.
+--
+-- Purely additive. A name already in the catalogue is left exactly as it stands,
+-- IDs and art and sightings included — this only ever appends the ones missing,
+-- so it can't overwrite what a catalogue learned the honest way.
+--
+-- No sources are invented either. The "seen on" column is a record of sightings,
+-- and an appended row has none — it shows "—" until this client meets the aura
+-- itself, and then fills itself in.
+--
+-- `np` is a settings.nameplates block, not necessarily the active one.
+function Data.AddListsToLearned(np)
+    if type(np) ~= "table" or type(np.auras) ~= "table" then return 0 end
+    local units = np.auras.units
+    if type(units) ~= "table" then return 0 end
+
+    local added = 0
+    for _, unit in pairs(units) do
+        if type(unit) == "table" then
+            for _, which in ipairs({ "buffs", "debuffs" }) do
+                local row  = unit[which]
+                local list = type(row) == "table" and row.list or nil
+                if type(list) == "table" then
+                    local b = learnedBucketIn(np, which)
+                    for _, entry in pairs(list) do
+                        -- Catalogue records are keyed by name, so an ID-only
+                        -- entry the client can't resolve has nothing to file
+                        -- under and is skipped. It still tracks fine; it just
+                        -- can't be listed until the client knows the spell.
+                        local name = type(entry) == "table"
+                            and (entry.name or (entry.id and (Data.SpellInfo(entry.id)))) or nil
+                        if b and type(name) == "string" and name ~= "" then
+                            local key = name:lower()
+                            if not b.list[key] and b.n < Data.LEARNED_CAP then
+                                -- Seeded with everything the whitelist entry itself
+                                -- knows: the ID it was added by, plus every rank it
+                                -- has since matched.
+                                local ids = {}
+                                if entry.id then ids[entry.id] = true end
+                                for seenID in pairs(entry.seen or {}) do ids[seenID] = true end
+
+                                b.list[key] = {
+                                    name = name,
+                                    ids  = ids,
+                                    icon = entry.icon or select(2, Data.SpellInfo(entry.id or name)),
+                                }
+                                b.n = b.n + 1
+                                added = added + 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return added
+end
+
+-- What was seen wearing this, for display. "Player" leads when it applies —
+-- it's the category the other entries are exceptions to — and the NPCs follow
+-- in name order so the list doesn't reshuffle between draws.
+function Data.LearnedSources(rec)
+    local out = {}
+    if type(rec) ~= "table" then return out end
+    if rec.player then out[#out + 1] = "Player" end
+
+    local npcs = {}
+    for npc in pairs(rec.npcs or {}) do npcs[#npcs + 1] = npc end
+    table.sort(npcs)
+    for _, npc in ipairs(npcs) do out[#out + 1] = npc end
+    return out
 end
 
 function Data.ClearLearned(which)
@@ -948,13 +1142,11 @@ function Data.ClearLearned(which)
 end
 
 -- The catalogue's record for a spell name, whichever list it landed in. This is
--- how a whitelist entry gets art for a spell the client will not look up by
--- name: the module has already met it, written down what it looked like, and
--- the two are only keyed apart by which table they are in.
+-- how a whitelist entry gets art for a spell the client won't look up by name:
+-- the module has already met it and written down what it looked like.
 --
--- `which` is a preference, not a filter — a name that exists as both a buff and
--- a debuff should answer with the one being asked about, but either record's
--- icon beats no icon at all.
+-- `which` is a preference, not a filter — a name existing as both buff and
+-- debuff should answer with the one asked about, but either icon beats none.
 function Data.LearnedFor(name, which)
     if type(name) ~= "string" or name == "" then return nil end
     local key = name:lower()
@@ -984,8 +1176,9 @@ function Data.LearnedIDs(rec)
 end
 
 -- Sorted by name, same as the whitelists, so the two lists read alike. `filter`
--- matches the name and any of the IDs, because "I know it was 25289" is as
--- likely to be what you have as the name is.
+-- matches the name, any of the IDs, and what was seen wearing it — because
+-- "I know it was 25289" and "show me everything that boss does" are both things
+-- you turn up with, as often as the spell's name is.
 function Data.SortedLearned(which, filter)
     local b = Data.LearnedBucket(which)
     local out = {}
@@ -999,6 +1192,12 @@ function Data.SortedLearned(which, filter)
             if not ok then
                 for id in pairs(rec.ids or {}) do
                     if tostring(id):find(filter, 1, true) then ok = true; break end
+                end
+            end
+            if not ok and rec.player and ("player"):find(filter, 1, true) then ok = true end
+            if not ok then
+                for npc in pairs(rec.npcs or {}) do
+                    if npc:lower():find(filter, 1, true) then ok = true; break end
                 end
             end
         end
@@ -1105,9 +1304,9 @@ function Data.GetNpc(npcID)
     return npcID and d and d.npcs and d.npcs[npcID] or nil
 end
 
--- The colour this NPC should paint its health bar, or nil when the entry is
--- absent, switched off, or has no colour of its own (auto-detected entries
--- start colourless — they're a record that you've seen the mob, not a rule).
+-- The color this NPC should paint its health bar, or nil when the entry is
+-- absent, switched off, or has no color of its own (auto-detected entries
+-- start colorless — they're a record that you've seen the mob, not a rule).
 function Data.GetNpcColor(npcID)
     local e = Data.GetNpc(npcID)
     if e and e.enabled and type(e.color) == "table" then return e.color end
@@ -1122,7 +1321,7 @@ function Data.GetNpcName(npcID)
 end
 
 -- Records an NPC the engine has just seen for the first time. New entries land
--- switched off and colourless so simply walking through a zone never changes
+-- switched off and colorless so simply walking through a zone never changes
 -- how anything looks — they're there to be picked out of the list later.
 -- Returns true only when a genuinely new row was added, so the caller can
 -- refresh an open settings list without diffing the whole table.
@@ -1134,7 +1333,7 @@ function Data.Remember(npcID, name, zone)
     local e = d.npcs[npcID]
     if e then
         -- Backfill what a hand-added (ID-only) entry is missing, but never
-        -- touch the user's own rename/colour/enabled choices.
+        -- touch the user's own rename/color/enabled choices.
         if not e.name or e.name == "" then e.name = name end
         if (not e.zone or e.zone == "") and zone and zone ~= "" then e.zone = zone end
         return false
@@ -1151,7 +1350,7 @@ function Data.RemoveNpc(npcID)
 end
 
 -- Drops every entry that was auto-detected and never configured. Deliberately
--- keeps anything the user has enabled, renamed or coloured, even if it was
+-- keeps anything the user has enabled, renamed or colored, even if it was
 -- auto-added — otherwise "clear the noise" would also throw away their work.
 -- Returns how many rows went.
 function Data.ClearAutoNpcs()
@@ -1235,8 +1434,10 @@ function Data.ImportNpcs(str)
 
     d.npcs = d.npcs or {}
     local applied = 0
-    for id, e in pairs(incoming) do
-        id = tonumber(id)
+    for key, e in pairs(incoming) do
+        -- Serialized table keys come back as whatever type they went out as, and
+        -- an NPC id is only ever a number here — anything else isn't ours.
+        local id = tonumber(key)
         if id and type(e) == "table" then
             d.npcs[id] = {
                 name    = e.name or (d.npcs[id] and d.npcs[id].name),

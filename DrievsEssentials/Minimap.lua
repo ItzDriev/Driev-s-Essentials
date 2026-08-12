@@ -45,9 +45,8 @@ function addon.CreateMinimapButton()
 
     button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 
-    -- Item Rack ships as an optional sub-addon AND has its own enable toggle, so
-    -- its editor is only on the right-click when the module is both loaded and
-    -- switched on. Otherwise both buttons just open the settings window.
+    -- Item Rack is optional AND has its own toggle, so its editor is on the
+    -- right-click only when loaded and enabled. Otherwise both open settings.
     local function itemRackAvailable()
         local IR = addon.ItemRack
         return IR and IR.ToggleSetEditor and IR.IsEnabled and IR.IsEnabled()

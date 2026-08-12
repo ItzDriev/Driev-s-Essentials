@@ -1,16 +1,12 @@
--- Part of the Action Bars module addon. Hides Blizzard's default action bars so
--- our own LibActionButton-based bars can replace them, mirroring the approach
--- Bartender4 uses (its HideBlizzard.lua). We never destroy the Blizzard frames —
--- they're reparented to a permanently-hidden frame and their buttons are
--- unregistered, which is enough to get them off-screen and stop them fighting us
--- for layout, while leaving the secure action system intact underneath.
+-- Part of the Action Bars module. Hides Blizzard's default bars so ours can
+-- replace them, the way Bartender4 does. Nothing is destroyed: frames are
+-- reparented to a permanently-hidden frame and their buttons unregistered,
+-- which is enough to stop them fighting us for layout while leaving the secure
+-- action system intact.
 --
--- Everything here is deliberately defensive: Classic Era does not have every
--- frame retail does (no MultiBar5/6/7, no MicroMenu, etc.), and a future patch
--- could rename more, so each frame is nil-checked before we touch it. This runs
+-- Everything is nil-checked — Classic Era lacks many frames retail has. Runs
 -- once, guarded by addon.ActionBars.blizzardHidden, and only when the module is
--- actually enabled (see ActionBars.lua) — so a user who disables this addon
--- keeps Blizzard's own bars untouched.
+-- enabled, so disabling this addon leaves Blizzard's bars untouched.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -24,10 +20,9 @@ local function ensureHider()
     return UIHider
 end
 
--- Writing to a table key from insecure code can taint that key even when you're
--- just setting it to nil; this repeatedly no-ops on unrelated numeric keys until
--- the target key reports secure again. Same trick Bartender4 uses (Util:PurgeKey)
--- to clean up after clearing Edit Mode's isShownExternal tracking below.
+-- Writing a table key from insecure code can taint it even when setting nil;
+-- this no-ops on unrelated numeric keys until the target reports secure again.
+-- Same trick as Bartender4's Util:PurgeKey.
 local function purgeKey(t, k)
     t[k] = nil
     local c = 42
@@ -42,13 +37,11 @@ local function hideBarFrame(frame, clearEvents)
     if clearEvents and frame.UnregisterAllEvents then
         frame:UnregisterAllEvents()
     end
-    -- EditMode (1.15.9+) tracks its own frames via `.system` and overrides Hide
-    -- with a version that talks to that system instead of just hiding the frame —
-    -- calling it directly on a frame still marked as an active Edit Mode system
-    -- both fails to actually hide the frame (it stays visible/selectable in
-    -- Blizzard's Edit Mode) and risks tainting that call path. HideBase is the
-    -- untainted original Hide when present (same guard BT4 uses); clearing
-    -- isShownExternal first tells Edit Mode's own bookkeeping the frame is gone.
+    -- EditMode (1.15.9+) tracks frames via `.system` and overrides Hide with a
+    -- version that talks to that system — calling it on a frame still marked as an
+    -- active system both fails to hide it and risks tainting that path. HideBase is
+    -- the untainted original; clearing isShownExternal first tells Edit Mode's
+    -- bookkeeping the frame is gone.
     if frame.system then
         purgeKey(frame, "isShownExternal")
     end
@@ -67,9 +60,8 @@ local function hideButton(button)
     button:SetAttribute("statehidden", true)
 end
 
--- The set of bar frames whose native buttons we blank out. Kept as name strings
--- (looked up via _G) so a missing global on Classic is simply skipped rather
--- than erroring at file-parse time.
+-- Bar frames whose native buttons we blank out. Name strings (looked up via _G)
+-- so a global missing on Classic is skipped rather than erroring at parse time.
 local NATIVE_BUTTON_PREFIXES = {
     "ActionButton",
     "MultiBarBottomLeftButton",
@@ -86,38 +78,28 @@ function addon.HideBlizzardActionBars()
     if addon.ActionBars and addon.ActionBars.blizzardHidden then return end
 
     hideBarFrame(_G.MainMenuBar,        false)
-    -- Classic Era's Edit Mode moved Action Bar 1's actual system frame off
-    -- MainMenuBar (now just a legacy shell with no EditMode integration) onto
-    -- a separate MainActionBar frame (inherits EditModeActionBarTemplate, has
-    -- its own .system/.Selection). Without hiding this too, Edit Mode still
-    -- registers and highlights it as its own "Action Bar 1", alongside ours.
+    -- Classic Era's Edit Mode moved Action Bar 1's system frame off MainMenuBar
+    -- (now a legacy shell) onto MainActionBar. Without hiding it, Edit Mode still
+    -- registers and highlights it alongside ours.
     hideBarFrame(_G.MainActionBar,      false)
     hideBarFrame(_G.MultiBarBottomLeft,  true)
     hideBarFrame(_G.MultiBarBottomRight, true)
     hideBarFrame(_G.MultiBarLeft,        true)
     hideBarFrame(_G.MultiBarRight,       true)
-    -- Both possible globals are hidden regardless of which one the running
-    -- client actually uses — hideBarFrame no-ops on nil, so this is safe either
-    -- way and covers a rename between clients.
+    -- Both globals are hidden regardless of which the running client uses —
+    -- hideBarFrame no-ops on nil, so this covers a rename between clients.
     hideBarFrame(_G.StanceBarFrame,      true)
     hideBarFrame(_G.ShapeshiftBarFrame,  true)
-    -- Same story as MainActionBar above: 1.15.9's Edit Mode moved the stance bar's
-    -- actual system frame off the legacy StanceBarFrame/ShapeshiftBarFrame onto a
-    -- separate "StanceBar" frame (inherits an EditMode*SystemTemplate, has its own
-    -- .system/.Selection). We already park the stance buttons on the hidden frame,
-    -- so without hiding this too, Edit Mode still shows StanceBar's own decorative
-    -- BackgroundArtLeft/BackgroundArtRight border art with nothing behind it —
-    -- reported as Blizzard stance-bar art getting stuck on screen after toggling
-    -- Blizzard's Edit Mode (other addons don't show this because they already hide
-    -- this same frame as part of their own takeover).
+    -- Same as MainActionBar: 1.15.9 moved the stance bar's system frame onto its own
+    -- "StanceBar". The buttons are already parked on the hidden frame, but without
+    -- hiding this too, Edit Mode leaves StanceBar's decorative border art stuck on
+    -- screen with nothing behind it.
     hideBarFrame(_G.StanceBar,           true)
     hideBarFrame(_G.PetActionBarFrame,   true)
     hideBarFrame(_G.PetActionBar,        true)
-    -- Same story as MainActionBar: BagsBar inherits EditModeBagsSystemTemplate,
-    -- so it's a registered Edit Mode system in its own right. buildBagBar()
-    -- (ActionBars.lua) already reparents its buttons onto our own bag bar, but
-    -- the now-empty BagsBar frame itself still needs hiding or Edit Mode keeps
-    -- showing it as its own separate bag bar.
+    -- Same as MainActionBar: BagsBar is its own Edit Mode system. buildBagBar()
+    -- already reparents its buttons, but the empty frame still needs hiding or Edit
+    -- Mode keeps showing it as a separate bag bar.
     hideBarFrame(_G.BagsBar,             true)
 
     for _, prefix in ipairs(NATIVE_BUTTON_PREFIXES) do

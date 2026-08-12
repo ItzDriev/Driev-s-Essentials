@@ -1,11 +1,9 @@
 local addonName, addon = ...
 
--- Manages position/scale of Blizzard's default CompactRaidFrameContainer.
--- We never drag that frame directly — it's protected and self-manages its
--- child layout, so fighting it would risk taint. Instead we drag a
--- lightweight proxy anchor of our own and, on lock, apply the proxy's final
--- top-left point and size (as a scale factor) to the real container via
--- SetPoint/SetScale — the only calls that ever touch the Blizzard frame.
+-- Manages position/scale of Blizzard's CompactRaidFrameContainer. That frame is
+-- protected and self-manages its child layout, so we never drag it — we drag a
+-- lightweight proxy anchor and, on lock, apply its final top-left point and size
+-- (as a scale) via SetPoint/SetScale, the only calls that touch the real frame.
 
 local FALLBACK_W, FALLBACK_H = 180, 320
 local MIN_SCALE, MAX_SCALE = 0.5, 2.0
@@ -22,13 +20,11 @@ local function getContainer()
     return CompactRaidFrameContainer
 end
 
--- The container itself is sized to fit its maximum possible layout, not the
--- currently-populated roster, so its own GetWidth()/GetHeight() massively
--- overstates the visible area. Instead walk its shown descendants (the
--- actual per-member frames) and take the tightest bounding box around them.
--- These local-position getters are scale-invariant to ancestor SetScale
--- calls, so the result stays consistent regardless of any scale we've
--- already applied.
+-- The container is sized for its maximum possible layout, not the current
+-- roster, so its own GetWidth()/GetHeight() massively overstates the visible
+-- area. Walk its shown descendants instead and take the tightest bounding box.
+-- These local-position getters are scale-invariant, so the result is consistent
+-- regardless of any scale already applied.
 local function visibleBounds(container)
     local left, right, top, bottom
 
@@ -63,17 +59,13 @@ local function baseSize()
     return FALLBACK_W, FALLBACK_H
 end
 
--- CompactRaidFrameContainer hosts secure unit buttons, so SetPoint/SetScale
--- on it are protected calls — blocked with ADDON_ACTION_BLOCKED whenever
--- they're attempted during combat lockdown, the same restriction Raid.lua
--- already works around for SetCVar. Guarded here at the lowest level so
--- every caller (login/roster events, live drag/resize preview, the
--- position-editor popup) is covered without needing its own check.
+-- The container hosts secure unit buttons, so SetPoint/SetScale are protected
+-- and blocked during combat lockdown. Guarded at the lowest level so every
+-- caller is covered without its own check.
 --
--- GetLeft()/GetTop()/SetPoint offsets are expressed in the *querying or
--- positioned* frame's own effective-scale units, not raw screen pixels —
--- once the container has a custom scale applied, a raw px/py captured from
--- a scale-1 proxy no longer lines up without this correction.
+-- GetLeft()/GetTop()/SetPoint offsets are in the queried frame's own
+-- effective-scale units, not screen pixels — so a raw px/py captured from a
+-- scale-1 proxy needs this correction once the container has a custom scale.
 local function applyPosition()
     local f = getContainer()
     if not f or InCombatLockdown() then return end
@@ -112,21 +104,14 @@ end
 -- ── move-mode proxy ──────────────────────────────────────────────────────
 local proxy
 
--- Base (scale-1) size captured once when move mode is entered and reused for
--- the rest of the session (resize-grip aspect ratio, savePosition's scale
--- calculation) instead of re-measuring via baseSize() each time. Blizzard's
--- Edit Mode can change what's actually visible/bounded in the container
--- while it's open (e.g. its own preview layout), so a fresh measurement on
--- exit can disagree with the one taken on entry — re-measuring on both ends
--- turned that disagreement straight into scale drift, compounding a little
--- more on every Edit Mode open/close. Locking to one measurement per session
--- makes save a no-op round-trip unless the user actually resized.
+-- Base (scale-1) size captured once on entering move mode and reused for the
+-- session. Blizzard's Edit Mode can change what's visible in the container while
+-- open, so re-measuring on exit could disagree with entry — which turned
+-- straight into scale drift compounding on every Edit Mode open/close.
 local moveBaseW, moveBaseH
 
--- Resizes/repositions the proxy to match the real raid frames' current
--- tight bounding box. Used both on first-ever entry and on demand via the
--- "Snap to Frames" button, since the roster (and therefore the bounding
--- box) can change between sessions.
+-- Resizes/repositions the proxy to the raid frames' current tight bounding box.
+-- Used on first entry and via "Snap to Frames", since the roster can change.
 local function snapToContainer()
     local f = proxy
     if not f then return end
@@ -183,12 +168,10 @@ local function getOrCreateProxy()
     snapBtn:SetScript("OnLeave", function() snapBtn:SetBackdropBorderColor(0.300, 0.310, 0.420, 1) end)
     snapBtn:SetScript("OnClick", function() snapToContainer() end)
 
-    -- Resize handle anchored at the bottom-right; the box itself is
-    -- anchored at TOPLEFT, so growing it keeps that corner fixed instead of
-    -- the box re-centering under the cursor. Resize is driven by hand
-    -- (rather than native StartSizing) so width and height are locked to
-    -- the real raid frames' aspect ratio — diagonal cursor movement maps to
-    -- a single uniform scale factor instead of two independent axes.
+    -- Resize handle at the bottom-right; the box is anchored TOPLEFT, so growing
+    -- keeps that corner fixed. Driven by hand rather than StartSizing so width and
+    -- height stay locked to the raid frames' aspect ratio — diagonal cursor movement
+    -- maps to one uniform scale factor, not two independent axes.
     local resizeAspectW, resizeAspectH
 
     local function onResizeUpdate()
@@ -207,9 +190,8 @@ local function getOrCreateProxy()
 
         f:SetSize(resizeAspectW * factor, resizeAspectH * factor)
 
-        -- Live preview: apply the in-progress scale to the real raid frames
-        -- too, not just the proxy box, so the actual result is visible
-        -- while still dragging instead of only after Lock.
+        -- Live preview: apply the in-progress scale to the real frames too, so the
+        -- result is visible while dragging rather than only after Lock.
         getData().scale = factor
         applyScale()
         applyPosition()
@@ -257,11 +239,9 @@ local function enterMoveMode()
     f:Show()
     addon.ShowEditBox(f)
     f:EnableMouse(true)
-    -- Move-mode is driven directly off OnMouseDown/OnMouseUp instead of
-    -- RegisterForDrag/OnDragStart, so movement starts the instant the mouse
-    -- goes down instead of waiting on WoW's native drag-recognition threshold.
-    -- The same pair also does click-vs-drag detection (net movement < 4px =
-    -- a click, not a drag) to open the precise X/Y position editor.
+    -- Driven off OnMouseDown/OnMouseUp rather than OnDragStart, so movement starts
+    -- instantly. The same pair does click-vs-drag detection (net move < 4px = click)
+    -- to open the X/Y position editor.
     f:SetScript("OnMouseDown", function(self, button)
         if button ~= "LeftButton" then return end
         self._clickX, self._clickY = GetCursorPosition()
@@ -299,9 +279,8 @@ local function leaveMoveMode()
     moveBaseW, moveBaseH = nil, nil
 end
 
--- For the position-editor popup: read/write the proxy directly (TOPLEFT
--- convention, matching applyPosition/savePosition) and also live-apply to
--- the real raid frames immediately, same as the drag-preview behavior.
+-- For the position-editor popup: read/write the proxy (TOPLEFT convention) and
+-- live-apply to the real frames, same as the drag preview.
 local function getPosition()
     if not proxy then return 0, 0 end
     return proxy:GetLeft() or 0, proxy:GetTop() or 0
@@ -336,9 +315,8 @@ local function savePosition()
     applyPosition()
 end
 
--- Lets the UI set a precise scale (e.g. from a typed percentage) instead of
--- only deriving one from a drag-resize. Returns the clamped value actually
--- applied, so the caller can reflect any clamping back into its input.
+-- Lets the UI set a precise scale (e.g. a typed percentage). Returns the clamped
+-- value actually applied, so the caller can reflect clamping back into its input.
 local function setScale(value)
     value = math.max(MIN_SCALE, math.min(MAX_SCALE, value))
     getData().scale = value
@@ -347,12 +325,11 @@ local function setScale(value)
 end
 
 -- ── Blizzard Edit Mode cooperation (1.15.9+) ─────────────────────────────────
--- Opening Blizzard's Edit Mode shows our raid-frame move anchor (only while the
--- Raid Frame Manager is enabled, i.e. when WE own the frames' position) so it's
--- dragged alongside everything else instead of through a separate addon edit
--- mode; closing it saves and hides. Mirrors the action bars' hook so the two
--- move systems don't fight. Self-contained — NOT UI.EnterMoveMode, which would
--- re-open the settings window on exit.
+-- Opening Blizzard's Edit Mode shows our move anchor (only while the Raid Frame
+-- Manager is on, i.e. when WE own the position) so it drags alongside everything
+-- else; closing saves and hides. Mirrors the action bars' hook so the two move
+-- systems don't fight. Self-contained, NOT UI.EnterMoveMode, which would re-open
+-- the settings window on exit.
 local blizzUnlocked = false
 
 local function blizzardUnlock()
@@ -375,12 +352,6 @@ local function blizzardLock()
     if addon.UI and addon.UI.positionEditor then addon.UI.positionEditor:Hide() end
 end
 
-local function hookBlizzardEditMode()
-    if not (EventRegistry and EditModeManagerFrame) then return end
-    EventRegistry:RegisterCallback("EditMode.Enter", blizzardUnlock)
-    EventRegistry:RegisterCallback("EditMode.Exit",  blizzardLock)
-end
-
 local editModeHooked = false
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -392,15 +363,17 @@ eventFrame:SetScript("OnEvent", function(_, event)
     else
         applyAll()
     end
-    -- Register the Edit Mode callbacks once, by which point EditModeManagerFrame
-    -- exists (same timing the action bars use — at/after login).
+    -- Register the Edit Mode callbacks once. Every event here is a retry
+    -- opportunity, and the flag only latches on a hook that actually took.
     if not editModeHooked then
-        editModeHooked = true
-        hookBlizzardEditMode()
+        editModeHooked = addon.HookBlizzardEditMode(blizzardUnlock, blizzardLock)
     end
 end)
 
 addon.RaidFrames = {
+    -- The settings panel edits this table directly, so it reads it from here
+    -- rather than keeping its own copy of the same defaults.
+    getData          = getData,
     getFrame         = getOrCreateProxy,
     enterMoveMode    = enterMoveMode,
     leaveMoveMode    = leaveMoveMode,
@@ -411,8 +384,7 @@ addon.RaidFrames = {
     maxScale         = MAX_SCALE,
     getPosition      = getPosition,
     setPosition      = setPosition,
-    -- Read by UI.EnterMoveMode to skip a disabled module in Edit Mode — with
-    -- the manager off we don't own the raid frames' position, so the proxy
-    -- would just move nothing.
+    -- Read by UI.EnterMoveMode to skip a disabled module — with the manager off we
+    -- don't own the frames' position, so the proxy would move nothing.
     isEnabled        = function() return getData().enabled ~= false end,
 }

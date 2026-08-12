@@ -1,19 +1,13 @@
--- Part of the Particles module addon. `...` would hand us this addon's OWN
--- private table, so reach for core's shared namespace instead — the .toc's
--- ## Dependencies guarantees core has already loaded and set this global.
+-- Part of the Particles module addon. `...` would give this addon's own private
+-- table, so use core's shared namespace; ## Dependencies guarantees it exists.
 local addon = _G.DrievEssentials
 if not addon then return end
 
--- Backend port of the user's particle WeakAura.
---
--- Density values mirror the original WeakAura:
---   outside raid -> 3 (normal)
---   inside  raid -> 0 (off, for FPS)
---   managed encounter -> 3 (force on so mechanics are visible)
--- Linger durations keep particles ON for N seconds after an encounter ends
--- (covers Viscidus slime puddle, Ouro residue, etc.). Every boss has a linger
--- toggle + duration in Particles → Raids; the bosses that used to be hardcoded
--- here carry their old timer as the `linger` default in core's Raids.lua.
+-- Backend port of the user's particle WeakAura. Density mirrors the original:
+-- outside raid 3 (normal), inside raid 0 (off, for FPS), managed encounter 3
+-- (forced on so mechanics stay visible). Linger keeps particles on for N seconds
+-- after an encounter (Viscidus slime, Ouro residue); per-boss defaults live in
+-- core's Raids.lua and are overridable in Particles → Raids.
 
 local OUTSIDE_DENSITY = 3
 local RAID_DENSITY    = 0
@@ -27,9 +21,8 @@ local function getEncounterDensity()
     return (s and s.general and s.general.encounterDensity) or 3
 end
 
--- Master switch for the whole module (General tab), independent of the
--- per-class filter below — off by default, same as every other module's
--- master toggle, so a fresh install does nothing until explicitly turned on.
+-- Master switch for the module, independent of the per-class filter. Off by
+-- default, so a fresh install does nothing until turned on.
 local function isModuleEnabled()
     local s = settings()
     return s and s.enabled == true
@@ -44,10 +37,9 @@ local function isClassEnabled()
     return classes[classToken] == true
 end
 
--- encounterID -> { raidKey, name, linger }, built lazily on first event so file
--- load stays cheap and we tolerate Raids.lua being reloaded. `linger` is the
--- built-in default (nil for bosses that never lingered), used only until the
--- profile has per-boss linger data of its own.
+-- encounterID -> { raidKey, name, linger }, built lazily on first event so load
+-- stays cheap. `linger` is the built-in default, used only until the profile has
+-- per-boss linger data of its own.
 local encounterIndex
 local function getEncounterIndex()
     if encounterIndex then return encounterIndex end
@@ -108,11 +100,9 @@ local function checkManaged(encounterID)
     return r.bosses and r.bosses[info.name] == true, info
 end
 
--- Seconds to keep particles on after this encounter ends, or nil for none.
--- A profile that predates the per-boss linger settings has no `linger` table
--- for the raid, so it falls back to the boss's built-in default; once the UI
--- has seeded that table the user's choice is authoritative (an unticked boss
--- means no linger, even if it has a built-in default).
+-- Seconds to keep particles on after this encounter, or nil. Profiles predating
+-- the per-boss settings fall back to the boss's built-in default; once the UI
+-- has seeded that table the user's choice wins (unticked = no linger).
 local function getLingerSeconds(encounterID)
     local info = getEncounterIndex()[encounterID]
     if not info then return nil end
@@ -200,14 +190,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
     elseif event == "PLAYER_ENTERING_WORLD" then
         onEnteringWorld()
     end
-    -- PLAYER_REGEN_DISABLED is registered to match the original WA event
-    -- list but requires no action — combat-start state is fully handled by
-    -- ENCOUNTER_START.
+    -- Registered to match the original WA event list, but needs no action —
+    -- combat start is fully handled by ENCOUNTER_START.
 end)
 
--- Re-applies the baseline particle density from current settings (e.g. after
--- a profile switch changes which class is enabled). No-op mid-encounter or
--- mid-linger, same as the existing PLAYER_REGEN_ENABLED safety check.
+-- Re-applies baseline density from current settings (e.g. after a profile switch
+-- changes the enabled class). No-op mid-encounter or mid-linger.
 local function refresh()
     if state.currentEncounterID then return end
     if state.lingerTimer then return end

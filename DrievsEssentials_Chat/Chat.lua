@@ -1,19 +1,12 @@
 local addon = _G.DrievEssentials
 if not addon then return end
 
--- Minimal chat tweaks. Deliberately small: this does NOT reparent chat frames,
--- take over Blizzard's dock manager, or draw panels behind the chat. Every one
--- of those fought Blizzard's own FloatingChatFrame code and broke tab dragging.
--- Blizzard keeps full ownership of chat layout, docking and positioning here.
---
--- Two things only:
---   1. Hide the button clutter down the left of the chat.
---   2. Let the chat be dragged anywhere on screen, including right to the edges.
+-- Minimal chat tweaks. Deliberately small: nothing here reparents chat frames,
+-- takes over Blizzard's dock manager or draws panels behind the chat — each
+-- fought FloatingChatFrame and broke tab dragging.
 
--- Values below mirror this addon author's own long-running chat setup (pulled
--- from live SavedVariables) so enabling the module for the first time starts
--- from a fully-dialed-in look instead of bare defaults. `enabled` is the one
--- exception, deliberately kept off — see RegisterDefaults call below.
+-- Defaults mirror the author's own long-running setup, so first enabling the
+-- module starts dialed-in rather than bare. `enabled` is the exception.
 addon.RegisterDefaults("chat", {
     enabled      = false, -- module stays off until the user opts in
     hideButtons  = true, -- scroll arrows, chat menu, voice/text-to-speech
@@ -30,24 +23,21 @@ addon.RegisterDefaults("chat", {
         useChannelColor = true,
         height          = 24,
     },
-    -- Blizzard's chatStyle CVar: "classic" opens the edit box on Enter and
-    -- closes it again, "im" leaves it on screen permanently. Defaulted here
-    -- because it is NOT part of any addon profile — it lives in the client's
-    -- per-WoW-account config, which is why two accounts running an identical
-    -- profile can still disagree about whether the edit box ever goes away.
+    -- Blizzard's chatStyle CVar: "classic" opens the edit box on Enter and closes it
+    -- again, "im" leaves it up. Defaulted here because it's NOT profile data — it
+    -- lives in the client's per-account config, which is why two accounts on one
+    -- profile can disagree.
     chatStyle = "classic",
     copyArrow       = true,        -- clickable arrow at the start of each line
     copyButton      = true,        -- top-right button opening a copyable chat-log window
-    -- Jumps a scrolled-back chat frame straight back to the newest message.
-    -- Blizzard's own version of this lives in the button frame that hideButtons
-    -- strips off, so this puts it back somewhere that isn't in the way.
+    -- Blizzard's own version lives in the button frame hideButtons strips off, so
+    -- this puts it back somewhere out of the way.
     scrollBottomButton = true,
     linkifyURLs     = true,        -- outline http(s) links and make them clickable-to-copy
     timestamps      = true,        -- [15:25:46] in front of each message
     timestampFormat = "%H:%M:%S",
     -- Proportional fonts don't give every digit the same advance width, so two
-    -- timestamps with different digits can render a pixel or two apart even
-    -- though both are "[HH:MM:SS]". Off by default - see padStamp.
+    -- timestamps with different digits render a pixel or two apart. Off by default.
     timestampEqualWidth = false,
     noHoverFade     = true,        -- kill the chat's fade-in-on-mouseover
     noTextFade      = true,        -- keep message text on screen instead of fading after inactivity
@@ -60,15 +50,13 @@ addon.RegisterDefaults("chat", {
     tabSelectedColor = { 1.00, 1.00, 1.00 },
     chatHistory      = true, -- Up/Down through what you've sent before
     historySize      = 30,
-    -- One font for everything chat-related: message text, tab names and the
-    -- DataText bars. false / "Default" leaves Blizzard's font; otherwise a
-    -- LibSharedMedia font name.
+    -- One font for message text, tab names and the DataText bars. false / "Default"
+    -- leaves Blizzard's; otherwise a LibSharedMedia name.
     font             = "Expressway",
 })
 
 -- addon.db only exists once Core has applied the active profile at
--- PLAYER_LOGIN, and some of what we hook runs earlier than that during initial
--- UI load, so every entry point checks this rather than indexing a nil profile.
+-- PLAYER_LOGIN, and some of what we hook runs earlier during UI load.
 local function isReady()
     return addon.db ~= nil and addon.db.settings ~= nil
 end
@@ -79,9 +67,9 @@ local function getData()
 end
 
 -- ── Font ─────────────────────────────────────────────────────────────────────
--- One configurable font for chat message text and tab names (DataTexts.lua reads
--- the same setting for its bars). Only the face is changed; each element keeps
--- its own size and flags, so Blizzard's per-window chat font size is preserved.
+-- One font for chat text and tab names (DataTexts.lua reads the same setting).
+-- Only the face changes; each element keeps its own size and flags, so
+-- Blizzard's per-window chat font size is preserved.
 local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
 
 -- The chosen font's file path, or nil when set to Default (leave Blizzard's).
@@ -93,9 +81,9 @@ local function chatFontPath()
     return nil
 end
 
--- Face to fall back to when no override is set. ChatFontNormal is the game's own
--- chat font (Friz Quadrata), so re-applying it when set to Default is a no-op —
--- which is why we can apply unconditionally without tracking prior state.
+-- ChatFontNormal is the game's own chat font, so re-applying it when set to
+-- Default is a no-op — which is why this can apply unconditionally without
+-- tracking prior state.
 local function defaultChatFace()
     return (ChatFontNormal and select(1, ChatFontNormal:GetFont())) or STANDARD_TEXT_FONT
 end
@@ -125,14 +113,10 @@ local function eachChatFrame(fn)
 end
 
 -- ── Free movement ───────────────────────────────────────────────────────────
--- Blizzard gives every chat frame clamp insets that hold it well inside
--- UIParent — that reserved margin is why the chat can't be dragged near the
--- screen edge and appears to stick some distance off the bottom. Zeroing the
--- insets and turning clamping off removes the invisible wall. (Same pair of
--- calls ElvUI makes in its own StyleChat.)
---
--- Blizzard re-applies its insets whenever it restores a chat frame's saved
--- position, so this has to be re-asserted rather than done once at load.
+-- Blizzard's clamp insets hold every chat frame well inside UIParent, which is
+-- why it can't reach the screen edge. Zeroing them removes the wall (the same
+-- pair ElvUI's StyleChat makes). Blizzard re-applies them whenever it restores a
+-- saved position, so this must be re-asserted rather than done once.
 local function applyFreeMovement(cf)
     if cf.SetClampRectInsets then cf:SetClampRectInsets(0, 0, 0, 0) end
     if cf.SetClampedToScreen then cf:SetClampedToScreen(false) end
@@ -146,13 +130,10 @@ local function restoreClamping(cf)
 end
 
 -- ── Button clutter ──────────────────────────────────────────────────────────
--- Hiding these is not enough on its own: Blizzard re-Shows several of them on
--- its own schedule (tab selection, dock updates, voice state changes). Pointing
--- Show at Hide is what makes it stick, and is what ElvUI's Kill() does too.
---
--- NOTE: this is one-way within a session. Unticking the option restores normal
--- behaviour only after a /reload — there's no way to un-neuter Show once the
--- original method reference is gone.
+-- Hiding isn't enough: Blizzard re-Shows several of these on its own schedule.
+-- Pointing Show at Hide is what makes it stick, as ElvUI's Kill() does. One-way
+-- within a session — unticking restores normal behaviour only after a /reload,
+-- since the original method reference is gone.
 local killed = {}
 local function kill(obj)
     if not obj or killed[obj] then return end
@@ -163,10 +144,9 @@ local function kill(obj)
     end
 end
 
--- The scroll arrows and chat menu button live inside each frame's buttonFrame.
--- Blizzard's code still positions that container, so rather than hiding it (and
--- risking taint or errors in code that expects it laid out) it gets parked far
--- off-screen with clipping — ElvUI's PositionButtonFrame trick.
+-- Blizzard's code still positions the buttonFrame container, so rather than
+-- hiding it (and risking taint or errors in code expecting it laid out) it's
+-- parked far off-screen with clipping — ElvUI's PositionButtonFrame trick.
 local function hideButtonFrame(cf)
     local bf = cf.buttonFrame or _G[cf:GetName() .. "ButtonFrame"]
     if not bf then return end
@@ -190,27 +170,20 @@ local function hideSharedButtons()
 end
 
 -- ── Edit box skin ───────────────────────────────────────────────────────────
--- Blizzard's chat edit box is drawn by three border textures
--- (EditBoxLeft/Mid/Right) and has NO backdrop of its own — so it cannot simply
--- be recoloured. The textures have to go, and something has to be created to
--- draw the new border. ElvUI does the same in StyleChat.
---
--- The backdrop is a SIBLING frame anchored over the edit box rather than a
--- backdrop on the edit box itself: Blizzard's edit box doesn't reliably inherit
--- BackdropTemplate, so it may have no SetBackdrop method at all, and a child
--- frame would draw over the typed text instead of behind it.
+-- Blizzard's edit box is drawn by three border textures with NO backdrop, so it
+-- can't be recoloured — the textures go and a new border is created. The
+-- backdrop is a SIBLING anchored over the box, not on it: the edit box doesn't
+-- reliably inherit BackdropTemplate, and a child would draw over typed text.
 
 local WHITE          = "Interface\\Buttons\\WHITE8x8"
 -- RGB only; opacity is a separate setting applied at draw time.
 local EDITBOX_BG     = { 0.090, 0.098, 0.165 }
 local EDITBOX_BORDER = { 0.30, 0.31, 0.42 }
 
--- The edit box must draw above the DataText bars, which sit at MEDIUM (see
--- getOrCreateBarFrame in DataTexts.lua). Blizzard gives the edit box no strata
--- of its own — it inherits roughly MEDIUM from the chat frame, so the two end
--- up in the same layer and their order is arbitrary. HIGH is one step up:
--- enough to win reliably, without climbing into DIALOG where it would also
--- cover popups and menus.
+-- Must draw above the DataText bars at MEDIUM. Blizzard gives it no strata of
+-- its own — it inherits roughly MEDIUM from the chat frame, so their order is
+-- arbitrary. HIGH wins reliably without climbing into DIALOG, where it would
+-- also cover popups and menus.
 local EDITBOX_STRATA = "HIGH"
 local MAX_CHAT_CHARS = 255 -- Blizzard's per-message cap
 local COUNT_WIDTH    = 40  -- room reserved at the right for the counter
@@ -225,16 +198,15 @@ local function editBoxStyle()
     return d.editBox
 end
 
--- ONLY the right inset belongs to us. Blizzard sets the LEFT inset dynamically
--- in ChatEdit_UpdateHeader to clear the channel header, and "Say:", "Party:"
--- and "To Playername:" are all different widths — capturing it once and
--- reapplying a stale value is what left typed text starting at the far left,
--- underneath the header.
+-- ONLY the right inset is ours. Blizzard sets the LEFT one dynamically in
+-- ChatEdit_UpdateHeader to clear the channel header, and "Say:"/"To Playername:"
+-- differ in width — capturing it once and reapplying a stale value is what left
+-- typed text starting underneath the header.
 local function applyTextInsets(eb)
     local l, r, t, b = eb:GetTextInsets()
     -- Strip our previous reservation before re-adding it. This runs from a
-    -- ChatEdit_UpdateHeader hook, so without this the inset compounds on every
-    -- channel switch (the bug in ElvUI's own version, which does insetRight+30).
+    -- ChatEdit_UpdateHeader hook, so without it the inset compounds on every channel
+    -- switch (the bug in ElvUI's own version, which does insetRight+30).
     if reserved[eb] and math.abs(r - reserved[eb]) < 0.5 then
         r = r - COUNT_WIDTH
     end
@@ -243,16 +215,14 @@ local function applyTextInsets(eb)
     reserved[eb] = newRight
 end
 
--- Raises the edit box clear of the DataText bars, and keeps its backdrop
--- immediately beneath it. Re-asserted on every style pass rather than set once,
--- because Blizzard reassigns the edit box's frame level when it re-anchors it
--- (chatStyle changes, dock updates), which would leave the backdrop on top of
--- the text it is supposed to sit behind.
+-- Raises the edit box clear of the DataText bars, keeping its backdrop just
+-- beneath. Re-asserted on every style pass, because Blizzard reassigns the frame
+-- level when it re-anchors the box.
 local function applyLayering(eb, bd)
     eb:SetFrameStrata(EDITBOX_STRATA)
-    -- Guarantee headroom for the backdrop: at level 0 there is nothing below to
-    -- put it on, and same-level siblings fall back to creation order — where
-    -- the backdrop, created second, would win.
+    -- Guarantee headroom for the backdrop: at level 0 there's nothing below to put
+    -- it on, and same-level siblings fall back to creation order — where the
+    -- backdrop, created second, would win.
     if eb:GetFrameLevel() < 2 then eb:SetFrameLevel(2) end
 
     if bd then
@@ -331,12 +301,9 @@ local function styleEditBox(eb)
     local d = getData()
     if d.enabled == false then return end
 
-    -- The chat font applies to the typed text too, independent of the edit-box
-    -- skin (applyChatFont is generic — the edit box is a FontInstance like the
-    -- chat frame). Preserves the box's own size/flags. The channel prompt
-    -- ("Say:", "Party:", …) is a separate header FontString, and Blizzard rewrites
-    -- it on every channel switch — this hook fires from ChatEdit_UpdateHeader, so
-    -- re-applying it here keeps the prompt in the chosen font too.
+    -- The chat font applies to typed text too (the edit box is a FontInstance). The
+    -- channel prompt is a separate header FontString Blizzard rewrites on every
+    -- channel switch, and this hook fires from ChatEdit_UpdateHeader.
     applyChatFont(eb)
     local header = eb.header or (eb:GetName() and _G[eb:GetName() .. "Header"])
     if header then applyChatFont(header) end
@@ -370,9 +337,8 @@ local function styleEditBox(eb)
     local bg = s.bgColor or EDITBOX_BG
     bd:SetBackdropColor(bg[1], bg[2], bg[3], (s.bgOpacity or 90) / 100)
 
-    -- Channel tinting takes precedence over the fixed border colour when on,
-    -- since that's the ElvUI look; turning it off hands control back to the
-    -- colour picker.
+    -- Channel tinting takes precedence over the fixed border colour when on, since
+    -- that's the ElvUI look; turning it off hands control back to the picker.
     local r, g, b
     if s.useChannelColor ~= false then
         r, g, b = channelColor(eb)
@@ -403,14 +369,10 @@ local function killEditBoxTextures(cf)
 end
 
 -- ── Hover fade removal ──────────────────────────────────────────────────────
--- Blizzard fades the chat frame's backdrop in on mouseover and back out on
--- leave (FloatingChatFrame_OnEnter -> FCF_FadeInChatFrame). Rather than fight
--- the animation, remove what it animates: with the background texture gone and
--- the button container already parked off-screen, there is nothing left for the
--- fade to act on.
---
--- Message text fading after inactivity is a SEPARATE Blizzard feature
--- (SetFading / SetTimeVisible) — see applyTextFade below.
+-- Blizzard fades the chat backdrop in on mouseover. Rather than fight the
+-- animation, remove what it animates: with the background gone and the button
+-- container parked off-screen there's nothing left to act on. (Message text
+-- fading after inactivity is separate — see applyTextFade.)
 local fadeStripped = {}
 local function removeChatFade(cf)
     if fadeStripped[cf] then return end
@@ -418,15 +380,10 @@ local function removeChatFade(cf)
 
     kill(cf.Background)
 
-    -- The background is only half of it: the chat frame's border is a
-    -- nine-slice of separate textures (ChatFrame1TopLeftTexture,
-    -- ...LeftTexture, ...BottomTexture and so on) which fade in alongside it,
-    -- and that border is what was still appearing on hover.
-    --
-    -- Swept by region type rather than by name, because which pieces exist
-    -- varies by client build. ONLY Texture regions are touched — the chat's
-    -- messages are FontStrings and must survive. This is what ElvUI's
-    -- StripTextures(true) does to the same frame.
+    -- The background is only half of it: the border is a nine-slice of separate
+    -- textures that fade in alongside it. Swept by region TYPE rather than name,
+    -- since which pieces exist varies by build. Only Texture regions are touched —
+    -- the messages are FontStrings and must survive.
     for i = 1, cf:GetNumRegions() do
         local r = select(i, cf:GetRegions())
         if r and r.GetObjectType and r:GetObjectType() == "Texture" then
@@ -436,17 +393,13 @@ local function removeChatFade(cf)
 end
 
 -- ── Message text fade ───────────────────────────────────────────────────────
--- Unrelated to the hover fade above: a chat frame is a ScrollingMessageFrame,
--- which fades its lines out once they've sat there for timeVisible seconds
--- (120 by default) and brings them back on the next message or mouse wheel.
--- SetFading(false) turns that off and keeps the backlog on screen.
+-- A chat frame is a ScrollingMessageFrame, which fades lines out after
+-- timeVisible seconds. SetFading(false) keeps the backlog on screen.
 --
--- The call itself is trivial; making it stick is not. Blizzard re-applies a
--- window's settings on login, on /reload, when a temporary window is opened
--- and whenever chat windows are re-laid-out, and each of those can set fading
--- back to true — which is why refresh() alone isn't enough. The frame's own
--- SetFading is wrapped instead, so whoever calls it, the answer stays false
--- while the setting is on.
+-- Making it stick is the hard part: Blizzard re-applies a window's settings on
+-- login, /reload, temporary-window open and re-layout, any of which sets fading
+-- back to true. So the frame's own SetFading is wrapped, and the answer stays
+-- false whoever calls it.
 local fadeHooked = {}
 local function applyTextFade(cf)
     if not cf.SetFading then return end
@@ -482,9 +435,8 @@ local function applyTextFade(cf)
     end
 end
 
--- Every texture making up a chat tab. Blizzard exposes them as fields on the
--- tab, which is more reliable than guessing global names, but the globals are
--- swept too since which fields exist varies by client build.
+-- Blizzard exposes tab textures as fields, more reliable than guessing global
+-- names, but the globals are swept too since which fields exist varies by build.
 local TAB_TEX_FIELDS = {
     "leftTexture",          "middleTexture",          "rightTexture",
     "leftSelectedTexture",  "middleSelectedTexture",  "rightSelectedTexture",
@@ -522,16 +474,12 @@ local function tabIsSelected(cf)
     return dm ~= nil and dm.selected == cf
 end
 
--- Alpha and name colour together, since both are things Blizzard recomputes in
--- the same places and both have to be re-asserted afterwards.
---
--- Blizzard derives tab alpha from exactly these two fields, and ships
--- noMouseAlpha = 0 — which is why the names disappear entirely when the mouse
--- is away. Setting both to 1 keeps the tabs permanently legible while still
--- going through Blizzard's own alpha handling, so there is nothing to poll.
--- (An earlier attempt re-asserted alpha from a 0.2s timer; that lag was visible
--- as a flicker.) Kept separate from the texture pass because this runs from
--- FCFTab_UpdateAlpha, which fires on every mouseover.
+-- Alpha and name colour together, since Blizzard recomputes both in the same
+-- places. It derives tab alpha from exactly these two fields and ships
+-- noMouseAlpha = 0, which is why names vanish when the mouse is away; setting
+-- both to 1 keeps tabs legible through Blizzard's own handling, so there's
+-- nothing to poll. Separate from the texture pass, since this runs from
+-- FCFTab_UpdateAlpha on every mouseover.
 local function applyTabAppearance(cf)
     local name = cf:GetName()
     local tab  = name and _G[name .. "Tab"]
@@ -559,6 +507,29 @@ local function flattenTab(cf)
     applyTabAppearance(cf)
 end
 
+-- ── Combat log filter bar ───────────────────────────────────────────────────
+-- The "My Actions" / "What happened to me" bar is Blizzard's
+-- CombatLogQuickButtonFrame_Custom, and where it belongs depends on whether the
+-- combat log is docked: under the dock's tab strip if it is, above the window if
+-- it isn't. Blizzard only recomputes that from inside its own dock code, so
+-- anything else that reflows the dock — rebuilding the window layout, renaming a
+-- window, re-anchoring a docked chat — can leave it resolved against a stale
+-- anchor and stranded over the log instead of above it.
+--
+-- Blizzard's own function is called rather than positioning the bar ourselves:
+-- it's the one place that knows which of the two anchorings is right just now,
+-- and hard-coding either would be wrong half the time.
+local fixingCombatLog = false
+local function updateCombatLogPosition()
+    -- Re-entrancy guard: this runs from refresh(), which is itself hooked to
+    -- FCF_DockUpdate, and Blizzard's function pokes the dock.
+    if fixingCombatLog then return end
+    if not (FCF_UpdateCombatLogPosition and _G.CombatLogQuickButtonFrame_Custom) then return end
+    fixingCombatLog = true
+    pcall(FCF_UpdateCombatLogPosition)
+    fixingCombatLog = false
+end
+
 -- Light-weight re-assert for Blizzard's own tab alpha/colour updates.
 local function reassertTabs()
     if not isReady() then return end
@@ -568,16 +539,13 @@ local function reassertTabs()
 end
 
 -- ── Edit box history ────────────────────────────────────────────────────────
--- Up/Down through what you've sent before, from an open edit box.
+-- Up/Down through what you've sent. Stored in its own PER-CHARACTER
+-- SavedVariable, not the profile: history includes whispers, and profiles are
+-- account-wide and copyable.
 --
--- Stored in its own PER-CHARACTER SavedVariable rather than in the addon
--- profile. Chat history includes whispers, and profiles are account-wide and
--- copyable, so keeping it out of them stops one character's private messages
--- surfacing on another.
---
--- Navigation is done by hand rather than via EditBox:SetAltArrowKeyMode, which
--- is supposed to hand Up/Down to Blizzard's own history but has been broken for
--- years — ElvUI works around it the same way, crediting Prat.
+-- Navigation is by hand rather than SetAltArrowKeyMode, which is meant to hand
+-- Up/Down to Blizzard's history but has been broken for years — ElvUI works
+-- around it the same way, crediting Prat.
 
 local function historyLines()
     DrievChatHistoryDB = DrievChatHistoryDB or {}
@@ -597,9 +565,8 @@ local function recordHistory(line)
     line = line and strtrim(line)
     if not line or line == "" then return end
 
-    -- Secure commands are kept out entirely: replaying one from an addon-driven
-    -- path is blocked by the client anyway, so remembering it only gets in the
-    -- way of the lines you actually want.
+    -- Secure commands are kept out: replaying one from an addon-driven path is
+    -- blocked by the client anyway, so remembering it only gets in the way.
     local cmd = line:match("^/%w+")
     if cmd and IsSecureCmd and IsSecureCmd(cmd) then return end
 
@@ -645,13 +612,9 @@ local function navigateHistory(eb, key)
 end
 
 -- Plain Up/Down, no Alt. SetAltArrowKeyMode(true) makes the edit box IGNORE the
--- arrow keys unless Alt is held (they go to the game and turn your character
--- instead), so the OnKeyDown hook below would never see them. Blizzard drives
--- that flag from the "Arrow Keys in Chat" interface option, so it has to be
--- forced rather than left to whatever the setting happens to be.
---
--- Re-asserted on every refresh because Blizzard reapplies it when that option
--- changes and when it re-anchors the edit box.
+-- arrow keys unless Alt is held, so the OnKeyDown hook would never see them.
+-- Blizzard drives that flag from the "Arrow Keys in Chat" option, so it must be
+-- forced and re-asserted on every refresh.
 local function forceArrowKeys(eb)
     if eb.SetAltArrowKeyMode then eb:SetAltArrowKeyMode(false) end
 end
@@ -672,16 +635,14 @@ local function hookHistory(eb)
 end
 
 -- ── Sticky chat ─────────────────────────────────────────────────────────────
--- Blizzard already has the machinery: on Enter, ChatEdit_OnEnterPressed copies
--- the current chat type into the edit box's "stickyType" attribute, but only if
--- ChatTypeInfo[type].sticky == 1 — and Blizzard ships that flag set for some
--- types and clear for others. Reopening the box reads stickyType back. So
--- making every channel stick is a matter of setting the flags, not hooking
--- anything, and it's fully reversible.
+-- Blizzard already has the machinery: ChatEdit_OnEnterPressed copies the current
+-- chat type into the box's stickyType attribute, but only when
+-- ChatTypeInfo[type].sticky == 1, and Blizzard ships that set for some types and
+-- clear for others. So making every channel stick is just setting flags — no
+-- hooks, fully reversible.
 --
--- Whispers are held out by default, and deliberately so: with them sticky, a
--- message meant for /say goes to whoever you last whispered. That's the classic
--- way to leak something private, so it's opt-in.
+-- Whispers are held out by default: with them sticky, a message meant for /say
+-- goes to whoever you last whispered.
 local WHISPER_TYPES = { WHISPER = true, BN_WHISPER = true }
 
 -- Blizzard's own flags, captured before we touch them so turning the option
@@ -714,15 +675,13 @@ local function applySticky()
 end
 
 -- ── Chat style ──────────────────────────────────────────────────────────────
--- Blizzard's chatStyle CVar, surfaced as a normal setting. In "classic" the
--- edit box is opened by Enter and hidden again once the message is sent or
--- Escape is pressed; in "im" it is handed to ChatEdit_SetLastActiveWindow and
--- simply stays on screen for good.
+-- Blizzard's chatStyle CVar as a normal setting. "classic" opens the edit box on
+-- Enter and hides it on send/Escape; "im" hands it to
+-- ChatEdit_SetLastActiveWindow and leaves it up for good.
 --
--- The CVar is stored per WoW account (config-cache.wtf), not in the profile, so
--- a permanently-visible edit box on one account and not another is this and not
--- the skin. Only written while the module is on, and left as-is when it's off:
--- the pre-existing value isn't recorded anywhere, so there's nothing to restore.
+-- Stored per WoW account (config-cache.wtf), not in the profile. Only written
+-- while the module is on, and left alone when off — the pre-existing value isn't
+-- recorded anywhere, so there's nothing to restore.
 local pendingStyle = false
 
 local function applyChatStyle()
@@ -763,15 +722,13 @@ local function applyChatStyle()
 end
 
 -- ── Message decorations: copy arrow and timestamps ──────────────────────────
--- Both are prepended to the message text itself rather than drawn as separate
--- frames. For the arrow that's ElvUI's approach and it matters: chat lines are
--- recycled FontStrings owned by a ScrollingMessageFrame, so anything anchored
--- per-line would need rebuilding on every new message and re-positioning on
--- every scroll. Embedded in the text, both simply travel with their line.
+-- Both are prepended to the message text rather than drawn as separate frames.
+-- Chat lines are recycled FontStrings owned by a ScrollingMessageFrame, so
+-- anything anchored per-line would need rebuilding on every message and
+-- repositioning on every scroll; embedded, they travel with their line.
 --
--- Order is arrow, then timestamp, then message. That falls out of applying the
--- timestamp FIRST and prepending the arrow after it, so the arrow always ends
--- up leftmost.
+-- Order is arrow, timestamp, message — which falls out of applying the timestamp
+-- first and prepending the arrow after it.
 
 -- Blizzard's own chat expand arrow: a clean white triangle pointing right, at
 -- the message. Inline texture escapes can't be vertex-coloured, so the texture
@@ -796,12 +753,10 @@ local function stripEscapes(s)
     return s
 end
 
--- For the copy window: colour codes are kept (EditBoxes render |c..|r the
--- same way chat frames do) and, unlike stripEscapes, hyperlinks (|H..|h
--- label |h) are left INTACT rather than collapsed to their plain label - the
--- copy window's edit box has hyperlinks enabled (see getCopyWindow), so both
--- native links (items, quests, players...) and this addon's own URL links
--- render clickable there exactly as they do in the live chat.
+-- For the copy window: colour codes are kept (EditBoxes render |c..|r like chat
+-- frames) and, unlike stripEscapes, hyperlinks are left INTACT rather than
+-- collapsed to their label — the copy window's edit box has hyperlinks enabled,
+-- so native links and this addon's URL links stay clickable there.
 local function stripForCopyWindow(s)
     if not s then return "" end
     -- Battle.net presence names are an opaque token that can't be rendered or
@@ -827,31 +782,25 @@ local function messageIsProtected(msg)
 end
 
 -- ── Plain-URL detection ─────────────────────────────────────────────────────
--- Chat doesn't linkify raw URLs on its own. Each http(s) URL found gets
--- wrapped as a custom hyperlink type - same interception mechanism as the
--- copy-arrow above (ItemRefTooltip.SetHyperlink, see hookItemRef), just a
--- different prefix - so it reads as "[url]" and clicking it copies the bare
--- URL into the edit box the same way clicking the arrow copies a whole line.
+-- Chat doesn't linkify raw URLs. Each one found is wrapped as a custom hyperlink
+-- type — the same interception as the copy arrow, just a different prefix — so
+-- it reads as "[url]" and clicking copies the bare URL into the edit box.
 local URL_PATTERN = "https?://[%w%-%._~:/?#%[%]@!$&'()*+,;=%%]+"
 
 local function linkifyURLs(msg)
     return (msg:gsub(URL_PATTERN, function(url)
-        -- A trailing period/comma/etc. almost always belongs to the sentence,
-        -- not the URL - left attached, it'd be treated as part of the link
-        -- and copied along with it.
+        -- A trailing period/comma almost always belongs to the sentence, not the URL —
+        -- left attached it'd be treated as part of the link and copied along with it.
         local core, trail = url:match("^(.-)([%.,;:!?]*)$")
         return string.format("|H%s:%s|h%s[%s]|r|h%s", URL_LINK_PREFIX, core, URL_COLOR, core, trail)
     end))
 end
 
 -- ── Equal-width timestamps ──────────────────────────────────────────────────
--- Chat lines are one FontString per line with exactly one font, so the
--- timestamp can't be rendered in a separate (monospaced) font from the rest
--- of the message. Instead: measure the actual pixel width of a given
--- timestamp string against the widest that format can ever render (using
--- whichever single digit is widest in the current font), and pad the
--- difference with plain spaces so every timestamp block occupies the same
--- width regardless of which specific digits it contains.
+-- A chat line is one FontString with one font, so the timestamp can't use a
+-- separate monospaced one. Instead measure its pixel width against the widest
+-- that format can render (using whichever digit is widest in the font) and pad
+-- the difference with spaces.
 local measureFS
 local function measurer()
     if not measureFS then
@@ -888,9 +837,8 @@ local function measureWidth(face, size, text)
     return fs:GetStringWidth() or 0
 end
 
--- Target width per "format:facePath:size" - the widest this exact timestamp
--- format can ever render, built by substituting every digit with the widest
--- one available in the current font.
+-- Target width per "format:facePath:size" — the widest this format can render,
+-- built by substituting every digit with the widest available.
 local stampTargetCache = {}
 local function stampTarget(format, face, size)
     local key = format .. "|" .. face .. ":" .. size
@@ -904,10 +852,9 @@ local function stampTarget(format, face, size)
     return target
 end
 
--- Pads with trailing spaces (measured in the same font) until the stamp's
--- pixel width reaches the format's worst-case width. Whole spaces only, so
--- this narrows the jitter to well under a space's width rather than
--- eliminating it entirely - the best available without per-glyph textures.
+-- Pads with trailing spaces measured in the same font. Whole spaces only, so
+-- this narrows the jitter to under a space's width rather than eliminating it —
+-- the best available without per-glyph textures.
 local function padStamp(cf, format, text)
     local face, size = cf:GetFont()
     if not (face and size) then return text end
@@ -925,29 +872,23 @@ local function padStamp(cf, format, text)
     return text .. string.rep(" ", n)
 end
 
--- Drops text into the edit box and selects it immediately, so Ctrl+C copies
--- it with no extra click - used by both the copy-arrow and the URL link
--- below. cf is whichever chat frame ChatFrame_OpenChat actually ends up
--- opening (its own fallback when none is passed), replicated here so the
--- right EditBox gets found afterward.
+-- Drops text into the edit box and selects it, so Ctrl+C copies with no extra
+-- click. `cf` is whichever frame ChatFrame_OpenChat actually opens, replicated
+-- here so the right EditBox is found afterwards.
 local function openChatWithText(text, cf)
     if not ChatFrame_OpenChat then return end
     ChatFrame_OpenChat(text, cf)
     local target = cf or SELECTED_CHAT_FRAME or DEFAULT_CHAT_FRAME
     local eb = target and target.editBox
     if not eb then return end
-    -- Deferred a frame: ChatFrame_OpenChat's own SetFocus() (and whatever
-    -- else runs later in the hyperlink-click call chain that led here, e.g.
-    -- ItemRefTooltip:Hide() right after this returns) can still reset the
-    -- cursor/selection if HighlightText() is called immediately - same
-    -- reason the copy window below defers its own post-open focus/highlight.
+    -- Deferred a frame: ChatFrame_OpenChat's own SetFocus() (and the rest of the
+    -- hyperlink-click chain) can still reset the cursor if HighlightText() runs
+    -- immediately.
     C_Timer.After(0, function() eb:HighlightText() end)
 end
 
--- Resolves the clicked arrow back to its own line and loads that line's text
--- into the edit box. The line index comes from the frame's own hit-testing
--- rather than from the link, because a message's index shifts as new lines
--- arrive.
+-- The line index comes from the frame's own hit-testing rather than from the
+-- link, because a message's index shifts as new lines arrive.
 local function copyLineAtCursor(data)
     local chatID = tonumber(data:match("^" .. LINK_PREFIX .. ":(%d+)"))
     local cf = chatID and _G["ChatFrame" .. chatID]
@@ -968,18 +909,13 @@ local function copyLineAtCursor(data)
 end
 
 -- ── Copy window ──────────────────────────────────────────────────────────────
--- A small button in each chat frame's top-right opens a movable window showing
--- that frame's recent history as selectable, copy-pasteable plain text. History
--- is captured per frame from the AddMessage hook (a capped, session-only ring
--- buffer — not persisted), so nothing is stored on disk.
+-- A button in each chat frame's top-right opens a movable window of that frame's
+-- recent history as selectable plain text. Captured from the AddMessage hook
+-- into a capped, session-only ring buffer — nothing is stored on disk.
 local MAX_COPY_LOG = 500
--- How far the buffer is allowed to overshoot MAX_COPY_LOG before it's compacted.
--- table.remove(log, 1) trims in the obvious way but shifts all 500 entries down
--- on every single call — and this runs for every line of chat, forever, which in
--- a busy city or a raid is a lot of copying to keep a buffer the user may never
--- open. Overshooting and then dropping the excess in one pass amortises it to
--- one shift per COPY_LOG_SLACK messages. Stays a plain array either way, so
--- openCopyWindow's ipairs walk is unaffected.
+-- How far the buffer may overshoot before compacting. table.remove(log, 1)
+-- shifts all 500 entries every call, and this runs for every line of chat
+-- forever; overshooting amortises it to one shift per COPY_LOG_SLACK messages.
 local COPY_LOG_SLACK = 100
 
 local function pushCopyLog(cf, msg)
@@ -1047,10 +983,8 @@ local function getCopyWindow()
     eb:SetFontObject("ChatFontNormal")
     eb:SetWidth(520)
     eb:EnableMouse(true)
-    -- Lets a click on a |H..|h hyperlink in the text (an item/quest/player
-    -- link, or one of this addon's own URL links) route through the normal
-    -- SetItemRef dispatch instead of just moving the cursor - guarded since
-    -- it's a newer API and may not exist on every client.
+    -- Lets a click on a |H..|h hyperlink route through the normal SetItemRef
+    -- dispatch instead of just moving the cursor. Guarded — a newer API.
     if eb.SetHyperlinksEnabled then eb:SetHyperlinksEnabled(true) end
     eb:SetScript("OnEscapePressed", function() f:Hide() end)
     scroll:SetScrollChild(eb)
@@ -1061,23 +995,17 @@ local function getCopyWindow()
     return f
 end
 
--- WoW's EditBox has an undocumented ceiling on how much text SetText can
--- actually render - past it, the box has been observed to just come up
--- blank rather than erroring or truncating cleanly. MAX_COPY_LOG caps line
--- COUNT, but 500 lines of raid warnings, long item/quest links, or addon
--- comm spam can still add up to well past that ceiling, which is exactly
--- what made the window "sometimes just be empty" on busier chat frames.
--- Trimming from the oldest end keeps the most recent (most useful) history
--- and stays safely under it every time.
+-- WoW's EditBox has an undocumented ceiling on how much text SetText can render;
+-- past it the box comes up blank rather than truncating. MAX_COPY_LOG caps line
+-- COUNT, but 500 lines of long links can still pass it — which is what made the
+-- window "sometimes just be empty". Trim from the oldest end.
 local MAX_COPY_CHARS = 8000
 
 local function openCopyWindow(cf)
     local f = getCopyWindow()
     local log = cf and cf.__drievCopyLog
-    -- pushCopyLog captures the raw, pre-decoration line (see hookAddMessage),
-    -- so URLs still need linkifying here to show up as clickable links same
-    -- as in the live chat - native hyperlinks (items, quests, players...)
-    -- are already part of that raw text and need no extra work.
+    -- pushCopyLog captures the raw, pre-decoration line, so URLs still need
+    -- linkifying here. Native hyperlinks are already part of that raw text.
     local doLinkify = not isReady() or getData().linkifyURLs ~= false
     local lines = {}
     if log then
@@ -1091,9 +1019,8 @@ local function openCopyWindow(cf)
     local text = table.concat(lines, "\n")
     if #text > MAX_COPY_CHARS then
         text = text:sub(#text - MAX_COPY_CHARS + 1)
-        -- The cut almost certainly landed mid-line; drop that leftover
-        -- fragment so the window opens on a clean line instead of a
-        -- half-chopped one.
+        -- The cut almost certainly landed mid-line; drop the leftover fragment so the
+        -- window opens on a clean line.
         local firstNL = text:find("\n")
         if firstNL then text = text:sub(firstNL + 1) end
     end
@@ -1131,14 +1058,10 @@ local function ensureCopyButton(cf)
     return btn
 end
 
--- Jump-to-present. Blizzard ships this as part of the chat's button frame, which
--- hideButtonFrame strips off — so with this module's defaults the only way back
--- down from a scrolled-up chat is to wheel there. This puts it back, tucked under
--- the copy button rather than in the old floating column beside the chat.
---
--- ScrollToBottom is a ScrollingMessageFrame method, so it's on the chat frame
--- itself; the pcall is for the client that has renamed it out from under us,
--- where a dead button beats a Lua error on every click.
+-- Jump-to-present. Blizzard ships this in the button frame hideButtonFrame
+-- strips, so by default the only way back down is the wheel. ScrollToBottom is a
+-- ScrollingMessageFrame method; the pcall covers a client that renamed it, where
+-- a dead button beats a Lua error on every click.
 local function ensureScrollBottomButton(cf)
     if cf.__drievBottomBtn then return cf.__drievBottomBtn end
     local btn = CreateFrame("Button", nil, cf)
@@ -1160,9 +1083,8 @@ local function ensureScrollBottomButton(cf)
     return btn
 end
 
--- Re-anchored on every refresh rather than once at creation: it sits under the
--- copy button, and the copy button is itself optional — with that one switched
--- off this would otherwise float below a gap where nothing is drawn.
+-- Re-anchored on every refresh rather than at creation: it sits under the copy
+-- button, which is itself optional — with that off this would float below a gap.
 local function anchorScrollBottomButton(cf, btn, belowCopy)
     btn:ClearAllPoints()
     if belowCopy then
@@ -1183,9 +1105,8 @@ local function hookAddMessage(cf)
     cf.AddMessage = function(self, msg, ...)
         if type(msg) == "string" and isReady() then
             local d = getData()
-            -- Skip blanks, and never decorate a line twice (chat history
-            -- replays re-add lines that already carry an arrow and/or a
-            -- linkified URL).
+            -- Skip blanks, and never decorate a line twice: history replays re-add lines
+            -- that already carry an arrow and/or a linkified URL.
             if d.enabled ~= false
                and not msg:match("^%s*$")
                and not msg:find("|H" .. LINK_PREFIX .. ":", 1, true)
@@ -1220,8 +1141,7 @@ local function hookAddMessage(cf)
 end
 
 -- Clicking any chat hyperlink routes through ItemRefTooltip:SetHyperlink.
--- Intercept only our own prefixes; everything else (items, quests, achievements)
--- passes straight through untouched.
+-- Intercept only our own prefixes; everything else passes straight through.
 local hookedItemRef = false
 local function hookItemRef()
     if hookedItemRef or not ItemRefTooltip then return end
@@ -1231,16 +1151,14 @@ local function hookItemRef()
     function ItemRefTooltip:SetHyperlink(data, ...)
         if type(data) == "string" and data:sub(1, #LINK_PREFIX + 1) == LINK_PREFIX .. ":" then
             copyLineAtCursor(data)
-            -- Blizzard's SetItemRef shows the tooltip frame before dispatching
-            -- an unrecognised link type; without this an empty tooltip is left
-            -- hanging on screen after every copy.
+            -- Blizzard's SetItemRef shows the tooltip frame before dispatching an
+            -- unrecognised link type, so without this an empty tooltip is left on screen.
             self:Hide()
             return
         end
         if type(data) == "string" and data:sub(1, #URL_LINK_PREFIX + 1) == URL_LINK_PREFIX .. ":" then
-            -- The URL is embedded directly in the link data (nothing to look
-            -- up, unlike the line-copy arrow above), so it's just a prefix
-            -- strip rather than a cursor/line lookup.
+            -- The URL is embedded in the link data, so this is a prefix strip rather than
+            -- the cursor/line lookup the copy arrow needs.
             local url = data:sub(#URL_LINK_PREFIX + 2)
             if url ~= "" then openChatWithText(url) end
             self:Hide()
@@ -1312,61 +1230,69 @@ local function refresh()
             styleEditBox(eb)
         end
     end)
+
+    -- Last: the loop above can restyle tabs and re-anchor frames, both of which
+    -- move what the filter bar hangs off.
+    updateCombatLogPosition()
+end
+
+-- Every per-frame hook, in one place so a window created later (ChatWindows.lua
+-- builds them from the profile well after login) gets the same treatment as the
+-- ones that existed at PLAYER_LOGIN. Idempotent: hookAddMessage guards itself and
+-- hookedEditBox guards the rest, so calling it twice on a frame is a no-op.
+local hookedEditBox = {}
+local function hookFrame(cf, i)
+    if not cf then return end
+    hookAddMessage(cf)
+
+    local eb = cf.editBox or _G["ChatFrame" .. (i or cf:GetID()) .. "EditBox"]
+    if not eb or hookedEditBox[eb] then return end
+    hookedEditBox[eb] = true
+
+    -- Live remaining-character count while typing.
+    eb:HookScript("OnTextChanged", updateCharCount)
+    hookHistory(eb)
+
+    -- Blizzard rewrites the header on every channel switch, which is exactly when
+    -- the border needs recolouring. Since the editbox refactor this is a method on
+    -- the editbox, not the old global — hook it per editbox or the border stops
+    -- following channel changes.
+    if eb.UpdateHeader then
+        hooksecurefunc(eb, "UpdateHeader", styleEditBox)
+    end
 end
 
 local function init()
     hookItemRef()
     refresh()
 
-    eachChatFrame(function(cf, i)
-        hookAddMessage(cf)
-        local eb = cf.editBox or _G["ChatFrame" .. i .. "EditBox"]
-        if eb then
-            -- Live remaining-character count while typing.
-            eb:HookScript("OnTextChanged", updateCharCount)
-            hookHistory(eb)
-
-            -- Blizzard rewrites the edit box header on every channel switch
-            -- (Say -> Party -> Guild...), which is exactly when the border
-            -- needs recolouring. Since the chat editbox refactor, this is a
-            -- method on the editbox itself (ChatFrameEditBoxMixin:UpdateHeader),
-            -- not the old global ChatEdit_UpdateHeader function — hook it per
-            -- editbox or the border silently stops following channel changes.
-            if eb.UpdateHeader then
-                hooksecurefunc(eb, "UpdateHeader", styleEditBox)
-            end
-        end
-    end)
+    eachChatFrame(hookFrame)
 
     -- Kept for clients that still expose the old global (pre-mixin) function.
     if ChatEdit_UpdateHeader then
         hooksecurefunc("ChatEdit_UpdateHeader", styleEditBox)
     end
 
-    -- Blizzard restores each chat frame's saved position and its clamp insets
-    -- on login and whenever windows are re-laid-out; re-assert afterwards or
-    -- the movement limits quietly come back.
+    -- Blizzard restores each frame's saved position AND its clamp insets on login
+    -- and on re-layout; re-assert afterwards or the movement limits come back.
     if FCF_RestorePositionAndDimensions then
         hooksecurefunc("FCF_RestorePositionAndDimensions", refresh)
     end
     if FCF_DockUpdate then
         hooksecurefunc("FCF_DockUpdate", refresh)
     end
-    -- Blizzard re-anchors the button container whenever it decides which side
-    -- of the chat the buttons belong on — which drags it back on screen. This
-    -- is why the scroll arrows reappeared at seemingly random moments and then
-    -- vanished again the next time something triggered a refresh. ElvUI hooks
-    -- the same function for the same reason.
+    -- Blizzard re-anchors the button container whenever it decides which side of the
+    -- chat the buttons belong on, which is why the scroll arrows reappeared at
+    -- random moments. ElvUI hooks this for the same reason.
     if FCF_SetButtonSide then
         hooksecurefunc("FCF_SetButtonSide", refresh)
     end
     if FCF_UpdateButtonSide then
         hooksecurefunc("FCF_UpdateButtonSide", refresh)
     end
-    -- Blizzard recomputes tab alpha and name colour through these, so re-assert
-    -- afterwards or the names fade out again on the next mouseover and revert
-    -- to Blizzard's yellow. These fire far more often than the hooks above,
-    -- hence the tab-only path rather than a full refresh.
+    -- Blizzard recomputes tab alpha and name colour through these, so re-assert or
+    -- the names fade out on the next mouseover. They fire far more often than the
+    -- hooks above, hence the tab-only path rather than a full refresh.
     if FCFTab_UpdateAlpha then
         hooksecurefunc("FCFTab_UpdateAlpha", reassertTabs)
     end
@@ -1378,18 +1304,16 @@ local function init()
     if FCF_SelectDockFrame then
         hooksecurefunc("FCF_SelectDockFrame", reassertTabs)
     end
-    -- Newly created windows (players can add extra chat tabs) start with
-    -- Blizzard's defaults and need the same treatment, including their own
-    -- AddMessage replacement.
+    -- Newly created windows start with Blizzard's defaults and need the same
+    -- treatment, including their own AddMessage replacement.
     if FCF_OpenTemporaryWindow then
         hooksecurefunc("FCF_OpenTemporaryWindow", function()
-            eachChatFrame(hookAddMessage)
+            eachChatFrame(hookFrame)
             refresh()
         end)
     end
-    -- Blizzard re-sets a chat window's font (default face + new size) when its
-    -- font size is changed from the chat options, which would drop our override.
-    -- Re-assert afterwards.
+    -- Blizzard re-sets a window's font (default face + new size) when its size is
+    -- changed from the chat options, which would drop our override.
     if FCF_SetChatWindowFontSize then
         hooksecurefunc("FCF_SetChatWindowFontSize", function() refresh() end)
     end
@@ -1418,4 +1342,13 @@ local function isEnabled()
     return isReady() and getData().enabled ~= false
 end
 
-addon.Chat = { refresh = refresh, getFontPath = chatFontPath, isEnabled = isEnabled }
+addon.Chat = {
+    refresh     = refresh,
+    getFontPath = chatFontPath,
+    isEnabled   = isEnabled,
+    eachFrame   = eachChatFrame,
+    -- For windows that didn't exist at PLAYER_LOGIN — see hookFrame.
+    hookFrame   = hookFrame,
+    -- For anything that moves a chat frame without going through refresh().
+    updateCombatLogPosition = updateCombatLogPosition,
+}

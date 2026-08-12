@@ -1,19 +1,16 @@
--- Driev's Essentials — Item Rack module: the swap engine.
+-- Item Rack module: the swap engine.
 --
--- Equipping a set is not one atomic operation: the client only moves one item
--- per PickupInventoryItem/PickupContainerItem pair, refuses to move anything
--- that is "locked" mid-swap, and can't touch equipment at all in combat. So a
--- set swap is a loop that does as much as it legally can, then waits for
--- ITEM_LOCK_CHANGED to settle and runs again — with anything still impossible
--- (in combat, dead, casting) parked on the combat queue until it isn't.
+-- Equipping a set isn't atomic: the client moves one item per Pickup* pair,
+-- refuses to move anything "locked" mid-swap, and can't touch equipment in
+-- combat. So a swap is a loop doing as much as it legally can, waiting for
+-- ITEM_LOCK_CHANGED to settle and running again — with anything still impossible
+-- parked on the combat queue.
 local addon = _G.DrievEssentials
 if not addon then return end
 
 local IR = addon.ItemRack
 if not IR then return end
 
-local GetContainerNumSlots     = C_Container.GetContainerNumSlots
-local GetContainerItemLink     = C_Container.GetContainerItemLink
 local PickupContainerItem      = C_Container.PickupContainerItem
 local GetContainerItemInfo     = IR.GetContainerItemInfo
 
@@ -33,6 +30,10 @@ IR.AbortReasons = {
     "Another swap is in progress.",
 }
 
+-- Monotonic count of moves handed to the client, only ever compared against
+-- itself to answer "did that pass do anything at all?" — see the watchdog.
+local moveCount = 0
+
 -- ── Deferred sets ────────────────────────────────────────────────────────────
 
 -- `arg` is passed back to fn as its second argument when the deferred call
@@ -43,11 +44,95 @@ function IR.AddSetToSetsWaiting(setname, fn, arg)
         if entry[1] == setname and entry[2] == fn then return end
     end
     table.insert(IR.SetsWaiting, { setname, fn, arg })
+    IR.WatchSwapEngine()
 end
 
 function IR.ProcessSetsWaiting()
     local entry = table.remove(IR.SetsWaiting, 1)
     if entry then entry[2](entry[1], entry[3]) end
+end
+
+-- ── Stall watchdog ───────────────────────────────────────────────────────────
+-- Everything this engine defers is woken by ITEM_LOCK_CHANGED, which fires
+-- because an item moved — so a pass that moved NOTHING has nothing coming to
+-- wake it. Full bags, something on the cursor, an unreleased lock, a missing
+-- cast-stop event: any of those parks IR.setSwapping permanently, and since
+-- EquipSet queues behind exactly those states, every later swap is swallowed
+-- silently. Only /deir unstick or a relog got out of it.
+--
+-- So deferring anything arms this too: it re-runs the lock handler's wake-ups
+-- and eventually gives up loudly rather than blocking every later swap.
+local WATCHDOG_TICK = 0.5
+
+-- Retries that moved nothing before the swap is written off. A pass that manages
+-- even one move resets it, so this only counts genuinely stuck attempts — and
+-- ticks spent waiting on locks, a cast or combat don't count at all.
+local WATCHDOG_GIVEUP = 6
+
+local watchTimer, idleTicks = nil, 0
+
+local function stopWatch()
+    if watchTimer then watchTimer:Cancel() end
+    watchTimer = nil
+end
+
+-- Drops the in-flight swap and says why, leaving the engine free for the next
+-- request instead of blocked behind one that can't finish.
+local function giveUpOnSwap()
+    local setname = IR.setSwapping
+    IR.setSwapping = nil
+    wipe(IR.SwapList)
+    IR.ClearPendingEquip()
+    IR.Print("Gave up on \"" .. tostring(setname) .. "\". "
+        .. (IR.AbortReasons[IR.AbortSwap] or "Nothing would move.")
+        .. " Sets can be equipped again once that's sorted.")
+    IR.AbortSwap, IR.abortReported = nil, nil
+    if IR.UpdateCurrentSet then IR.UpdateCurrentSet() end
+end
+
+local function watchdogTick()
+    watchTimer = nil
+
+    -- Locks still held means the client really is mid-move — the healthy case,
+    -- driven by ITEM_LOCK_CHANGED. Casting, combat and death each end on their own
+    -- and have their own handler, so none of them is a stall.
+    if IR.AnythingLocked() or IR.IsCasting()
+        or UnitAffectingCombat("player") or IR.IsPlayerReallyDead() then
+        IR.WatchSwapEngine()
+        return
+    end
+
+    if IR.setSwapping then
+        local before = moveCount
+        IR.LockChangedDuringSetSwap()
+        if moveCount > before then
+            idleTicks = 0
+        else
+            idleTicks = idleTicks + 1
+            if idleTicks >= WATCHDOG_GIVEUP and IR.setSwapping then giveUpOnSwap() end
+        end
+    elseif #IR.SetsWaiting > 0 then
+        -- One per tick, matching the lock handler: each of these is a full
+        -- EquipSet that may well hand the client more moves to settle.
+        IR.ProcessSetsWaiting()
+    end
+
+    if IR.setSwapping or #IR.SetsWaiting > 0 then IR.WatchSwapEngine() end
+end
+
+-- Cheap to call from anywhere that defers work; it does nothing if a tick is
+-- already pending, and stops rearming itself as soon as there's nothing parked.
+function IR.WatchSwapEngine()
+    if watchTimer then return end
+    watchTimer = C_Timer.NewTimer(WATCHDOG_TICK, watchdogTick)
+end
+
+-- Parks a swap for another pass. The lock handler runs it when the client is
+-- genuinely mid-move; the watchdog runs it when nothing is coming.
+local function parkSwap(setname, fresh)
+    IR.setSwapping = setname
+    if fresh then idleTicks = 0 end
+    IR.WatchSwapEngine()
 end
 
 -- ── Moving items ─────────────────────────────────────────────────────────────
@@ -86,23 +171,21 @@ function IR.MoveItem(fromBag, fromSlot, toBag, toSlot)
         if toBag == INVSLOT_AMMO then toBag = INVSLOT_RANGED end
         PickupInventoryItem(toBag)
     end
+    moveCount = moveCount + 1
 end
 local MoveItem = IR.MoveItem
 
 -- ── Set state ────────────────────────────────────────────────────────────────
 
--- Slot pairs whose two halves are genuinely interchangeable: what matters is
--- that both rings end up worn, not which finger each lands on. Trinkets are
--- deliberately NOT in here — /use 13 and /use 14 macros make trinket position
--- meaningful — and neither are the weapon slots, where main/off hand is a real
--- distinction the client enforces.
+-- Slot pairs whose halves are genuinely interchangeable: what matters is both
+-- rings end up worn, not which finger. Trinkets are deliberately NOT here (/use
+-- 13 and /use 14 make position meaningful), nor weapons, where main/off hand is
+-- a distinction the client enforces.
 local INTERCHANGEABLE = { { 11, 12 } }
 
--- Re-reads a set's wanted items against what's worn and transposes an
--- interchangeable pair when that leaves more of it already in place. Turns
--- "set1 = ring1/ring2, set2 = ring3/ring1" from a two-ring shuffle into a
--- single swap: ring1 stays on the finger it's already on and ring3 takes the
--- other one. Returns a copy; the saved set is never rewritten.
+-- Transposes an interchangeable pair when that leaves more of the set already in
+-- place, turning a two-ring shuffle into a single swap. Returns a copy; the
+-- saved set is never rewritten.
 local function resolveInterchangeable(equip)
     local resolved = {}
     for slot, id in pairs(equip) do resolved[slot] = id end
@@ -157,19 +240,15 @@ function IR.MissingItems(setname)
 end
 
 -- ── Pending equip ────────────────────────────────────────────────────────────
--- Moving an item is not instant: PickupContainerItem/PickupInventoryItem only
--- ASK the client to move it, and until the server confirms, the slot still
--- reads as holding the old item. A straightforward set swap finds everything
--- on the first pass, so IterateSwapList empties the swap list and EquipSet goes
--- straight to EndSetSwap — meaning none of the swap engine's own tracking
--- (setSwapping, SetsWaiting, CombatQueue) is set by the time the set button
--- redraws, even though the gear is very much still in flight.
+-- Pickup* only ASKS the client to move an item; until the server confirms, the
+-- slot still reads as holding the old one. A straightforward swap finds
+-- everything on the first pass, so EquipSet goes straight to EndSetSwap and none
+-- of the engine's tracking is set by the time the set button redraws — even
+-- though the gear is still in flight.
 --
--- So the "issued, not yet landed" window gets tracked explicitly. It opens when
--- moves are actually handed to the client and closes when item locks settle
--- (ItemRack.lua's debounced ITEM_LOCK_CHANGED handler), with a timeout as a
--- safety net purely so a swap whose lock events never arrive can't leave this
--- stuck on — the display would otherwise be wrong until the next gear change.
+-- So the "issued, not yet landed" window is tracked explicitly: opened when
+-- moves are handed over, closed when locks settle, with a timeout so a swap
+-- whose lock events never arrive can't leave it stuck.
 local EQUIP_SETTLE_TIMEOUT = 3
 
 function IR.MarkEquipIssued(setname)
@@ -184,14 +263,10 @@ function IR.ClearPendingEquip()
     return true
 end
 
--- Whether the engine is still actively working towards SOME equip: moves issued
--- and not yet applied, a multi-pass swap waiting on its own follow-up, a request
--- queued behind locks/casting/an earlier swap, or an item parked for once combat
--- ends. Distinguishes "gear doesn't match the set because the addon hasn't
--- finished getting you into it yet" (worth still crediting the set for,
--- mid-transition) from "gear doesn't match because you swapped a piece out
--- yourself and everything has settled" (worth showing honestly, not as a stale
--- set).
+-- Whether the engine is still working towards SOME equip: moves issued but not
+-- applied, a multi-pass swap awaiting its follow-up, or something queued behind
+-- locks/casting/combat. Distinguishes "gear doesn't match because we haven't
+-- finished" from "gear doesn't match because you swapped a piece out yourself".
 function IR.SetSwapInProgress()
     if IR.setSwapping ~= nil    then return true end
     if #IR.SetsWaiting > 0      then return true end
@@ -238,12 +313,9 @@ function IR.IterateSwapList(setname)
                         -- slots recorded as "old" so unequipping restores them.
                         local freeBag, freeSlot = IR.FindSpace()
                         if not freeBag then
-                            -- No room to park the off hand: leave swap[slot] in
-                            -- place for a later pass instead of falling through
-                            -- to equip the two-hander over an occupied off hand
-                            -- anyway, which the client would only reject —
-                            -- wasting the swap and, worse, marking this slot
-                            -- "done" so it would never be retried.
+                            -- No room to park the off hand: leave swap[slot] for a later pass rather than
+                            -- equipping the two-hander over an occupied off hand, which the client would
+                            -- reject — wasting the swap and marking the slot "done" so it's never retried.
                             IR.AbortSwap = 1
                             skip = true
                         else
@@ -278,13 +350,17 @@ function IR.IterateSwapList(setname)
         end
     end
 
-    if IR.AbortSwap then
+    -- Retried passes hit the same wall the first one did, so the reason is worth
+    -- saying once per stall rather than every half second until it clears.
+    if IR.AbortSwap and IR.AbortSwap ~= IR.abortReported then
+        IR.abortReported = IR.AbortSwap
         IR.Print("Swap stopped. " .. (IR.AbortReasons[IR.AbortSwap] or ""))
     end
 end
 
 function IR.EndSetSwap(setname)
     IR.setSwapping = nil
+    IR.abortReported = nil
     if not setname then return end
     local db = DB()
     if not string.match(setname, "^~") then
@@ -305,22 +381,41 @@ function IR.LockChangedDuringSetSwap()
     local setname = IR.setSwapping
     IR.setSwapping = nil
     IR.IterateSwapList(setname)
+    -- Two passes aren't always enough — a swap shuffling items through a bag can
+    -- need three. Anything still listed is parked for another pass rather than
+    -- dropped while EndSetSwap declares the set equipped with pieces still in bags.
+    if next(IR.SwapList) then
+        parkSwap(setname)
+        return
+    end
     IR.EndSetSwap(setname)
 end
 
 -- Manual escape hatch: forgets every in-flight and queued swap and rebuilds the
--- item-location cache from scratch, without needing a full relog. /reload alone
--- can't do this — every value here is a plain Lua field, so a reload already
--- resets them to nothing, and if that were the whole problem a reload would
--- have fixed it already. What a reload CAN'T touch is the real client-side
--- state (an item genuinely stuck mid-move, still reported locked by the game
--- itself) that a swap gone wrong can leave behind; this can't force that
--- either, but it does stop the addon compounding it by continuing to act on
--- stale bookkeeping, and it's what actually needs to happen before the next
--- swap attempt has a chance of working.
+-- location cache. /reload can't do this — every value here is a plain Lua field
+-- a reload already clears. What a reload can't touch is real client-side state
+-- (an item stuck mid-move, still reported locked); this can't force that either,
+-- but it stops the addon compounding it by acting on stale bookkeeping.
 function IR.UnstickSwap()
-    IR.setSwapping = nil
-    IR.AbortSwap   = nil
+    -- Said out loud before any of it is cleared: if the engine ever wedges
+    -- again, what it was wedged ON is the one thing worth knowing, and it's
+    -- gone the moment this function does its job.
+    local stuck = {}
+    if IR.setSwapping      then table.insert(stuck, "mid-swap on \"" .. IR.setSwapping .. "\"") end
+    if #IR.SetsWaiting > 0 then table.insert(stuck, #IR.SetsWaiting .. " set(s) queued") end
+    if next(IR.CombatQueue) then table.insert(stuck, "items on the combat queue") end
+    if IR.nowCasting       then table.insert(stuck, "thinks you're casting") end
+    if IR.AnythingLocked() then table.insert(stuck, "the game reports gear locked") end
+    IR.Print(#stuck > 0 and ("Was: " .. table.concat(stuck, ", ") .. ".") or "Nothing was stuck.")
+
+    stopWatch()
+    IR.setSwapping   = nil
+    IR.AbortSwap     = nil
+    IR.abortReported = nil
+    -- Cleared alongside the rest: a cast whose stop event never arrived blocks
+    -- every equip through IR.IsCasting, and unsticking is the user saying the
+    -- engine's idea of the world is wrong.
+    IR.nowCasting    = nil
     IR.ClearPendingEquip()
     wipe(IR.SwapList)
     wipe(IR.SetsWaiting)
@@ -334,15 +429,12 @@ function IR.UnstickSwap()
     IR.Print("Cleared. If gear still shows locked, that's the game itself still settling — give it a moment before trying again.")
 end
 
--- fromEvent marks a swap the events engine asked for, as opposed to one the
--- user asked for by clicking a set, pressing its binding or running a macro.
--- Only the difference matters: a set the user picked themselves outranks
--- whatever an event is currently holding (see IR.NoteManualEquip).
+-- fromEvent marks a swap the events engine asked for rather than the user. Only
+-- the difference matters: a set the user picked outranks whatever an event is
+-- holding (see IR.NoteManualEquip).
 function IR.EquipSet(setname, fromEvent)
-    -- The one funnel every swap goes through — macros, keybindings, the set
-    -- buttons and the events engine all land here — so this is where a disabled
-    -- module stops equipping. Silent for event-driven swaps: those aren't the
-    -- user asking, so they shouldn't produce chat spam.
+    -- The one funnel every swap goes through, so this is where a disabled module
+    -- stops equipping. Silent for event-driven swaps, which aren't the user asking.
     if not IR.RequireEnabled(fromEvent) then return end
     local db = DB()
     if not setname or not db.sets[setname] then
@@ -350,18 +442,13 @@ function IR.EquipSet(setname, fromEvent)
         return
     end
     if not fromEvent and IR.NoteManualEquip then IR.NoteManualEquip(setname) end
-    -- IR.setSwapping means an EARLIER EquipSet is still waiting on its own
-    -- second pass (see the bottom of this function): the real item locks it
-    -- was watching can clear a moment before the debounced ITEM_LOCK_CHANGED
-    -- handler actually gets around to running LockChangedDuringSetSwap for it,
-    -- and AnythingLocked() alone goes false during that gap. A second EquipSet
-    -- landing in that window (exactly what spamming the set button produces)
-    -- would otherwise wipe() the shared IR.SwapList out from under the first
-    -- call's pending retries and overwrite IR.setSwapping with its own name —
-    -- silently abandoning whatever the first swap still had left to move, with
-    -- no error and no further retry. Queuing here instead means only one
-    -- EquipSet is ever actually running its passes at a time.
-    if IR.nowCasting or IR.setSwapping or IR.AnythingLocked() then
+    -- IR.setSwapping means an EARLIER EquipSet is still waiting on its second pass:
+    -- the item locks it watched can clear just before the debounced handler runs
+    -- LockChangedDuringSetSwap, and AnythingLocked() goes false in that gap. A
+    -- second EquipSet landing there (what spamming the set button produces) would
+    -- wipe() the shared SwapList out from under the first call's retries and
+    -- overwrite setSwapping with its own name. Queuing means one runs at a time.
+    if IR.IsCasting() or IR.setSwapping or IR.AnythingLocked() then
         IR.AddSetToSetsWaiting(setname, IR.EquipSet, fromEvent)
         return
     end
@@ -369,20 +456,16 @@ function IR.EquipSet(setname, fromEvent)
     local set  = db.sets[setname]
     local swap = IR.SwapList
     wipe(swap)
+    IR.abortReported = nil   -- a fresh request gets to report its own wall
 
-    -- In combat (or dead) this equip becomes a promise to be kept the moment
-    -- that clears, and any earlier promise covering the same slots has to give
-    -- way to it first. The old queue was worked out against the gear worn when
-    -- it was made, so a slot THIS set is already happy with — and therefore
-    -- won't queue anything for — would otherwise keep the previous set's item
-    -- waiting there and swap it in alongside, wearing a piece of a set that has
-    -- since been replaced. Slots this set says nothing about keep whatever they
-    -- have queued, which is the same reach an out-of-combat equip has.
+    -- In combat (or dead) this equip becomes a promise for when that clears, and any
+    -- earlier promise covering the same slots must give way — the old queue was
+    -- worked out against gear worn when it was made, so a slot THIS set is happy
+    -- with would otherwise keep the previous set's item waiting and swap it in
+    -- alongside. Slots this set says nothing about keep what they have queued.
     --
-    -- Cleared before the swap list is worked out below, not inside the queueing
-    -- block: a set that matches the gear you're already wearing produces an
-    -- empty swap list and returns early, and it still has to release the slots
-    -- it owns.
+    -- Cleared before the swap list is worked out: a set matching worn gear produces
+    -- an empty list and returns early, and still has to release the slots it owns.
     if (UnitAffectingCombat("player") or IR.IsPlayerReallyDead()) and next(IR.CombatQueue) then
         local alreadyQueued = IR.combatSet == setname
         IR.ClearCombatQueueForSet(set)
@@ -429,13 +512,9 @@ function IR.EquipSet(setname, fromEvent)
             swap[slot] = nil
             if set.old then set.old[slot] = GetID(slot) end
         end
-        -- Name the set the queue is now holding, then redraw. Each
-        -- AddToCombatQueue above redrew the buttons already, but every one of
-        -- those ran before this was updated, so the set button would be left
-        -- showing nothing (or the previous set) until something else refreshed
-        -- it. AddToCombatQueue's take-it-back-off toggle can't fire from here —
-        -- every slot this set touches was released at the top of the function —
-        -- so this is only ever a set genuinely going on the queue.
+        -- Name the set the queue now holds, then redraw. Each AddToCombatQueue above
+        -- redrew already, but all of those ran before this was updated, so the set button
+        -- would show nothing until something else refreshed it.
         if next(IR.CombatQueue) then
             IR.combatSet = (set.old and setname) or set.oldset or IR.combatSet
             IR.UpdateCombatQueue()
@@ -446,10 +525,9 @@ function IR.EquipSet(setname, fromEvent)
     if set.showHelm ~= nil then ShowHelm(set.showHelm == 1) end
     if set.showCloak ~= nil then ShowCloak(set.showCloak == 1) end
 
-    -- Anything still in `swap` here is about to be handed to the client, so the
-    -- gear is in flight from this point until locks settle — including across
-    -- the EndSetSwap below, which redraws the set button while the items it
-    -- just asked for have not actually arrived yet.
+    -- Anything still in `swap` is about to be handed to the client, so gear is in
+    -- flight from here until locks settle — including across EndSetSwap, which
+    -- redraws the set button before the items have arrived.
     IR.MarkEquipIssued(setname)
     IR.IterateSwapList(setname)
     if not next(swap) then
@@ -457,9 +535,10 @@ function IR.EquipSet(setname, fromEvent)
         return
     end
 
-    -- Items left over need a second pass; setSwapping tells the debounced
-    -- ITEM_LOCK_CHANGED handler in ItemRack.lua to run it once locks settle.
-    IR.setSwapping = setname
+    -- Leftovers need a second pass; setSwapping tells the debounced
+    -- ITEM_LOCK_CHANGED handler to run it once locks settle, and the watchdog to run
+    -- it anyway if this pass moved nothing — since then no such event is coming.
+    parkSwap(setname, true)
 end
 
 -- Restores whatever was worn before `setname` was equipped, via the internal
@@ -498,7 +577,7 @@ end
 -- menus, where the user picked exactly one thing.
 function IR.EquipItemByID(id, slot)
     if not id then return end
-    if IR.nowCasting or UnitAffectingCombat("player") or IR.IsPlayerReallyDead() then
+    if IR.IsCasting() or UnitAffectingCombat("player") or IR.IsPlayerReallyDead() then
         IR.AddToCombatQueue(slot, id)
         return
     end
@@ -647,12 +726,11 @@ local bindingRetries = 0
 -- buttons instead keeps every name a single token.
 local BIND_PREFIX = "DrievItemRackSetBind"
 
--- Slot buttons get a hidden twin of their own rather than the binding pointing
--- straight at the on-screen button. A CLICK binding only ever fires the click
--- phase ActionButtonUseKeyDown selects (see bindingClickPhase below), so the
--- visible button would have to follow that CVar to hear the key at all — which
--- would change what a MOUSE click does to it, and make dragging a bar around
--- fire the button on the way. A hidden twin has no mouse behaviour to spoil.
+-- Slot buttons get a hidden twin rather than the binding pointing at the
+-- on-screen button. A CLICK binding fires only the phase ActionButtonUseKeyDown
+-- selects, so the visible button would have to follow that CVar to hear the key
+-- — which would change what a MOUSE click does and make dragging a bar fire the
+-- button. A hidden twin has no mouse behaviour to spoil.
 local SLOT_BIND_PREFIX = "DrievItemRackSlotBind"
 
 -- Keys handed to SetBindingClick last pass, so a set that loses its key (or is
@@ -663,22 +741,42 @@ local appliedKeys = {}
 -- re-applied to exactly those.
 local appliedButtons = {}
 
+-- The phase those buttons are currently registered for, and whether a change to
+-- it is still owed because combat got in the way. See ReflectBindingClickPhase.
+local appliedPhase
+local phasePending = false
+
 -- Which click phase counts as the real keypress. A CLICK binding dispatches one
 -- phase only — the one `ActionButtonUseKeyDown` selects, for keybinds as much as
--- for mouse — so a button left on the default LeftButtonUp registration simply
--- never hears the key when that CVar is on, and the binding looks dead. Same
--- CVar the action bars and trinket buttons follow (General → Input).
+-- mouse — so a button left on the default LeftButtonUp never hears the key when
+-- that CVar is on, and the binding looks dead. Same CVar the action bars and
+-- trinket buttons follow (General → Input).
 local function bindingClickPhase()
     return GetCVarBool("ActionButtonUseKeyDown") and "LeftButtonDown" or "LeftButtonUp"
 end
 
--- RegisterForClicks isn't combat-protected, so the phase can be re-applied the
--- moment the CVar flips rather than waiting for a full binding rebuild.
+-- Called on every CVAR_UPDATE, so any addon's SetCVar lands here — bail unless
+-- the phase actually moved. RegisterForClicks IS protected on these secure
+-- buttons, so a CVar written mid-encounter (Particles does exactly that) would
+-- otherwise blow up as ADDON_ACTION_BLOCKED. If it did flip during combat, owe
+-- it until FlushBindingClickPhase runs on leaving.
 function IR.ReflectBindingClickPhase()
     local phase = bindingClickPhase()
+    if phase == appliedPhase then return end
+    if InCombatLockdown() then
+        phasePending = true
+        return
+    end
+    phasePending = false
+    appliedPhase = phase
     for _, button in ipairs(appliedButtons) do
         button:RegisterForClicks(phase)
     end
+end
+
+-- Combat-deferred half of the above, from PLAYER_REGEN_ENABLED.
+function IR.FlushBindingClickPhase()
+    if phasePending then IR.ReflectBindingClickPhase() end
 end
 
 local function anythingBound()
@@ -713,11 +811,10 @@ end
 -- binding file twice for one change.
 function IR.SetSetBindings()
     if InCombatLockdown() then return end
-    -- SaveBindings() below rewrites the player's binding file, so don't touch it
-    -- at all until the user has actually bound something (or until we have a
-    -- stale binding of our own left to clear). A disabled module wants nothing
-    -- bound at all, so for it only the stale half of that applies — otherwise
-    -- every call while it's off would rewrite the file to no effect.
+    -- SaveBindings() rewrites the player's binding file, so don't touch it until the
+    -- user has bound something (or we have a stale binding to clear). A disabled
+    -- module wants nothing bound, so only the stale half applies — otherwise every
+    -- call while off would rewrite the file to no effect.
     local enabled = IR.IsEnabled()
     if not next(appliedKeys) and not (enabled and anythingBound()) then return end
 
@@ -735,12 +832,15 @@ function IR.SetSetBindings()
     local stale = appliedKeys
     appliedKeys = {}
     wipe(appliedButtons)
+    -- This pass registers every set button for the current phase itself, so
+    -- nothing is owed afterwards whatever a CVar flip left pending.
+    appliedPhase = bindingClickPhase()
+    phasePending = false
 
-    -- A disabled module applies nothing, which drops every key it owned into
-    -- `stale` below and unbinds it — otherwise the slot bindings in particular
-    -- keep working (they're secure `type=item` clicks, so there's no Lua hook to
-    -- refuse them at press time) and the module isn't really off. Re-enabling
-    -- runs IR.Refresh, which comes straight back here and rebinds the lot.
+    -- A disabled module applies nothing, dropping every key it owned into `stale`
+    -- and unbinding it — otherwise the slot bindings keep working (secure
+    -- `type=item` clicks, so no Lua hook can refuse them) and the module isn't
+    -- really off. Re-enabling runs IR.Refresh, which comes back here and rebinds.
     local sets     = enabled and DB().sets or {}
     local slotKeys = enabled and IR.SlotKeys() or {}
 
@@ -751,7 +851,7 @@ function IR.SetSetBindings()
             local buttonName = BIND_PREFIX .. index
             local button = _G[buttonName]
                 or CreateFrame("Button", buttonName, nil, "SecureActionButtonTemplate")
-            button:RegisterForClicks(bindingClickPhase())
+            button:RegisterForClicks(appliedPhase)
             button:SetAttribute("type", "macro")
 
             -- /run rather than /deir equip so the binding honours the
@@ -780,11 +880,10 @@ function IR.SetSetBindings()
         local buttonName = SLOT_BIND_PREFIX .. id
         local button = _G[buttonName]
             or CreateFrame("Button", buttonName, nil, "SecureActionButtonTemplate")
-        -- Both phases, the way LibActionButton registers its own buttons. It
-        -- makes the binding work whichever phase ActionButtonUseKeyDown has the
-        -- client send (so these twins never need re-registering when that CVar
-        -- flips), and where the client sends both, the release half is what
-        -- tells the visible button the key has been let go.
+        -- Both phases, the way LibActionButton registers its own. The binding then works
+        -- whichever phase ActionButtonUseKeyDown sends (so twins never need
+        -- re-registering when it flips), and where the client sends both, the release
+        -- half tells the visible button the key was let go.
         button:RegisterForClicks("LeftButtonDown", "LeftButtonUp")
         -- The action itself must only ever happen once. A release click is
         -- looked up under `typerelease` rather than `type`, so pointing that at

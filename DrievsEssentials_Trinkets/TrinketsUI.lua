@@ -1,7 +1,5 @@
--- Driev's Essentials — Trinkets module: settings UI.
---
--- This addon only loads when the core addon is present (## Dependencies in the
--- .toc guarantees load order), so the shared namespace below always exists.
+-- Trinkets module: settings UI. Loads only alongside core (## Dependencies), so
+-- the shared namespace always exists.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -63,20 +61,25 @@ addon.RegisterDefaults("trinkets", {
     swapWatchdog     = true,
     softQueueMod     = "shift", -- "shift"/"ctrl"/"none": modifier+click a trinket to soft-queue
     swapMod          = "ctrl",  -- "shift"/"ctrl"/"none": modifier+click a worn trinket to swap top/bottom slots
-    encounters       = {},   -- [encounterID] = { enabled, mainTop, mainBottom, softTop, softBottom }
+    modKeybindActions = false,  -- off: the two modifier actions need a real mouse click, not the keybind
+    encounters       = {},   -- [encounterID] = { enabled, trigger, mainTop, mainBottom, softTop, softBottom }
     debugEncounters  = false, -- gate for the Stockades (debug raid) test encounters
     encQueueDelayEnabled = true, -- Specific Auto Queue safeguard delay toggle
     encQueueDelaySeconds = 5.0,  -- required continuous encounter+combat duration before queuing
 })
 
 -- ── Trinkets tab ──────────────────────────────────────────────────────────────
+-- The two reorderable lists here — the bag menu's display order and each queue
+-- slot's sort order — are the same widget: a scrollable column of
+-- drag-to-reorder rows with a custom scrollbar and a strip of move buttons. Only
+-- the rows' source and the buttons' actions differ.
+local LIST_W, LIST_H, ROW_H, SB_W = 310, 240, 26, 10
+local VIS_ROWS = math.floor(LIST_H / ROW_H)
 
--- Drag-to-reorder for the pooled list rows used by the menu-order and queue
--- sort lists. The row pool is index-fixed and re-skinned on each rebuild, so we
--- track the dragged ITEM by value (ctx.dragId), not by row frame: as the cursor
--- crosses row slots we live-reorder the backing list, so the row under the
--- cursor always shows the dragged item and selectRow keeps it highlighted.
--- ctx = { getList, selectRow, dragUpdate, onReorder }.
+-- The row pool is index-fixed and re-skinned on each rebuild, so the dragged
+-- ITEM is tracked by value (ctx.dragId), not by frame: as the cursor crosses
+-- slots the backing list is live-reordered, so the row under the cursor always
+-- shows the dragged item.
 local function attachRowDrag(row, rowIndex, ctx)
     row:RegisterForDrag("LeftButton")
     row:SetScript("OnDragStart", function(self)
@@ -109,8 +112,7 @@ local function runRowDrag(ctx, p)
 
     -- Auto-scroll when the cursor nears the top/bottom edge of the viewport.
     local sfTop, sfBottom = p.sf:GetTop(), p.sf:GetBottom()
-    local visRows   = math.floor(p.LIST_H / p.ROW_H)
-    local maxScroll = math.max(0, (#list - visRows) * p.ROW_H)
+    local maxScroll = math.max(0, (#list - VIS_ROWS) * ROW_H)
     if sfTop and cursorY > sfTop - 4 then
         p.sf:SetVerticalScroll(math.max(0, p.sf:GetVerticalScroll() - 6)); p.updateThumb()
     elseif sfBottom and cursorY < sfBottom + 4 then
@@ -119,7 +121,7 @@ local function runRowDrag(ctx, p)
 
     local top = p.sc:GetTop()
     if not top then return end
-    local targetIdx = math.max(1, math.min(#list, math.floor((top - cursorY) / p.ROW_H) + 1))
+    local targetIdx = math.max(1, math.min(#list, math.floor((top - cursorY) / ROW_H) + 1))
     if targetIdx ~= curIdx then
         table.remove(list, curIdx)
         table.insert(list, targetIdx, ctx.dragId)
@@ -128,30 +130,13 @@ local function runRowDrag(ctx, p)
     end
 end
 
-local function buildMenuOrderList(parent)
-    -- Reorderable list of ALL known trinket IDs stored in d.menuOrder.
-    -- Controls the display order in the bag menu.
-    local LIST_W = 310
-    local LIST_H = 240
-    local ROW_H  = 26
-    local SB_W   = 10
-
-    local container = CreateFrame("Frame", nil, parent)
-    container:SetSize(LIST_W + SB_W + 4 + 80, LIST_H + 60)
-
-    local header = container:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    header:SetPoint("TOPLEFT", 0, 0)
-    header:SetText("Menu Display Order")
-    header:SetTextColor(unpack(C.red))
-
-    local desc = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
-    desc:SetText("Drag items to reorder. New trinkets are added automatically when scanned.")
-    desc:SetTextColor(unpack(C.textGrey))
-
+-- Viewport, scroll child, and a hand-built scrollbar (Blizzard's templates don't
+-- match this addon's chrome). `rows` is the caller's pool, which the scrollbar
+-- sizes itself from. Returns the pieces the caller still needs.
+local function makeListBox(container, anchorTo, rows)
     local listBG = CreateFrame("Frame", nil, container, "BackdropTemplate")
     listBG:SetSize(LIST_W, LIST_H)
-    listBG:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -10)
+    listBG:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -10)
     applyBackdrop(listBG, 1, C.panelDeep, C.tabBorder)
 
     local sf = CreateFrame("ScrollFrame", nil, listBG)
@@ -173,9 +158,161 @@ local function buildMenuOrderList(parent)
     applyBackdrop(thumb, 1, C.tabIdle, C.tabBorder)
     thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)
 
-    local rows    = {}
+    local function maxScroll()
+        return math.max(0, (#rows - VIS_ROWS) * ROW_H)
+    end
+
+    local function updateThumb()
+        local n = #rows
+        if n <= VIS_ROWS then track:Hide(); return end
+        track:Show()
+        local tH = track:GetHeight()
+        if tH <= 0 then return end
+        local thumbH = math.max(16, tH * VIS_ROWS / n)
+        local top    = maxScroll() > 0 and (sf:GetVerticalScroll() / maxScroll()) or 0
+        thumb:SetHeight(thumbH)
+        thumb:ClearAllPoints()
+        thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -(top * (tH - thumbH)))
+    end
+
+    listBG:EnableMouseWheel(true)
+    listBG:SetScript("OnMouseWheel", function(_, delta)
+        sf:SetVerticalScroll(math.max(0,
+            math.min(sf:GetVerticalScroll() - delta * ROW_H * 2, maxScroll())))
+        updateThumb()
+    end)
+
+    -- Click-drag on the thumb; without these it would be a position indicator
+    -- only, leaving the mouse wheel as the sole way to scroll.
+    local dragging, startY, startScroll = false, 0, 0
+    thumb:EnableMouse(true)
+    thumb:SetScript("OnMouseDown", function(_, button)
+        if button ~= "LeftButton" then return end
+        dragging    = true
+        startY      = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+        startScroll = sf:GetVerticalScroll()
+    end)
+    thumb:SetScript("OnMouseUp", function(_, button)
+        if button == "LeftButton" then dragging = false end
+    end)
+    thumb:SetScript("OnUpdate", function()
+        if not dragging then return end
+        local tH, thumbH = track:GetHeight(), thumb:GetHeight()
+        if tH <= thumbH or maxScroll() <= 0 then return end
+        local curY  = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
+        local delta = startY - curY
+        sf:SetVerticalScroll(math.max(0,
+            math.min(startScroll + delta * maxScroll() / (tH - thumbH), maxScroll())))
+        updateThumb()
+    end)
+    thumb:SetScript("OnEnter", function(self) UI.tintBg(self, C.tabHover) end)
+    thumb:SetScript("OnLeave", function(self) UI.tintBg(self, C.tabIdle)  end)
+
+    return listBG, sf, sc, updateThumb
+end
+
+-- One of the Top/Up/Down/... buttons stacked down the right of a list box.
+local function makeListButton(container, listBG, label, y)
+    local b = CreateFrame("Button", nil, container, "BackdropTemplate")
+    b:SetSize(72, 22)
+    b:SetPoint("TOPLEFT", listBG, "TOPRIGHT", 6, -y)
+    applyBackdrop(b, 1, C.panelDark, C.tabBorder)
+    local lbl = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    lbl:SetPoint("CENTER"); lbl:SetText(label); UI.tint(lbl, C.textWhite)
+    b:SetScript("OnEnter", function() UI.tintBorder(b, C.red) end)
+    b:SetScript("OnLeave", function() UI.tintBorder(b, C.tabBorder) end)
+    return b
+end
+
+-- One pooled, drag-to-reorder row at a fixed slot `i`.
+-- ctx = { selectRow(i), isSelected(i), drag = <attachRowDrag ctx> }.
+local function makeListRow(sc, i, ctx)
+    local row = CreateFrame("Button", nil, sc, "BackdropTemplate")
+    row:SetSize(LIST_W - SB_W - 5, ROW_H - 2)
+    row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -(i - 1) * ROW_H)
+    applyBackdrop(row, 1, C.panelDeep, { 0, 0, 0, 0 })
+
+    local ico = row:CreateTexture(nil, "ARTWORK")
+    ico:SetSize(18, 18)
+    ico:SetPoint("LEFT", 4, 0)
+    ico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    row.ico = ico
+
+    local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    lbl:SetPoint("LEFT", ico, "RIGHT", 4, 0)
+    lbl:SetPoint("RIGHT", -6, 0)
+    lbl:SetJustifyH("LEFT")
+    UI.tint(lbl, C.textWhite)
+    row.lbl = lbl
+
+    row:SetScript("OnClick", function() ctx.selectRow(i) end)
+    -- Hover only paints rows that aren't selected: the selected row already
+    -- wears the red border, and re-tinting it on hover would drop that.
+    row:SetScript("OnEnter", function(self)
+        if not ctx.isSelected(i) then UI.tintBorder(self, C.tabBorder) end
+    end)
+    row:SetScript("OnLeave", function(self)
+        if not ctx.isSelected(i) then self:SetBackdropBorderColor(0, 0, 0, 0) end
+    end)
+    attachRowDrag(row, i, ctx.drag)
+    return row
+end
+
+-- Point the pooled rows at the current contents of `list`, hiding the surplus.
+local function fillListRows(rows, list, sc)
+    local n = #list
+    for i = 1, #rows do
+        local row = rows[i]
+        if i <= n then
+            local id = list[i]
+            local name, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(id) or id)
+            row.ico:SetTexture(tex or "")
+            row.lbl:SetText(i .. ". " .. (name or ("[" .. id .. "]")))
+            row:Show()
+        else
+            row:Hide()
+        end
+    end
+    sc:SetHeight(math.max(n * ROW_H, 1))
+end
+
+-- The full-width "rescan my bags" strip under a list.
+local function makeRefreshButton(container, anchorTo, onClick)
+    local b = CreateFrame("Button", nil, container, "BackdropTemplate")
+    b:SetSize(LIST_W, 22)
+    b:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -8)
+    applyBackdrop(b, 1, C.panelDark, C.tabBorder)
+    local lbl = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    lbl:SetPoint("CENTER")
+    lbl:SetText("Refresh (scan bags for new trinkets)")
+    UI.tint(lbl, C.textWhite)
+    b:SetScript("OnEnter", function() UI.tintBorder(b, C.red) end)
+    b:SetScript("OnLeave", function() UI.tintBorder(b, C.tabBorder) end)
+    b:SetScript("OnClick", onClick)
+    return b
+end
+
+local function buildMenuOrderList(parent)
+    -- Reorderable list of ALL known trinket IDs stored in d.menuOrder.
+    -- Controls the display order in the bag menu.
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetSize(LIST_W + SB_W + 4 + 80, LIST_H + 60)
+
+    local header = container:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    header:SetPoint("TOPLEFT", 0, 0)
+    header:SetText("Menu Display Order")
+    UI.tint(header, C.red)
+
+    local desc = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
+    desc:SetText("Drag items to reorder. New trinkets are added automatically when scanned.")
+    UI.tint(desc, C.textGrey)
+
+    local rows     = {}
     local selected = nil
-    local dragCtx = {}   -- populated after rebuildRows/selectRow exist
+    local dragCtx  = {}   -- populated after rebuildRows/selectRow exist
+
+    local listBG, sf, sc, updateThumb = makeListBox(container, desc, rows)
 
     local function getData()
         return addon.Trinkets and addon.Trinkets.getData and addon.Trinkets.getData()
@@ -186,79 +323,12 @@ local function buildMenuOrderList(parent)
         return d and d.menuOrder or {}
     end
 
-    local function updateThumb()
-        local n = #rows
-        if n == 0 then track:Hide(); return end
-        local visRows = math.floor(LIST_H / ROW_H)
-        if n <= visRows then track:Hide(); return end
-        track:Show()
-        local tH = track:GetHeight()
-        if tH <= 0 then return end
-        local thumbH    = math.max(16, tH * visRows / n)
-        local maxScroll = (n - visRows) * ROW_H
-        local cur       = sf:GetVerticalScroll()
-        local frac      = maxScroll > 0 and (cur / maxScroll) or 0
-        thumb:SetHeight(thumbH)
-        thumb:ClearAllPoints()
-        thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -(frac * (tH - thumbH)))
-    end
-
-    listBG:EnableMouseWheel(true)
-    listBG:SetScript("OnMouseWheel", function(_, d)
-        local n       = #rows
-        local visRows = math.floor(LIST_H / ROW_H)
-        local maxScroll = math.max(0, (n - visRows) * ROW_H)
-        sf:SetVerticalScroll(math.max(0, math.min(sf:GetVerticalScroll() - d * ROW_H * 2, maxScroll)))
-        updateThumb()
-    end)
-
-    -- Click-drag on the thumb (previously only the mouse wheel scrolled).
-    local sbDragging, sbStartY, sbStartScroll = false, 0, 0
-    thumb:EnableMouse(true)
-    thumb:SetScript("OnMouseDown", function(_, button)
-        if button ~= "LeftButton" then return end
-        sbDragging    = true
-        sbStartY      = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
-        sbStartScroll = sf:GetVerticalScroll()
-    end)
-    thumb:SetScript("OnMouseUp", function(_, button)
-        if button == "LeftButton" then sbDragging = false end
-    end)
-    thumb:SetScript("OnUpdate", function()
-        if not sbDragging then return end
-        local n = #rows
-        local visRows = math.floor(LIST_H / ROW_H)
-        local maxScroll = math.max(0, (n - visRows) * ROW_H)
-        local tH = track:GetHeight()
-        local thumbH = thumb:GetHeight()
-        if tH > thumbH and maxScroll > 0 then
-            local curY  = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
-            local delta = sbStartY - curY
-            sf:SetVerticalScroll(math.max(0, math.min(
-                sbStartScroll + delta * maxScroll / (tH - thumbH), maxScroll)))
-            updateThumb()
-        end
-    end)
-    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
-
-    local function makeBtn(label, y)
-        local b = CreateFrame("Button", nil, container, "BackdropTemplate")
-        b:SetSize(72, 22)
-        b:SetPoint("TOPLEFT", listBG, "TOPRIGHT", 6, -y)
-        applyBackdrop(b, 1, C.panelDark, C.tabBorder)
-        local lbl = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        lbl:SetPoint("CENTER"); lbl:SetText(label); lbl:SetTextColor(unpack(C.textWhite))
-        b:SetScript("OnEnter", function() b:SetBackdropBorderColor(unpack(C.red)) end)
-        b:SetScript("OnLeave", function() b:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-        return b
-    end
-    local btnTop     = makeBtn("Top",     4)
-    local btnUp      = makeBtn("Up",      30)
-    local btnDown    = makeBtn("Down",    56)
-    local btnBottom  = makeBtn("Bottom",  82)
-    local btnRemove  = makeBtn("Remove",  112)
-    local btnReverse = makeBtn("Reverse", 142)
+    local btnTop     = makeListButton(container, listBG, "Top",     4)
+    local btnUp      = makeListButton(container, listBG, "Up",      30)
+    local btnDown    = makeListButton(container, listBG, "Down",    56)
+    local btnBottom  = makeListButton(container, listBG, "Bottom",  82)
+    local btnRemove  = makeListButton(container, listBG, "Remove",  112)
+    local btnReverse = makeListButton(container, listBG, "Reverse", 142)
 
     local function selectRow(idx)
         selected = idx and getList()[idx] or nil
@@ -277,54 +347,19 @@ local function buildMenuOrderList(parent)
         btnRemove:SetEnabled(idx ~= nil)
     end
 
-    local rebuildRows
-    rebuildRows = function()
+    local rowCtx = {
+        selectRow  = selectRow,
+        isSelected = function(i) return getList()[i] == selected end,
+        drag       = dragCtx,
+    }
+
+    local function rebuildRows()
         local list = getList()
-        local n    = #list
-        while #rows < n do
+        while #rows < #list do
             local i = #rows + 1
-            local row = CreateFrame("Button", nil, sc, "BackdropTemplate")
-            row:SetSize(LIST_W - SB_W - 5, ROW_H - 2)
-            row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -(i-1)*ROW_H)
-            applyBackdrop(row, 1, C.panelDeep, { 0, 0, 0, 0 })
-            local ico = row:CreateTexture(nil, "ARTWORK")
-            ico:SetSize(18, 18)
-            ico:SetPoint("LEFT", 4, 0)
-            ico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-            row.ico = ico
-            local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            lbl:SetPoint("LEFT", ico, "RIGHT", 4, 0)
-            lbl:SetPoint("RIGHT", -6, 0)
-            lbl:SetJustifyH("LEFT")
-            lbl:SetTextColor(unpack(C.textWhite))
-            row.lbl = lbl
-            row:SetScript("OnClick", function() selectRow(i) end)
-            row:SetScript("OnEnter", function(self)
-                if getList()[i] ~= selected then
-                    self:SetBackdropBorderColor(unpack(C.tabBorder))
-                end
-            end)
-            row:SetScript("OnLeave", function(self)
-                if getList()[i] ~= selected then
-                    self:SetBackdropBorderColor(0, 0, 0, 0)
-                end
-            end)
-            attachRowDrag(row, i, dragCtx)
-            rows[i] = row
+            rows[i] = makeListRow(sc, i, rowCtx)
         end
-        for i = 1, #rows do
-            local row = rows[i]
-            if i <= n then
-                local id   = list[i]
-                local name, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(id) or id)
-                row.ico:SetTexture(tex or "")
-                row.lbl:SetText(i .. ". " .. (name or ("[" .. id .. "]")))
-                row:Show()
-            else
-                row:Hide()
-            end
-        end
-        sc:SetHeight(math.max(n * ROW_H, 1))
+        fillListRows(rows, list, sc)
         updateThumb()
     end
 
@@ -343,7 +378,7 @@ local function buildMenuOrderList(parent)
     dragCtx.dragUpdate = function()
         runRowDrag(dragCtx, {
             getList = getList, selectRow = selectRow, rebuildRows = rebuildRows,
-            updateThumb = updateThumb, sf = sf, sc = sc, ROW_H = ROW_H, LIST_H = LIST_H,
+            updateThumb = updateThumb, sf = sf, sc = sc,
         })
     end
 
@@ -394,17 +429,7 @@ local function buildMenuOrderList(parent)
         liveMenuRebuild()
     end)
 
-    local refreshBtn = CreateFrame("Button", nil, container, "BackdropTemplate")
-    refreshBtn:SetSize(LIST_W, 22)
-    refreshBtn:SetPoint("TOPLEFT", listBG, "BOTTOMLEFT", 0, -8)
-    applyBackdrop(refreshBtn, 1, C.panelDark, C.tabBorder)
-    local refreshLbl = refreshBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    refreshLbl:SetPoint("CENTER")
-    refreshLbl:SetText("Refresh (scan bags for new trinkets)")
-    refreshLbl:SetTextColor(unpack(C.textWhite))
-    refreshBtn:SetScript("OnEnter", function() refreshBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    refreshBtn:SetScript("OnLeave", function() refreshBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-    refreshBtn:SetScript("OnClick", function()
+    makeRefreshButton(container, listBG, function()
         if addon.Trinkets then addon.Trinkets.populateMenuOrder() end
         selected = nil
         rebuildRows()
@@ -423,18 +448,13 @@ end
 local function buildSortList(parent, which)
     -- Returns a frame containing a scrollable sort list for queue slot `which`.
     -- Exposes :Refresh() to rebuild from saved data.
-    local LIST_W  = 310
-    local LIST_H  = 240
-    local ROW_H   = 26
-    local SB_W    = 10
-
     local container = CreateFrame("Frame", nil, parent)
     container:SetSize(LIST_W + SB_W + 4 + 80, LIST_H + 30)  -- extra for buttons
 
     local header = container:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 0, 0)
     header:SetText(which == 0 and "Top Slot Queue" or "Bottom Slot Queue")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local enableCB = createCheckbox(container, "Enable Auto Queue", 200)
     enableCB:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -6)
@@ -446,108 +466,16 @@ local function buildSortList(parent, which)
         end
     end
 
-    -- Scrollable list
-    local listBG = CreateFrame("Frame", nil, container, "BackdropTemplate")
-    listBG:SetSize(LIST_W, LIST_H)
-    listBG:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -10)
-    applyBackdrop(listBG, 1, C.panelDeep, C.tabBorder)
-
-    local sf = CreateFrame("ScrollFrame", nil, listBG)
-    sf:SetPoint("TOPLEFT", 1, -1)
-    sf:SetSize(LIST_W - SB_W - 3, LIST_H - 2)
-
-    local sc = CreateFrame("Frame", nil, sf)
-    sc:SetWidth(LIST_W - SB_W - 3)
-    sf:SetScrollChild(sc)
-
-    local track = CreateFrame("Frame", nil, listBG, "BackdropTemplate")
-    track:SetWidth(SB_W)
-    track:SetPoint("TOPRIGHT",    listBG, "TOPRIGHT",    -1, -1)
-    track:SetPoint("BOTTOMRIGHT", listBG, "BOTTOMRIGHT", -1,  1)
-    applyBackdrop(track, 1, C.panelDark, C.tabBorder)
-
-    local thumb = CreateFrame("Button", nil, track, "BackdropTemplate")
-    thumb:SetWidth(SB_W - 2)
-    applyBackdrop(thumb, 1, C.tabIdle, C.tabBorder)
-    thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, 0)
-
-    local rows = {}
+    local rows     = {}
     local selected = nil
-    local dragCtx = {}   -- populated after rebuildRows/selectRow exist
+    local dragCtx  = {}   -- populated after rebuildRows/selectRow exist
 
-    local function updateThumb()
-        local n = #rows
-        if n == 0 then track:Hide(); return end
-        local visRows = math.floor(LIST_H / ROW_H)
-        if n <= visRows then track:Hide(); return end
-        track:Show()
-        local tH = track:GetHeight()
-        if tH <= 0 then return end
-        local thumbH = math.max(16, tH * visRows / n)
-        local maxScroll = (n - visRows) * ROW_H
-        local cur = sf:GetVerticalScroll()
-        local frac = maxScroll > 0 and (cur / maxScroll) or 0
-        thumb:SetHeight(thumbH)
-        thumb:ClearAllPoints()
-        thumb:SetPoint("TOPLEFT", track, "TOPLEFT", 1, -(frac * (tH - thumbH)))
-    end
+    local listBG, sf, sc, updateThumb = makeListBox(container, enableCB, rows)
 
-    listBG:EnableMouseWheel(true)
-    listBG:SetScript("OnMouseWheel", function(_, d)
-        local n = #rows
-        local visRows = math.floor(LIST_H / ROW_H)
-        local maxScroll = math.max(0, (n - visRows) * ROW_H)
-        sf:SetVerticalScroll(math.max(0, math.min(sf:GetVerticalScroll() - d * ROW_H * 2, maxScroll)))
-        updateThumb()
-    end)
-
-    -- Click-drag on the thumb. Without these handlers the thumb was purely a
-    -- visual indicator (only the mouse wheel scrolled the list).
-    local sbDragging, sbStartY, sbStartScroll = false, 0, 0
-    thumb:EnableMouse(true)
-    thumb:SetScript("OnMouseDown", function(_, button)
-        if button ~= "LeftButton" then return end
-        sbDragging   = true
-        sbStartY     = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
-        sbStartScroll = sf:GetVerticalScroll()
-    end)
-    thumb:SetScript("OnMouseUp", function(_, button)
-        if button == "LeftButton" then sbDragging = false end
-    end)
-    thumb:SetScript("OnUpdate", function()
-        if not sbDragging then return end
-        local n = #rows
-        local visRows = math.floor(LIST_H / ROW_H)
-        local maxScroll = math.max(0, (n - visRows) * ROW_H)
-        local tH = track:GetHeight()
-        local thumbH = thumb:GetHeight()
-        if tH > thumbH and maxScroll > 0 then
-            local curY  = select(2, GetCursorPosition()) / UIParent:GetEffectiveScale()
-            local delta = sbStartY - curY
-            sf:SetVerticalScroll(math.max(0, math.min(
-                sbStartScroll + delta * maxScroll / (tH - thumbH), maxScroll)))
-            updateThumb()
-        end
-    end)
-    thumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-    thumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
-
-    -- Move buttons (right side of list)
-    local function makeBtn(label, y)
-        local b = CreateFrame("Button", nil, container, "BackdropTemplate")
-        b:SetSize(72, 22)
-        b:SetPoint("TOPLEFT", listBG, "TOPRIGHT", 6, -y)
-        applyBackdrop(b, 1, C.panelDark, C.tabBorder)
-        local lbl = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        lbl:SetPoint("CENTER"); lbl:SetText(label); lbl:SetTextColor(unpack(C.textWhite))
-        b:SetScript("OnEnter", function() b:SetBackdropBorderColor(unpack(C.red)) end)
-        b:SetScript("OnLeave", function() b:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-        return b
-    end
-    local btnTop    = makeBtn("Top",    4)
-    local btnUp     = makeBtn("Up",     30)
-    local btnDown   = makeBtn("Down",   56)
-    local btnBottom = makeBtn("Bottom", 82)
+    local btnTop    = makeListButton(container, listBG, "Top",    4)
+    local btnUp     = makeListButton(container, listBG, "Up",     30)
+    local btnDown   = makeListButton(container, listBG, "Down",   56)
+    local btnBottom = makeListButton(container, listBG, "Bottom", 82)
 
     -- Priority checkbox shown below list when a row is selected
     local priorityCB = createCheckbox(container, "Priority (equip even if not on CD)", LIST_W)
@@ -599,54 +527,19 @@ local function buildSortList(parent, which)
         btnBottom:SetEnabled(idx and idx < n or false)
     end
 
+    local rowCtx = {
+        selectRow  = selectRow,
+        isSelected = function(i) return getList()[i] == selected end,
+        drag       = dragCtx,
+    }
+
     local function rebuildRows()
         local list = getList()
-        local n = #list
-        -- Grow or shrink the pool of row frames
-        while #rows < n do
+        while #rows < #list do
             local i = #rows + 1
-            local row = CreateFrame("Button", nil, sc, "BackdropTemplate")
-            row:SetSize(LIST_W - SB_W - 5, ROW_H - 2)
-            row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -(i-1)*ROW_H)
-            applyBackdrop(row, 1, C.panelDeep, { 0, 0, 0, 0 })
-            local ico = row:CreateTexture(nil, "ARTWORK")
-            ico:SetSize(18, 18)
-            ico:SetPoint("LEFT", 4, 0)
-            ico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-            row.ico = ico
-            local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            lbl:SetPoint("LEFT", ico, "RIGHT", 4, 0)
-            lbl:SetPoint("RIGHT", -6, 0)
-            lbl:SetJustifyH("LEFT")
-            lbl:SetTextColor(unpack(C.textWhite))
-            row.lbl = lbl
-            row:SetScript("OnClick", function() selectRow(i) end)
-            row:SetScript("OnEnter", function(self)
-                if getList()[i] ~= selected then
-                    self:SetBackdropBorderColor(unpack(C.tabBorder))
-                end
-            end)
-            row:SetScript("OnLeave", function(self)
-                if getList()[i] ~= selected then
-                    self:SetBackdropBorderColor(0, 0, 0, 0)
-                end
-            end)
-            attachRowDrag(row, i, dragCtx)
-            rows[i] = row
+            rows[i] = makeListRow(sc, i, rowCtx)
         end
-        for i = 1, #rows do
-            local row = rows[i]
-            if i <= n then
-                local id = list[i]
-                local name, _, _, _, _, _, _, _, _, tex = GetItemInfo(tonumber(id) or id)
-                if row.ico then row.ico:SetTexture(tex or "") end
-                row.lbl:SetText(i .. ". " .. (name or ("[" .. id .. "]")))
-                row:Show()
-            else
-                row:Hide()
-            end
-        end
-        sc:SetHeight(math.max(n * ROW_H, 1))
+        fillListRows(rows, list, sc)
         updateThumb()
     end
 
@@ -656,7 +549,7 @@ local function buildSortList(parent, which)
     dragCtx.dragUpdate = function()
         runRowDrag(dragCtx, {
             getList = getList, selectRow = selectRow, rebuildRows = rebuildRows,
-            updateThumb = updateThumb, sf = sf, sc = sc, ROW_H = ROW_H, LIST_H = LIST_H,
+            updateThumb = updateThumb, sf = sf, sc = sc,
         })
     end
 
@@ -686,17 +579,7 @@ local function buildSortList(parent, which)
     btnDown:SetScript("OnClick",   function() moveSelected("down") end)
     btnBottom:SetScript("OnClick", function() moveSelected("bottom") end)
 
-    local refreshBtn = CreateFrame("Button", nil, container, "BackdropTemplate")
-    refreshBtn:SetSize(LIST_W, 22)
-    refreshBtn:SetPoint("TOPLEFT", priorityCB, "BOTTOMLEFT", 0, -8)
-    applyBackdrop(refreshBtn, 1, C.panelDark, C.tabBorder)
-    local refreshLbl = refreshBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    refreshLbl:SetPoint("CENTER")
-    refreshLbl:SetText("Refresh (scan bags for new trinkets)")
-    refreshLbl:SetTextColor(unpack(C.textWhite))
-    refreshBtn:SetScript("OnEnter", function() refreshBtn:SetBackdropBorderColor(unpack(C.red)) end)
-    refreshBtn:SetScript("OnLeave", function() refreshBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-    refreshBtn:SetScript("OnClick", function()
+    makeRefreshButton(container, priorityCB, function()
         if addon.Trinkets then addon.Trinkets.populateQueueSorts() end
         selected = nil
         rebuildRows()
@@ -717,10 +600,9 @@ local function buildSortList(parent, which)
     return container
 end
 
--- Ordered list of every trinket the player has been seen carrying/wearing
--- (accumulated in d.menuOrder), resolved to { id, name, texture }. Feeds the
--- per-encounter trinket pickers. Ids whose item data isn't cached yet are
--- skipped — they reappear once GetItemInfo resolves them.
+-- Every trinket the player has been seen carrying, resolved to { id, name,
+-- texture }. Ids whose item data isn't cached yet are skipped, and reappear once
+-- GetItemInfo resolves them.
 local function registeredTrinkets(d)
     local out = {}
     for _, id in ipairs(d and d.menuOrder or {}) do
@@ -730,11 +612,9 @@ local function registeredTrinkets(d)
     return out
 end
 
--- One shared popup reused by EVERY trinket dropdown. Building a full backdropped
--- menu + scrollbar per dropdown (there are ~190 across the Encounters/Debug grid)
--- created enough frames to trip WoW's "script ran too long" watchdog during the
--- settings build. Now each dropdown is just a light button that borrows this
--- single picker on click. Created lazily on first open.
+-- One shared popup reused by EVERY trinket dropdown: a full backdropped menu +
+-- scrollbar per dropdown (~190 across the grid) was enough frames to trip the
+-- "script ran too long" watchdog. Each dropdown is now a light button.
 local trinketPicker
 local function getTrinketPicker()
     if trinketPicker then return trinketPicker end
@@ -813,10 +693,10 @@ local function getTrinketPicker()
             iico:SetTexCoord(0.08, 0.92, 0.08, 0.92)
             local il = item:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             il:SetPoint("LEFT", iico, "RIGHT", 3, 0); il:SetPoint("RIGHT", -3, 0)
-            il:SetJustifyH("LEFT"); il:SetTextColor(unpack(C.textWhite))
+            il:SetJustifyH("LEFT"); UI.tint(il, C.textWhite)
             item.ico, item.lbl = iico, il
-            item:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-            item:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.panelDark)) end)
+            item:SetScript("OnEnter", function(self) UI.tintBg(self, C.tabHover) end)
+            item:SetScript("OnLeave", function(self) UI.tintBg(self, C.panelDark) end)
             itemPool[i] = item
         end
         for i, item in ipairs(itemPool) do
@@ -861,8 +741,8 @@ local function getTrinketPicker()
             layoutItems()
         end
     end)
-    mthumb:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(C.tabHover)) end)
-    mthumb:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(C.tabIdle))  end)
+    mthumb:SetScript("OnEnter", function(self) UI.tintBg(self, C.tabHover) end)
+    mthumb:SetScript("OnLeave", function(self) UI.tintBg(self, C.tabIdle)  end)
     catcher:SetScript("OnClick", close)
 
     trinketPicker = {
@@ -880,11 +760,9 @@ local function getTrinketPicker()
     return trinketPicker
 end
 
--- A dropdown whose options are the live registered-trinket list (rebuilt each
--- time it opens, so newly discovered trinkets appear without a reload) plus a
--- "None" entry. getVal/setVal read/write the stored item id (nil = None);
--- listProvider() returns the current registeredTrinkets list. The popup itself
--- is the single shared getTrinketPicker() instance — this is just the button.
+-- A dropdown over the live registered-trinket list (rebuilt on each open, so new
+-- trinkets appear without a reload) plus "None". The popup is the shared
+-- getTrinketPicker() — this is just the button.
 local function createTrinketDropdown(parent, width, getVal, setVal, listProvider)
     local dd = CreateFrame("Button", nil, parent, "BackdropTemplate")
     dd:SetSize(width, 22)
@@ -899,7 +777,7 @@ local function createTrinketDropdown(parent, width, getVal, setVal, listProvider
     text:SetPoint("LEFT", ico, "RIGHT", 3, 0)
     text:SetPoint("RIGHT", -14, 0)
     text:SetJustifyH("LEFT")
-    text:SetTextColor(unpack(C.textWhite))
+    UI.tint(text, C.textWhite)
 
     local arrow = dd:CreateTexture(nil, "OVERLAY")
     arrow:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
@@ -924,8 +802,8 @@ local function createTrinketDropdown(parent, width, getVal, setVal, listProvider
         local p = getTrinketPicker()
         if p.active() == ctx then p.close() else p.openFor(ctx) end
     end)
-    dd:SetScript("OnEnter", function() dd:SetBackdropBorderColor(unpack(C.red)) end)
-    dd:SetScript("OnLeave", function() dd:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    dd:SetScript("OnEnter", function() UI.tintBorder(dd, C.red) end)
+    dd:SetScript("OnLeave", function() UI.tintBorder(dd, C.tabBorder) end)
     dd:SetScript("OnHide", function()
         if trinketPicker and trinketPicker.active() == ctx then trinketPicker.close() end
     end)
@@ -935,14 +813,155 @@ local function createTrinketDropdown(parent, width, getVal, setVal, listProvider
     return dd
 end
 
--- "Specific Auto Queue" trinkets sub-tab, laid out like the General sub-tab: a
--- fixed header (the global safeguard-delay control) over a left sidebar of raids
--- and, to its right, a scrollable panel showing the selected raid's per-boss
--- trinket config. Each boss is a checkbox + name plus a 2×2 grid of trinket
--- pickers — rows are the Top/Bottom equipment slots, columns are the Main queue
--- and the Soft queue — so ticking a boss can preset two full sets of trinkets
--- to auto-queue when you engage it. The Stockades ("Debug") is the last sidebar
--- entry, gated behind its own module-enable checkbox for testing.
+-- What the Trigger control is for at all, as opposed to what one option does.
+-- Carried by the dropdown button only — repeating it on all four option rows
+-- would bury the per-option text it's meant to introduce.
+local TRIGGER_OVERVIEW =
+    "Trigger decides when a ticked boss's trinkets queue. The default is Boss at 75%; In Combat (encounter + combat, plus the safeguard delay at the top of this tab), Encounter Start and Encounter End are the alternatives. Whenever it fires, the Main trinkets swap in first; the Soft trinkets follow once the Main trinket has been used and its effect has expired."
+
+-- Hover help for one trigger option, from the paragraphs Trinkets.lua stores
+-- alongside the behaviour. Shown by both the picker rows and the dropdown
+-- button, so what a boss is set to can be read without opening the list.
+local function triggerTooltip(owner, o, withOverview)
+    if not o then return end
+    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(o.label, 1, 1, 1)
+    for _, para in ipairs(o.desc or {}) do
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(para, 0.75, 0.75, 0.75, true)
+    end
+    if withOverview then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(TRIGGER_OVERVIEW, 0.75, 0.75, 0.75, true)
+    end
+    GameTooltip:Show()
+end
+
+-- One shared popup for every per-boss trigger dropdown, for the same reason as
+-- getTrinketPicker. The option set is short, so this needs no scrollbar — just a
+-- flip upwards when there's no room below.
+local triggerPicker
+local function getTriggerPicker()
+    if triggerPicker then return triggerPicker end
+    local ROW  = 22
+    local opts = addon.TRINKET_ENC_TRIGGERS or {}
+    local active                     -- ctx of the dropdown currently open (or nil)
+
+    local catcher = CreateFrame("Button", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:SetFrameStrata("DIALOG")
+    catcher:Hide()
+
+    local menu = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    menu:SetFrameStrata("DIALOG")
+    menu:SetFrameLevel(catcher:GetFrameLevel() + 10)
+    menu:SetHeight(#opts * ROW + 2)
+    applyBackdrop(menu, 1, C.panelBG, C.tabBorder)
+    menu:Hide()
+
+    local function close() menu:Hide(); catcher:Hide(); active = nil end
+
+    for i, o in ipairs(opts) do
+        local item = CreateFrame("Button", nil, menu, "BackdropTemplate")
+        item:SetHeight(ROW)
+        item:SetPoint("TOPLEFT", menu, "TOPLEFT",  1, -1 - (i - 1) * ROW)
+        item:SetPoint("RIGHT",   menu, "RIGHT",   -1, 0)
+        applyBackdrop(item, 1, C.panelDark, { 0, 0, 0, 0 })
+        local il = item:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        il:SetPoint("LEFT", 6, 0); il:SetPoint("RIGHT", -6, 0)
+        il:SetJustifyH("LEFT"); il:SetText(o.label); UI.tint(il, C.textWhite)
+        item:SetScript("OnEnter", function(self)
+            UI.tintBg(self, C.tabHover)
+            triggerTooltip(self, o)
+        end)
+        item:SetScript("OnLeave", function(self)
+            UI.tintBg(self, C.panelDark)
+            GameTooltip:Hide()
+        end)
+        item:SetScript("OnClick", function()
+            if active then active.setVal(o.value); active.refresh() end
+            close()
+        end)
+    end
+
+    catcher:SetScript("OnClick", close)
+
+    triggerPicker = {
+        active = function() return active end,
+        close  = close,
+        openFor = function(ctx)
+            active = ctx
+            menu:ClearAllPoints()
+            -- Boss rows near the bottom of the scroll panel would drop the menu
+            -- off the screen edge; open upwards from those instead.
+            if (ctx.dd:GetBottom() or 0) - menu:GetHeight() < 0 then
+                menu:SetPoint("BOTTOMLEFT",  ctx.dd, "TOPLEFT",  0, 2)
+                menu:SetPoint("BOTTOMRIGHT", ctx.dd, "TOPRIGHT", 0, 2)
+            else
+                menu:SetPoint("TOPLEFT",  ctx.dd, "BOTTOMLEFT",  0, -2)
+                menu:SetPoint("TOPRIGHT", ctx.dd, "BOTTOMRIGHT", 0, -2)
+            end
+            menu:Show(); catcher:Show()
+        end,
+    }
+    return triggerPicker
+end
+
+-- A dropdown over addon.TRINKET_ENC_TRIGGERS. Trinkets.lua owns both the list
+-- and the behaviour; this only reads/writes the stored string (nil = "combat").
+local function createTriggerDropdown(parent, width, getVal, setVal)
+    local dd = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    dd:SetSize(width, 22)
+    applyBackdrop(dd, 1, C.panelDark, C.tabBorder)
+
+    local text = dd:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    text:SetPoint("LEFT", 6, 0)
+    text:SetPoint("RIGHT", -16, 0)
+    text:SetJustifyH("LEFT")
+    UI.tint(text, C.textWhite)
+
+    local arrow = dd:CreateTexture(nil, "OVERLAY")
+    arrow:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
+    arrow:SetSize(14, 14)
+    arrow:SetPoint("RIGHT", -2, -1)
+
+    local current   -- the option table currently shown, kept for the hover help
+    local function refresh()
+        local v = getVal() or addon.TRINKET_ENC_TRIGGER_DEFAULT
+        current = nil
+        for _, o in ipairs(addon.TRINKET_ENC_TRIGGERS or {}) do
+            if o.value == v then current = o; break end
+        end
+        text:SetText(current and current.label or v)
+    end
+
+    local ctx = { dd = dd, setVal = setVal, refresh = refresh }
+
+    dd:SetScript("OnClick", function()
+        local p = getTriggerPicker()
+        if p.active() == ctx then p.close() else p.openFor(ctx) end
+    end)
+    dd:SetScript("OnEnter", function()
+        UI.tintBorder(dd, C.red)
+        triggerTooltip(dd, current, true)
+    end)
+    dd:SetScript("OnLeave", function()
+        UI.tintBorder(dd, C.tabBorder)
+        GameTooltip:Hide()
+    end)
+    dd:SetScript("OnHide", function()
+        if triggerPicker and triggerPicker.active() == ctx then triggerPicker.close() end
+    end)
+
+    dd.Refresh = refresh
+    refresh()
+    return dd
+end
+
+-- "Specific Auto Queue" sub-tab: a fixed header (the safeguard delay) over a
+-- left sidebar of raids, with the selected raid's per-boss config scrolling to
+-- its right. Each boss is a checkbox, a 2×2 grid of trinket pickers (rows =
+-- Top/Bottom slots, columns = Main/Soft queue) and one Trigger dropdown.
 local function buildSpecificAutoQueuePanel(parent, getTData)
     local shell = CreateFrame("Frame", nil, parent)
     shell:SetAllPoints()
@@ -959,21 +978,19 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
     end
     local function prune(d, id)
         local e = d.encounters and d.encounters[id]
-        if e and not e.enabled and not e.mainTop and not e.mainBottom
+        if e and not e.enabled and not e.trigger and not e.mainTop and not e.mainBottom
            and not e.softTop and not e.softBottom then
             d.encounters[id] = nil
         end
     end
 
     -- ── Safeguard delay (fixed header) ────────────────────────────────────────
-    -- Both trigger conditions (ENCOUNTER_START + in combat — see
-    -- maybeQueueEncounter in Trinkets.lua) can line up the instant a pull
-    -- starts. This optional delay instead requires them to hold TRUE
-    -- CONTINUOUSLY for the configured duration before anything queues — any
-    -- combat drop or encounter end/change during that window cancels the
-    -- attempt and the full delay must restart.
+    -- Applies to the "In Combat" trigger only — the one whose two conditions can
+    -- line up the instant a pull starts. It requires them to hold TRUE CONTINUOUSLY
+    -- for its duration; any combat drop restarts it. Other triggers fire on a single
+    -- moment a delay could only make them miss.
     local delayCB = createCheckbox(shell,
-        "Safeguard delay: require encounter + combat simultaneously before queuing", 520)
+        "Safeguard delay (In Combat trigger): require encounter + combat simultaneously", 520)
     delayCB:SetPoint("TOPLEFT", shell, "TOPLEFT", 14, -12)
     delayCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.encQueueDelayEnabled = checked end
@@ -986,7 +1003,7 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
     local delayLbl = delayRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     delayLbl:SetPoint("LEFT", 0, 0)
     delayLbl:SetText("Delay:")
-    delayLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(delayLbl, C.textGrey)
 
     local delayStepper = buildStepper(delayRow, {
         min = 0.1, max = 30, step = 0.5, valueWidth = 34,
@@ -998,7 +1015,7 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
 
     local delaySec = delayRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     delaySec:SetPoint("LEFT", delayStepper.plus, "RIGHT", 4, 0)
-    delaySec:SetText("s"); delaySec:SetTextColor(unpack(C.textDim))
+    delaySec:SetText("s"); UI.tint(delaySec, C.textDim)
 
     refreshers[#refreshers + 1] = function()
         local d = getTData()
@@ -1006,24 +1023,16 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
         delayStepper.Refresh()
     end
 
-    local hint = shell:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    hint:SetPoint("TOPLEFT", delayRow, "BOTTOMLEFT", -20, -12)
-    hint:SetWidth(820); hint:SetJustifyH("LEFT")
-    hint:SetText("On engaging a ticked boss (once you're in combat), the Main trinkets queue to swap in first; the Soft trinkets then swap in afterwards, once the Main trinket has been used and its effect has expired.")
-    hint:SetTextColor(unpack(C.textDim))
-
     -- ── Raids heading + sidebar / scrollable content ─────────────────────────
     local raidsHdr = shell:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    raidsHdr:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -12)
+    raidsHdr:SetPoint("TOPLEFT", delayRow, "BOTTOMLEFT", -20, -14)
     raidsHdr:SetText("Raids")
-    raidsHdr:SetTextColor(unpack(C.red))
+    UI.tint(raidsHdr, C.red)
 
-    -- The sidebar column and content box both stretch to the bottom of the
-    -- (non-scrolling) sub-panel, so the content box fills whatever vertical
-    -- space the window offers and its per-raid panel scrolls inside it. Its
-    -- left edge sits flush with the content box (shell) so it lines up with the
-    -- tab bar backdrop above; the TOPLEFT hangs off the Raids header for its
-    -- vertical position, so its x is pulled back 14px to reach that left edge.
+    -- Sidebar and content box both stretch to the bottom of the non-scrolling
+    -- sub-panel, so the content fills the window and its per-raid panel scrolls
+    -- inside. The left edge sits flush with the content box to line up with the tab
+    -- bar above, so the TOPLEFT (hanging off the Raids header) is pulled back 14px.
     local sideCol = CreateFrame("Frame", nil, shell, "BackdropTemplate")
     sideCol:SetPoint("TOPLEFT", raidsHdr, "BOTTOMLEFT", -14, -8)
     sideCol:SetPoint("BOTTOMLEFT", shell, "BOTTOMLEFT", 0, 10)
@@ -1036,9 +1045,8 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
     applyBackdrop(sideContent, 4, C.panelDeep, C.panelDark)
 
     -- A scroll viewport filling sideContent for one raid's config. Full-height
-    -- scrollbar (no bottom inset — this isn't near the window's resize grip),
-    -- auto-sized to its content via fitInnerHeight. Returns (rshell, inner);
-    -- rshell is the toggled unit, inner is the scroll child widgets stack into.
+    -- scrollbar (not near the window's resize grip), auto-sized via fitInnerHeight.
+    -- Returns (rshell, inner): rshell is the toggled unit, inner takes the widgets.
     local function raidScrollPanel()
         local rshell = CreateFrame("Frame", nil, sideContent)
         rshell:SetAllPoints()
@@ -1063,21 +1071,23 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
         return rshell, inner
     end
 
-    -- Per-boss block is two dropdown rows (Top slot / Bottom slot) × two columns
-    -- (Main queue / Soft queue). cols() derives the four x-offsets from the block
-    -- origin so the column headers and the dropdowns can't drift apart.
-    local NAME_W, DD_W, LBL_W = 140, 96, 26
+    -- Each boss block is two dropdown rows (Top/Bottom slot) × two columns
+    -- (Main/Soft queue), plus a full-height Trigger column to their right. cols()
+    -- derives the x-offsets from the block origin so headers and dropdowns can't
+    -- drift apart.
+    local NAME_W, DD_W, LBL_W, TRIG_W = 140, 96, 26, 132
     local SUBROW, BLOCK_H = 24, 56
     local function cols(xOff)
         local nameX = xOff + 22
         local lblX  = nameX + NAME_W + 2
         local mainX = lblX + LBL_W + 4
         local softX = mainX + DD_W + 10
-        return nameX, lblX, mainX, softX
+        local trigX = softX + DD_W + 14
+        return nameX, lblX, mainX, softX, trigX
     end
 
     local function buildBossRow(inner, boss, xOff, y)
-        local nameX, lblX, mainX, softX = cols(xOff)
+        local nameX, lblX, mainX, softX, trigX = cols(xOff)
 
         local cb = createCheckbox(inner, "", 18)
         cb:SetPoint("TOPLEFT", inner, "TOPLEFT", xOff, -y)
@@ -1090,12 +1100,12 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
         local nm = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         nm:SetPoint("TOPLEFT", inner, "TOPLEFT", nameX, -(y + 2))
         nm:SetWidth(NAME_W); nm:SetJustifyH("LEFT")
-        nm:SetText(boss.name); nm:SetTextColor(unpack(C.textWhite))
+        nm:SetText(boss.name); UI.tint(nm, C.textWhite)
 
         local function slotLabel(txt, py)
             local l = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             l:SetPoint("TOPLEFT", inner, "TOPLEFT", lblX, -(py + 4))
-            l:SetText(txt); l:SetTextColor(unpack(C.textGrey))
+            l:SetText(txt); UI.tint(l, C.textGrey)
         end
         slotLabel("TOP", y)
         slotLabel("BOT", y + SUBROW)
@@ -1116,24 +1126,37 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
         local mainBotDD = fieldDD("mainBottom", mainX, y + SUBROW)
         local softBotDD = fieldDD("softBottom", softX, y + SUBROW)
 
+        -- One trigger for the whole boss, not per equipment slot, so it sits centred
+        -- across the two sub-rows. Picking the default writes nil rather than the
+        -- string, so a boss row you set and set back prunes itself away.
+        local trigDD = createTriggerDropdown(inner, TRIG_W,
+            function() local e = entry(getTData(), boss.id); return e and e.trigger end,
+            function(v) local d = getTData(); if not d then return end
+                entry(d, boss.id, true).trigger =
+                    (v ~= addon.TRINKET_ENC_TRIGGER_DEFAULT) and v or nil
+                prune(d, boss.id) end)
+        trigDD:SetPoint("TOPLEFT", inner, "TOPLEFT", trigX, -(y + SUBROW / 2))
+
         refreshers[#refreshers + 1] = function()
             local e = entry(getTData(), boss.id)
             cb:SetChecked(e and e.enabled or false)
             mainTopDD.Refresh(); softTopDD.Refresh()
             mainBotDD.Refresh(); softBotDD.Refresh()
+            trigDD.Refresh()
         end
     end
 
     -- Builds one raid's config into its own scroll panel; returns the rshell for
     -- the sidebar's activateTab. The Stockades ("debug") raid gets an extra
-    -- module-enable checkbox + hint above its boss list.
+    -- module-enable checkbox above its boss list.
     local function buildRaidSection(raid)
         local rshell, inner = raidScrollPanel()
         local y = 10
 
         if raid.key == "debug" then
             local dbgEnableCB = createCheckbox(inner,
-                "Enable Debug module (The Stockades encounters)", 380)
+                "Enable Debug module (The Stockades encounters)", 380,
+                "For testing: configure trinkets for The Stockades bosses, then run the dungeon. These only auto-queue while this is ticked.")
             dbgEnableCB:SetPoint("TOPLEFT", inner, "TOPLEFT", 8, -y)
             dbgEnableCB.OnChange = function(_, checked)
                 local d = getTData(); if d then d.debugEncounters = checked or nil end
@@ -1142,23 +1165,19 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
                 local d = getTData()
                 dbgEnableCB:SetChecked(d and d.debugEncounters or false)
             end
-            y = y + 26
-
-            local dbgHint = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            dbgHint:SetPoint("TOPLEFT", inner, "TOPLEFT", 8, -y)
-            dbgHint:SetWidth(560); dbgHint:SetJustifyH("LEFT")
-            dbgHint:SetText("For testing: configure trinkets for The Stockades bosses, then run the dungeon. These only auto-queue while the Debug module above is enabled.")
-            dbgHint:SetTextColor(unpack(C.textDim))
-            y = y + 44
+            y = y + 30
         end
 
-        local _, _, mainX, softX = cols(8)
+        local _, _, mainX, softX, trigX = cols(8)
         local hMain = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         hMain:SetPoint("TOPLEFT", inner, "TOPLEFT", mainX, -y)
-        hMain:SetText("Main"); hMain:SetTextColor(unpack(C.red))
+        hMain:SetText("Main"); UI.tint(hMain, C.red)
         local hSoft = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         hSoft:SetPoint("TOPLEFT", inner, "TOPLEFT", softX, -y)
-        hSoft:SetText("Soft"); hSoft:SetTextColor(unpack(C.red))
+        hSoft:SetText("Soft"); UI.tint(hSoft, C.red)
+        local hTrig = inner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        hTrig:SetPoint("TOPLEFT", inner, "TOPLEFT", trigX, -y)
+        hTrig:SetText("Trigger"); UI.tint(hTrig, C.red)
         y = y + 22
 
         for _, boss in ipairs(raid.bosses) do
@@ -1178,11 +1197,10 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
     local prevSb, firstKey
     for _, raid in ipairs(addon.RAIDS or {}) do
         local key = raid.key
-        -- Deferred to the first click on this raid: building all of them here is
-        -- ~60 bosses × five widgets each, which is what tripped the "script ran
-        -- too long" watchdog when the whole window was built eagerly. A section
-        -- created after the panel's own OnShow already ran needs its refreshers
-        -- fired by hand, or its boxes come up blank.
+        -- Deferred to the first click on this raid: building all of them is ~60 bosses ×
+        -- five widgets, which tripped the "script ran too long" watchdog. A section
+        -- created after the panel's OnShow already ran needs its refreshers fired by
+        -- hand, or its boxes come up blank.
         raidPanels[key] = function()
             local section = buildRaidSection(raid)
             runRefreshers()
@@ -1214,23 +1232,7 @@ local function buildSpecificAutoQueuePanel(parent, getTData)
 end
 
 local function buildTrinketsPanel(parent)
-    local panel = CreateFrame("Frame", nil, parent)
-    panel:SetAllPoints()
-    panel:Hide()
-
-    local subBar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subBar:SetHeight(26)
-    subBar:SetPoint("TOPLEFT", 4, -4)
-    subBar:SetPoint("TOPRIGHT", -4, -4)
-    applyBackdrop(subBar, 1, C.panelDark)
-
-    local subContent = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subContent:SetPoint("TOPLEFT", subBar, "BOTTOMLEFT", 0, -2)
-    subContent:SetPoint("BOTTOMRIGHT", -4, 4)
-    applyBackdrop(subContent, 1, C.panelDeep)
-
-    panel.subTabs   = {}
-    panel.subPanels = {}
+    local panel, _, subContent, addSubTab = W.makeSubTabPanel(parent, { hidden = true })
 
     -- ── Display sub-panel ────────────────────────────────────────────────────
     -- Not scrollable at this level: the fixed header sits at the top and the
@@ -1251,12 +1253,12 @@ local function buildTrinketsPanel(parent)
     local dispHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     dispHeader:SetPoint("TOPLEFT", 14, -14)
     dispHeader:SetText("Trinket Menu")
-    dispHeader:SetTextColor(unpack(C.red))
+    UI.tint(dispHeader, C.red)
 
     local dispDesc = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     dispDesc:SetPoint("TOPLEFT", dispHeader, "BOTTOMLEFT", 0, -4)
     dispDesc:SetText("Shows your two equipped trinket slots as clickable buttons.\nLeft-click uses the trinket. Hover to open the bag menu for swapping.")
-    dispDesc:SetTextColor(unpack(C.textGrey))
+    UI.tint(dispDesc, C.textGrey)
     dispDesc:SetJustifyH("LEFT")
     dispDesc:SetWidth(380)
 
@@ -1276,7 +1278,7 @@ local function buildTrinketsPanel(parent)
     local menuHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     menuHeader:SetPoint("TOPLEFT", moveBtn, "BOTTOMLEFT", 0, -20)
     menuHeader:SetText("Bag Menu")
-    menuHeader:SetTextColor(unpack(C.red))
+    UI.tint(menuHeader, C.red)
 
     local alwaysShowCB = createCheckbox(displayPanel, "Always show bag menu (don't close on mouse leave)", 380)
     alwaysShowCB:SetPoint("TOPLEFT", menuHeader, "BOTTOMLEFT", 0, -10)
@@ -1285,7 +1287,8 @@ local function buildTrinketsPanel(parent)
         if addon.Trinkets then addon.Trinkets.applyVisibility() end
     end
 
-    local dockedCB = createCheckbox(displayPanel, "Keep bag menu docked to display frame", 340)
+    local dockedCB = createCheckbox(displayPanel, "Keep bag menu docked to display frame", 340,
+        "When docked, drag the bag menu around the display in Move UI mode — it snaps to whichever corner is closest and stays anchored there.")
     dockedCB:SetPoint("TOPLEFT", alwaysShowCB, "BOTTOMLEFT", 0, -6)
     dockedCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.menuDocked = checked end
@@ -1295,17 +1298,11 @@ local function buildTrinketsPanel(parent)
         end
     end
 
-    local dockHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    dockHint:SetPoint("TOPLEFT", dockedCB, "BOTTOMLEFT", 20, -8)
-    dockHint:SetText("When docked, drag the bag menu around the display in Move UI mode — it snaps to whichever corner is closest and stays anchored there.")
-    dockHint:SetTextColor(unpack(C.textDim))
-    dockHint:SetWidth(340); dockHint:SetJustifyH("LEFT")
-
     -- ── Swap delay ─────────────────────────────────────────────────────────────
     local swapLabel = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    swapLabel:SetPoint("TOPLEFT", dockHint, "BOTTOMLEFT", -20, -14)
+    swapLabel:SetPoint("TOPLEFT", dockedCB, "BOTTOMLEFT", 0, -14)
     swapLabel:SetText("Menu rebuild delay after swap:")
-    swapLabel:SetTextColor(unpack(C.textGrey))
+    UI.tint(swapLabel, C.textGrey)
 
     local swapStepper = buildStepper(displayPanel, {
         min = 0.1, max = 5.0, step = 0.1, valueWidth = 30,
@@ -1317,15 +1314,15 @@ local function buildTrinketsPanel(parent)
 
     local swapSec = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     swapSec:SetPoint("LEFT", swapStepper.plus, "RIGHT", 4, 0)
-    swapSec:SetText("s"); swapSec:SetTextColor(unpack(C.textDim))
+    swapSec:SetText("s"); UI.tint(swapSec, C.textDim)
 
     local refreshSwapDelay = swapStepper.Refresh
 
     -- ── Layout section ────────────────────────────────────────────────────────
     local layoutHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    layoutHeader:SetPoint("TOPLEFT", dockHint, "BOTTOMLEFT", -20, -18)
+    layoutHeader:SetPoint("TOPLEFT", swapLabel, "BOTTOMLEFT", 0, -18)
     layoutHeader:SetText("Layout")
-    layoutHeader:SetTextColor(unpack(C.red))
+    UI.tint(layoutHeader, C.red)
 
     -- Orientation toggle (Horizontal / Vertical)
     local orientRow = CreateFrame("Frame", nil, displayPanel)
@@ -1335,7 +1332,7 @@ local function buildTrinketsPanel(parent)
     local orientLbl = orientRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     orientLbl:SetPoint("LEFT", 0, 0)
     orientLbl:SetText("Orientation:")
-    orientLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(orientLbl, C.textGrey)
 
     local ORIENTS = { "horizontal", "vertical" }
     local ORIENT_LABELS = { horizontal = "Horizontal", vertical = "Vertical" }
@@ -1348,9 +1345,9 @@ local function buildTrinketsPanel(parent)
             local b = orientBtns[o]
             if b then
                 if o == cur then
-                    b:SetBackdropColor(unpack(C.tabActive)); b:SetBackdropBorderColor(unpack(C.red))
+                    UI.tintBg(b, C.tabActive); UI.tintBorder(b, C.red)
                 else
-                    b:SetBackdropColor(unpack(C.panelDark)); b:SetBackdropBorderColor(unpack(C.tabBorder))
+                    UI.tintBg(b, C.panelDark); UI.tintBorder(b, C.tabBorder)
                 end
             end
         end
@@ -1366,8 +1363,8 @@ local function buildTrinketsPanel(parent)
         b:SetPoint("LEFT", prevOb and prevOb or orientLbl, prevOb and "RIGHT" or "RIGHT", 4, 0)
         applyBackdrop(b, 1, C.panelDark, C.tabBorder)
         local bl = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        bl:SetPoint("CENTER"); bl:SetText(ORIENT_LABELS[o]); bl:SetTextColor(unpack(C.textWhite))
-        b:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(C.red)) end)
+        bl:SetPoint("CENTER"); bl:SetText(ORIENT_LABELS[o]); UI.tint(bl, C.textWhite)
+        b:SetScript("OnEnter", function(self) UI.tintBorder(self, C.red) end)
         b:SetScript("OnLeave", function() refreshOrientation() end)
         b:SetScript("OnClick", function()
             local d = getTData(); if d then d.menuOrientation = o end
@@ -1386,7 +1383,7 @@ local function buildTrinketsPanel(parent)
 
     local perLineLbl = perLineRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     perLineLbl:SetPoint("LEFT", 0, 0)
-    perLineLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(perLineLbl, C.textGrey)
 
     local perLineStepper = buildStepper(perLineRow, {
         min = 1, max = 10, valueWidth = 16,
@@ -1414,7 +1411,7 @@ local function buildTrinketsPanel(parent)
     local alignLbl = alignRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     alignLbl:SetPoint("LEFT", 0, 0)
     alignLbl:SetText("Alignment:")
-    alignLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(alignLbl, C.textGrey)
 
     local alignDD = createDropdown(alignRow, 110,
         { { value = "left", label = "Left" }, { value = "right", label = "Right" } },
@@ -1432,7 +1429,7 @@ local function buildTrinketsPanel(parent)
     local dispScaleHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     dispScaleHeader:SetPoint("TOPLEFT", alignRow, "BOTTOMLEFT", 0, -20)
     dispScaleHeader:SetText("Display Scale")
-    dispScaleHeader:SetTextColor(unpack(C.red))
+    UI.tint(dispScaleHeader, C.red)
 
     local dispScaleRow = CreateFrame("Frame", nil, displayPanel)
     dispScaleRow:SetSize(360, 22)
@@ -1448,7 +1445,7 @@ local function buildTrinketsPanel(parent)
 
     local dispScaleFill = dispSliderBg:CreateTexture(nil, "ARTWORK")
     dispScaleFill:SetTexture(WHITE)
-    dispScaleFill:SetVertexColor(unpack(C.red))
+    UI.tintTexture(dispScaleFill, C.red)
     dispScaleFill:SetPoint("TOPLEFT",    dispSliderBg, "TOPLEFT",    1, -1)
     dispScaleFill:SetPoint("BOTTOMLEFT", dispSliderBg, "BOTTOMLEFT", 1,  1)
     dispScaleFill:SetWidth(1)
@@ -1472,7 +1469,7 @@ local function buildTrinketsPanel(parent)
 
     local dispScalePct = dispScaleRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     dispScalePct:SetPoint("LEFT", dispScaleBox, "RIGHT", 4, 0)
-    dispScalePct:SetText("%"); dispScalePct:SetTextColor(unpack(C.textGrey))
+    dispScalePct:SetText("%"); UI.tint(dispScalePct, C.textGrey)
 
     local function setDispScaleVisual(pct)
         local frac = (pct - DISP_SCALE_MIN) / (DISP_SCALE_MAX - DISP_SCALE_MIN)
@@ -1508,11 +1505,11 @@ local function buildTrinketsPanel(parent)
         if button ~= "LeftButton" then return end
         dispScaleDragging = false
         dispScaleThumb:SetScript("OnUpdate", nil)
-        dispScaleThumb:SetBackdropBorderColor(unpack(C.tabBorder))
+        UI.tintBorder(dispScaleThumb, C.tabBorder)
     end)
-    dispScaleThumb:SetScript("OnEnter", function() dispScaleThumb:SetBackdropBorderColor(unpack(C.red)) end)
+    dispScaleThumb:SetScript("OnEnter", function() UI.tintBorder(dispScaleThumb, C.red) end)
     dispScaleThumb:SetScript("OnLeave", function()
-        if not dispScaleDragging then dispScaleThumb:SetBackdropBorderColor(unpack(C.tabBorder)) end
+        if not dispScaleDragging then UI.tintBorder(dispScaleThumb, C.tabBorder) end
     end)
     dispSliderBg:SetScript("OnMouseDown", function(_, button)
         if button == "LeftButton" then applyDispScaleValue(pctFromCursorDispScale()) end
@@ -1545,7 +1542,7 @@ local function buildTrinketsPanel(parent)
     local scaleHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     scaleHeader:SetPoint("TOPLEFT", dispScaleRow, "BOTTOMLEFT", 0, -20)
     scaleHeader:SetText("Menu Scale")
-    scaleHeader:SetTextColor(unpack(C.red))
+    UI.tint(scaleHeader, C.red)
 
     local scaleRow = CreateFrame("Frame", nil, displayPanel)
     scaleRow:SetSize(360, 22)
@@ -1562,7 +1559,7 @@ local function buildTrinketsPanel(parent)
 
     local scaleFill = sliderBg:CreateTexture(nil, "ARTWORK")
     scaleFill:SetTexture(WHITE)
-    scaleFill:SetVertexColor(unpack(C.red))
+    UI.tintTexture(scaleFill, C.red)
     scaleFill:SetPoint("TOPLEFT",    sliderBg, "TOPLEFT",    1, -1)
     scaleFill:SetPoint("BOTTOMLEFT", sliderBg, "BOTTOMLEFT", 1,  1)
     scaleFill:SetWidth(1)
@@ -1587,7 +1584,7 @@ local function buildTrinketsPanel(parent)
 
     local scalePct = scaleRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     scalePct:SetPoint("LEFT", scaleBox, "RIGHT", 4, 0)
-    scalePct:SetText("%"); scalePct:SetTextColor(unpack(C.textGrey))
+    scalePct:SetText("%"); UI.tint(scalePct, C.textGrey)
 
     local function setScaleVisual(pct)
         local frac = (pct - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)
@@ -1623,11 +1620,11 @@ local function buildTrinketsPanel(parent)
         if button ~= "LeftButton" then return end
         scaleDragging = false
         scaleThumb:SetScript("OnUpdate", nil)
-        scaleThumb:SetBackdropBorderColor(unpack(C.tabBorder))
+        UI.tintBorder(scaleThumb, C.tabBorder)
     end)
-    scaleThumb:SetScript("OnEnter", function() scaleThumb:SetBackdropBorderColor(unpack(C.red)) end)
+    scaleThumb:SetScript("OnEnter", function() UI.tintBorder(scaleThumb, C.red) end)
     scaleThumb:SetScript("OnLeave", function()
-        if not scaleDragging then scaleThumb:SetBackdropBorderColor(unpack(C.tabBorder)) end
+        if not scaleDragging then UI.tintBorder(scaleThumb, C.tabBorder) end
     end)
     sliderBg:SetScript("OnMouseDown", function(_, button)
         if button == "LeftButton" then applyScaleValue(pctFromCursorScale()) end
@@ -1660,7 +1657,7 @@ local function buildTrinketsPanel(parent)
     local behHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     behHeader:SetPoint("TOPLEFT", scaleRow, "BOTTOMLEFT", 0, -20)
     behHeader:SetText("Behavior")
-    behHeader:SetTextColor(unpack(C.red))
+    UI.tint(behHeader, C.red)
 
     local cdCB = createCheckbox(displayPanel, "Show cooldown timers on trinket buttons", 300)
     cdCB:SetPoint("TOPLEFT", behHeader, "BOTTOMLEFT", 0, -10)
@@ -1681,24 +1678,17 @@ local function buildTrinketsPanel(parent)
     end
 
     local watchdogCB = createCheckbox(displayPanel,
-        "Auto re-queue failed trinket swaps (watchdog)", 340)
+        "Auto re-queue failed trinket swaps (watchdog)", 340,
+        "When a swap silently fails (e.g. a frame-long combat drop too short for the swap to go out), the stuck grayed-out trinket is always auto-recovered. This option additionally re-queues the failed swap to retry automatically.")
     watchdogCB:SetPoint("TOPLEFT", notifyCB, "BOTTOMLEFT", 0, -6)
     watchdogCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.swapWatchdog = checked end
     end
 
-    local watchdogHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    watchdogHint:SetPoint("TOPLEFT", watchdogCB, "BOTTOMLEFT", 20, -8)
-    watchdogHint:SetText("When a swap silently fails (e.g. a frame-long combat drop too short for the swap to go out), the stuck grayed-out trinket is always auto-recovered. This option additionally re-queues the failed swap to retry automatically.")
-    watchdogHint:SetTextColor(unpack(C.textDim))
-    watchdogHint:SetWidth(340); watchdogHint:SetJustifyH("LEFT")
-
     -- ── Modifier-click settings (soft queue + slot swap) ────────────────────────
-    -- Two dropdowns choosing Shift / Ctrl / None. "None" only disables the
-    -- MANUAL modifier+click action — it does not disable the soft-queue system
-    -- itself (Specific Auto Queue still soft-queues). If you pick the modifier
-    -- the other setting already uses, a popup offers to swap the two so they
-    -- never collide.
+    -- Two dropdowns choosing Shift / Ctrl / None. "None" disables only the MANUAL
+    -- modifier+click action, not the soft-queue system itself. Picking the modifier
+    -- the other setting uses offers a swap, so the two never collide.
     local MOD_OPTS = {
         { value = "shift", label = "Shift" },
         { value = "ctrl",  label = "Ctrl"  },
@@ -1744,55 +1734,57 @@ local function buildTrinketsPanel(parent)
 
     local softQRow = CreateFrame("Frame", nil, displayPanel)
     softQRow:SetSize(360, 22)
-    softQRow:SetPoint("TOPLEFT", watchdogHint, "BOTTOMLEFT", -20, -14)
+    softQRow:SetPoint("TOPLEFT", watchdogCB, "BOTTOMLEFT", 0, -14)
 
     local softQLbl = softQRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     softQLbl:SetPoint("LEFT", 0, 0)
     softQLbl:SetText("Soft queue modifier:")
-    softQLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(softQLbl, C.textGrey)
 
     softQDD = createDropdown(softQRow, 90, MOD_OPTS,
         function() local d = getTData(); return (d and d.softQueueMod) or "shift" end,
-        function(v) setModifier("softQueueMod", "swapMod", "Swap slots modifier", v) end)
+        function(v) setModifier("softQueueMod", "swapMod", "Swap slots modifier", v) end,
+        nil,
+        "Soft queue modifier",
+        "Hold this modifier and click a trinket in the bag menu to Soft queue it. It swaps in only once your current trinket has been used and its effect has run out. Shown as a yellow-bordered icon in the bottom-right corner.")
     softQDD:SetPoint("LEFT", softQLbl, "RIGHT", 8, 0)
-
-    local softQHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    softQHint:SetPoint("TOPLEFT", softQRow, "BOTTOMLEFT", 0, -8)
-    softQHint:SetText("Hold this modifier and click a trinket in the bag menu to Soft queue it. It swaps in only once your current trinket has been used and its effect has run out. Shown as a yellow-bordered icon in the bottom-right corner.")
-    softQHint:SetTextColor(unpack(C.textDim))
-    softQHint:SetWidth(340); softQHint:SetJustifyH("LEFT")
 
     -- ── Swap slots modifier ─────────────────────────────────────────────────────
     local swapRow = CreateFrame("Frame", nil, displayPanel)
     swapRow:SetSize(360, 22)
-    swapRow:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
+    swapRow:SetPoint("TOPLEFT", softQRow, "BOTTOMLEFT", 0, -10)
 
     local swapLbl = swapRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     swapLbl:SetPoint("LEFT", 0, 0)
     swapLbl:SetText("Swap slots modifier:")
-    swapLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(swapLbl, C.textGrey)
 
     swapDD = createDropdown(swapRow, 90, MOD_OPTS,
         function() local d = getTData(); return (d and d.swapMod) or "ctrl" end,
-        function(v) setModifier("swapMod", "softQueueMod", "Soft queue modifier", v) end)
+        function(v) setModifier("swapMod", "softQueueMod", "Soft queue modifier", v) end,
+        nil,
+        "Swap slots modifier",
+        "Hold this modifier and click a worn trinket to swap your Top and Bottom slot trinkets around.")
     swapDD:SetPoint("LEFT", swapLbl, "RIGHT", 8, 0)
 
-    local swapHint = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    swapHint:SetPoint("TOPLEFT", swapRow, "BOTTOMLEFT", 0, -8)
-    swapHint:SetText("Hold this modifier and click a worn trinket to swap your Top and Bottom slot trinkets around.")
-    swapHint:SetTextColor(unpack(C.textDim))
-    swapHint:SetWidth(340); swapHint:SetJustifyH("LEFT")
+    local kbModCB = createCheckbox(displayPanel,
+        "Trinket keybind can trigger the modifier actions too", 380,
+        "Off (default): soft queue and slot swap need an actual mouse click on a trinket button. Holding the modifier while pressing the trinket keybind just uses the trinket — which is what you want when the bind itself contains that modifier, e.g. Shift-T.\n\nOn: the keybind triggers the modifier actions as well, so holding the modifier and pressing it soft-queues or swaps instead of using the trinket.")
+    kbModCB:SetPoint("TOPLEFT", swapRow, "BOTTOMLEFT", 0, -14)
+    kbModCB.OnChange = function(_, checked)
+        local d = getTData(); if d then d.modKeybindActions = checked end
+        if addon.Trinkets and addon.Trinkets.applySoftQueueMod then
+            addon.Trinkets.applySoftQueueMod()
+        end
+    end
 
     -- ── Keybind modifier blockers ──────────────────────────────────────────────
-    -- Lets a trinket keybind share a physical key with an unrelated modified
-    -- shortcut from outside the game (e.g. a Discord push-to-talk bound to
-    -- Alt+NumpadPlus) — WoW itself has no binding registered for that modified
-    -- combo, so it would otherwise just see NumpadPlus and fire the trinket.
-    -- (Key-up vs key-down triggering is a game-wide behaviour now — set under
-    -- Driev's Essentials → General → Input, which drives the client's
-    -- ActionButtonUseKeyDown CVar for trinkets and action bars alike.)
+    -- Lets a trinket keybind share a physical key with a modified shortcut from
+    -- outside the game (e.g. Discord push-to-talk on Alt+NumpadPlus) — WoW has no
+    -- binding for that combo, so it would otherwise see NumpadPlus and fire the
+    -- trinket. (Key-up vs key-down is game-wide now: General → Input.)
     local ctrlCB = createCheckbox(displayPanel, "Ignore trinket keybind while Ctrl is held", 340)
-    ctrlCB:SetPoint("TOPLEFT", softQHint, "BOTTOMLEFT", 0, -14)
+    ctrlCB:SetPoint("TOPLEFT", kbModCB, "BOTTOMLEFT", 0, -14)
     ctrlCB.OnChange = function(_, checked)
         local d = getTData(); if d then d.blockModCtrl = checked end
         if addon.Trinkets then addon.Trinkets.applyModifierBlockers() end
@@ -1854,12 +1846,12 @@ local function buildTrinketsPanel(parent)
         local prompt = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         prompt:SetPoint("TOP", 0, -14)
         prompt:SetText("Press a key or mouse button (not left/right)")
-        prompt:SetTextColor(unpack(C.textWhite))
+        UI.tint(prompt, C.textWhite)
 
         local hint = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         hint:SetPoint("BOTTOM", 0, 12)
         hint:SetText("Escape to cancel  •  Right-click keybind button to clear")
-        hint:SetTextColor(unpack(C.textGrey))
+        UI.tint(hint, C.textGrey)
 
         -- Invisible button filling the popup so mouse clicks register as binds.
         local clickArea = CreateFrame("Button", nil, popup)
@@ -1903,11 +1895,9 @@ local function buildTrinketsPanel(parent)
             Button5      = "BUTTON5", Button6      = "BUTTON6",
             Button7      = "BUTTON7", Button8      = "BUTTON8",
         }
-        -- Bind a mouse button — but never left/right click: binding those would
-        -- hijack normal clicking, so a left/right click just cancels the capture
-        -- instead. Wired to BOTH the popup's own click area AND the full-screen
-        -- catcher below, so any bindable mouse button can be pressed anywhere on
-        -- screen (no need to hover the little popup, unlike before).
+        -- Bind a mouse button — but never left/right, which would hijack normal
+        -- clicking, so those just cancel the capture. Wired to both the popup's click
+        -- area AND the full-screen catcher, so any bindable button works anywhere.
         local function onCaptureClick(_, btn)
             local rawKey = btnToKey[btn]
             if rawKey == "BUTTON1" or rawKey == "BUTTON2" or not rawKey then
@@ -1932,12 +1922,12 @@ local function buildTrinketsPanel(parent)
     local kbHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     kbHeader:SetPoint("TOPLEFT", shiftCB, "BOTTOMLEFT", 0, -20)
     kbHeader:SetText("Keybinds")
-    kbHeader:SetTextColor(unpack(C.red))
+    UI.tint(kbHeader, C.red)
 
     local kbDesc = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     kbDesc:SetPoint("TOPLEFT", kbHeader, "BOTTOMLEFT", 0, -4)
     kbDesc:SetText("Set a keybind for using the Top/Bottom slot\nLeft-click to open bind menu for key/mouse, Right-click to clear the keybind")
-    kbDesc:SetTextColor(unpack(C.textGrey))
+    UI.tint(kbDesc, C.textGrey)
     kbDesc:SetJustifyH("LEFT")
 
     local kbBindBtns = {}
@@ -1951,7 +1941,7 @@ local function buildTrinketsPanel(parent)
         slotLbl:SetWidth(80); slotLbl:SetJustifyH("LEFT")
         slotLbl:SetPoint("TOPLEFT", prevKbAnchor, "BOTTOMLEFT", 0, -18)
         slotLbl:SetText(slotName .. ":")
-        slotLbl:SetTextColor(unpack(C.textGrey))
+        UI.tint(slotLbl, C.textGrey)
 
         local kbBtn = CreateFrame("Button", nil, displayPanel, "BackdropTemplate")
         kbBtn:SetSize(140, 22)
@@ -1960,7 +1950,7 @@ local function buildTrinketsPanel(parent)
         applyBackdrop(kbBtn, 1, C.panelDark, C.tabBorder)
         local kbLbl = kbBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         kbLbl:SetPoint("CENTER")
-        kbLbl:SetTextColor(unpack(C.textWhite))
+        UI.tint(kbLbl, C.textWhite)
         kbBtn.lbl = kbLbl
 
         kbBtn:SetScript("OnClick", function(_, btn)
@@ -1979,8 +1969,8 @@ local function buildTrinketsPanel(parent)
             p._catcher:Show()
             p:Show()
         end)
-        kbBtn:SetScript("OnEnter", function() kbBtn:SetBackdropBorderColor(unpack(C.red)) end)
-        kbBtn:SetScript("OnLeave", function() kbBtn:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        kbBtn:SetScript("OnEnter", function() UI.tintBorder(kbBtn, C.red) end)
+        kbBtn:SetScript("OnLeave", function() UI.tintBorder(kbBtn, C.tabBorder) end)
 
         kbBindBtns[which] = kbBtn
         kbSlotLbls[which] = slotLbl
@@ -1991,7 +1981,7 @@ local function buildTrinketsPanel(parent)
     local padHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     padHeader:SetPoint("TOPLEFT", prevKbAnchor, "BOTTOMLEFT", 0, -20)
     padHeader:SetText("Padding")
-    padHeader:SetTextColor(unpack(C.red))
+    UI.tint(padHeader, C.red)
 
     local function makePadRow(anchorAbove, label, getVal, setVal, apply)
         apply = apply or function() if addon.Trinkets then addon.Trinkets.buildMenu() end end
@@ -2004,30 +1994,30 @@ local function buildTrinketsPanel(parent)
         local rowLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         rowLbl:SetPoint("LEFT", 0, 0)
         rowLbl:SetText(label)
-        rowLbl:SetTextColor(unpack(C.textGrey))
+        UI.tint(rowLbl, C.textGrey)
 
         local btnM = CreateFrame("Button", nil, row, "BackdropTemplate")
         btnM:SetSize(22, 22)
         btnM:SetPoint("LEFT", rowLbl, "RIGHT", 8, 0)
         applyBackdrop(btnM, 1, C.panelDark, C.tabBorder)
         local mLbl = btnM:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        mLbl:SetPoint("CENTER"); mLbl:SetText("-"); mLbl:SetTextColor(unpack(C.textWhite))
+        mLbl:SetPoint("CENTER"); mLbl:SetText("-"); UI.tint(mLbl, C.textWhite)
 
         local numLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         numLbl:SetPoint("LEFT", btnM, "RIGHT", 6, 0)
         numLbl:SetWidth(20); numLbl:SetJustifyH("CENTER")
-        numLbl:SetTextColor(unpack(C.textWhite))
+        UI.tint(numLbl, C.textWhite)
 
         local btnP = CreateFrame("Button", nil, row, "BackdropTemplate")
         btnP:SetSize(22, 22)
         btnP:SetPoint("LEFT", numLbl, "RIGHT", 6, 0)
         applyBackdrop(btnP, 1, C.panelDark, C.tabBorder)
         local pLbl = btnP:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        pLbl:SetPoint("CENTER"); pLbl:SetText("+"); pLbl:SetTextColor(unpack(C.textWhite))
+        pLbl:SetPoint("CENTER"); pLbl:SetText("+"); UI.tint(pLbl, C.textWhite)
 
         local pxLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         pxLbl:SetPoint("LEFT", btnP, "RIGHT", 4, 0)
-        pxLbl:SetText("px"); pxLbl:SetTextColor(unpack(C.textDim))
+        pxLbl:SetText("px"); UI.tint(pxLbl, C.textDim)
 
         local function refresh() numLbl:SetText(tostring(getVal())) end
 
@@ -2036,15 +2026,15 @@ local function buildTrinketsPanel(parent)
             refresh()
             apply()
         end)
-        btnM:SetScript("OnEnter", function() btnM:SetBackdropBorderColor(unpack(C.red)) end)
-        btnM:SetScript("OnLeave", function() btnM:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        btnM:SetScript("OnEnter", function() UI.tintBorder(btnM, C.red) end)
+        btnM:SetScript("OnLeave", function() UI.tintBorder(btnM, C.tabBorder) end)
         btnP:SetScript("OnClick", function()
             setVal(math.min(30, getVal() + 1))
             refresh()
             apply()
         end)
-        btnP:SetScript("OnEnter", function() btnP:SetBackdropBorderColor(unpack(C.red)) end)
-        btnP:SetScript("OnLeave", function() btnP:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        btnP:SetScript("OnEnter", function() UI.tintBorder(btnP, C.red) end)
+        btnP:SetScript("OnLeave", function() UI.tintBorder(btnP, C.tabBorder) end)
 
         return row, refresh
     end
@@ -2070,11 +2060,9 @@ local function buildTrinketsPanel(parent)
         applyDisplayLayout)
 
     -- ── Frame layer (strata + level) ──────────────────────────────────────────
-    -- One row per frame, controlling where it sits in the UI's stacking order:
-    -- a strata dropdown (the coarse layer) plus a level stepper (fine ordering
-    -- within that strata). Both default to MEDIUM / 0 so the frames sit with
-    -- normal UI panels, and can be raised/lowered to fix overlaps with other
-    -- addons.
+    -- One row per frame: a strata dropdown (coarse layer) plus a level stepper (fine
+    -- ordering within it). Both default to MEDIUM / 0, and can be raised or lowered
+    -- to fix overlaps with other addons.
     local STRATA_LABELS = {
         BACKGROUND        = "Background",
         LOW               = "Low",
@@ -2098,7 +2086,7 @@ local function buildTrinketsPanel(parent)
         local sLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         sLbl:SetPoint("LEFT", 0, 0)
         sLbl:SetText("Frame strata:")
-        sLbl:SetTextColor(unpack(C.textGrey))
+        UI.tint(sLbl, C.textGrey)
 
         -- Trinkets.lua loads before this file (see the .toc), so the shared
         -- strata list is always available — the dropdown's height is baked
@@ -2114,26 +2102,26 @@ local function buildTrinketsPanel(parent)
         local lLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         lLbl:SetPoint("LEFT", dd, "RIGHT", 16, 0)
         lLbl:SetText("Level:")
-        lLbl:SetTextColor(unpack(C.textGrey))
+        UI.tint(lLbl, C.textGrey)
 
         local btnM = CreateFrame("Button", nil, row, "BackdropTemplate")
         btnM:SetSize(22, 22)
         btnM:SetPoint("LEFT", lLbl, "RIGHT", 8, 0)
         applyBackdrop(btnM, 1, C.panelDark, C.tabBorder)
         local mLbl = btnM:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        mLbl:SetPoint("CENTER"); mLbl:SetText("-"); mLbl:SetTextColor(unpack(C.textWhite))
+        mLbl:SetPoint("CENTER"); mLbl:SetText("-"); UI.tint(mLbl, C.textWhite)
 
         local numLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         numLbl:SetPoint("LEFT", btnM, "RIGHT", 6, 0)
         numLbl:SetWidth(24); numLbl:SetJustifyH("CENTER")
-        numLbl:SetTextColor(unpack(C.textWhite))
+        UI.tint(numLbl, C.textWhite)
 
         local btnP = CreateFrame("Button", nil, row, "BackdropTemplate")
         btnP:SetSize(22, 22)
         btnP:SetPoint("LEFT", numLbl, "RIGHT", 6, 0)
         applyBackdrop(btnP, 1, C.panelDark, C.tabBorder)
         local pLbl = btnP:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        pLbl:SetPoint("CENTER"); pLbl:SetText("+"); pLbl:SetTextColor(unpack(C.textWhite))
+        pLbl:SetPoint("CENTER"); pLbl:SetText("+"); UI.tint(pLbl, C.textWhite)
 
         local function refresh()
             numLbl:SetText(tostring(getLevel()))
@@ -2143,13 +2131,13 @@ local function buildTrinketsPanel(parent)
         btnM:SetScript("OnClick", function()
             setLevel(math.max(0, getLevel() - 1)); refresh(); apply()
         end)
-        btnM:SetScript("OnEnter", function() btnM:SetBackdropBorderColor(unpack(C.red)) end)
-        btnM:SetScript("OnLeave", function() btnM:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        btnM:SetScript("OnEnter", function() UI.tintBorder(btnM, C.red) end)
+        btnM:SetScript("OnLeave", function() UI.tintBorder(btnM, C.tabBorder) end)
         btnP:SetScript("OnClick", function()
             setLevel(math.min(128, getLevel() + 1)); refresh(); apply()
         end)
-        btnP:SetScript("OnEnter", function() btnP:SetBackdropBorderColor(unpack(C.red)) end)
-        btnP:SetScript("OnLeave", function() btnP:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        btnP:SetScript("OnEnter", function() UI.tintBorder(btnP, C.red) end)
+        btnP:SetScript("OnLeave", function() UI.tintBorder(btnP, C.tabBorder) end)
 
         return row, refresh
     end
@@ -2170,7 +2158,7 @@ local function buildTrinketsPanel(parent)
     local miscHeader = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     miscHeader:SetPoint("TOPLEFT", dispEdgePadRow, "BOTTOMLEFT", 0, -20)
     miscHeader:SetText("Misc")
-    miscHeader:SetTextColor(unpack(C.red))
+    UI.tint(miscHeader, C.red)
 
     local ttCB = createCheckbox(displayPanel, "Show tooltips in bag menu", 300)
     ttCB:SetPoint("TOPLEFT", miscHeader, "BOTTOMLEFT", 0, -10)
@@ -2200,36 +2188,31 @@ local function buildTrinketsPanel(parent)
     end
 
     -- ── Redesigned layout ──────────────────────────────────────────────────────
-    -- Header row: the "Trinket Menu" block (dispHeader/dispDesc/enableCB/moveBtn)
-    -- stays top-left; the Keybinds block moves top-right. Below, a "Settings"
-    -- heading over a left sub-sidebar (Display Menu / Bag Menu / Behavior / Misc),
-    -- each section's content shown to the right with its own General/Layout tabs
-    -- where applicable. All widgets above are reused — just re-parented here.
+    -- Header row: "Trinket Menu" block top-left, Keybinds top-right. Below, a
+    -- "Settings" heading over a left sub-sidebar (Display Menu / Bag Menu / Behavior
+    -- / Misc), each section's content to the right with its own General/Layout tabs.
+    -- All widgets above are reused — just re-parented here.
 
     -- Keybinds block → top-right of the header area.
     kbHeader:ClearAllPoints()
     kbHeader:SetPoint("TOPLEFT", displayPanel, "TOPLEFT", 440, -14)
 
-    -- Anchor the Settings heading directly beneath the header block (Trinket
-    -- Menu column on the left / Keybinds on the right) instead of a fixed
-    -- offset, so the gap hugs the content. moveBtn is the lowest element of
-    -- the left column; the keybind block on the right is shorter, so this
-    -- clears both.
+    -- Anchored directly beneath the header block rather than at a fixed offset, so
+    -- the gap hugs the content. moveBtn is the lowest element of the left column and
+    -- the keybind block on the right is shorter, so this clears both.
     local settingsHdr = displayPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     settingsHdr:SetPoint("TOPLEFT", moveBtn, "BOTTOMLEFT", 0, -12)
     settingsHdr:SetText("Settings")
-    settingsHdr:SetTextColor(unpack(C.red))
+    UI.tint(settingsHdr, C.red)
 
     -- The Settings box stretches from just under its heading down to the bottom
     -- of the (non-scrolling) sub-panel, filling whatever vertical space the
     -- window offers. Each section's content is its own scroll area (see
     -- scrollArea below), so a section taller than the box scrolls inside it.
     local sideCol = CreateFrame("Frame", nil, displayPanel, "BackdropTemplate")
-    -- Left edge flush with the content box (displayPanel = subContent), so the
-    -- sidebar lines up with the tab bar backdrop above it. The header content
-    -- (Settings, etc.) keeps its 14px indent; only the sidebar goes fully left.
-    -- The TOPLEFT still hangs off the Settings header for its vertical position,
-    -- so its x is pulled back 14px to reach the content's left edge.
+    -- Left edge flush with the content box so the sidebar lines up with the tab bar
+    -- above. Header content keeps its 14px indent; only the sidebar goes fully left,
+    -- so the TOPLEFT (which hangs off the Settings header) is pulled back 14px.
     sideCol:SetPoint("TOPLEFT", settingsHdr, "BOTTOMLEFT", -14, -8)
     sideCol:SetPoint("BOTTOMLEFT", displayPanel, "BOTTOMLEFT", 0, 12)
     sideCol:SetWidth(130)
@@ -2249,12 +2232,10 @@ local function buildTrinketsPanel(parent)
         return s
     end
 
-    -- A scroll viewport filling `parent` (a section's backdrop box): a
-    -- ScrollFrame leaving room for the themed track on the right, plus a
-    -- scroll-child `inner` that stackIn() fills and sizes. Returns
-    -- (wrap, inner): `wrap` is the toggled unit (its track hides with it, so
-    -- General/Layout tabs don't leave a stray scrollbar behind); `inner` is
-    -- what widgets get stacked into. `inner._update` refreshes the thumb.
+    -- A scroll viewport filling `parent`: a ScrollFrame leaving room for the themed
+    -- track, plus a scroll-child `inner` that stackIn() fills and sizes. Returns
+    -- (wrap, inner) — `wrap` is the toggled unit, so its track hides with it and
+    -- General/Layout tabs leave no stray scrollbar. `inner._update` refreshes thumb.
     local function scrollArea(parent)
         local wrap = CreateFrame("Frame", nil, parent)
         wrap:SetAllPoints(parent)
@@ -2377,7 +2358,7 @@ local function buildTrinketsPanel(parent)
     })
 
     stackIn(bmGen, {
-        { alwaysShowCB }, { dockedCB }, { dockHint, indent = 20, h = 38 },
+        { alwaysShowCB }, { dockedCB },
         { keepCB, gap = 12 }, { ttCB }, { tinyTipCB, indent = 20 },
         { swapLabel, gap = 14 },
     })
@@ -2392,9 +2373,10 @@ local function buildTrinketsPanel(parent)
     })
 
     stackIn(behInner, {
-        { watchdogCB }, { watchdogHint, indent = 20, h = 48 },
-        { softQRow, gap = 12 }, { softQHint, h = 48 },
-        { swapRow, gap = 12 }, { swapHint, h = 34 },
+        { watchdogCB },
+        { softQRow, gap = 12 },
+        { swapRow, gap = 12 },
+        { kbModCB, gap = 12 },
         { ctrlCB, gap = 12 }, { altCB }, { shiftCB },
         { reverseClickCB, gap = 12 }, { elvuiSkinCB, gap = 12 },
     })
@@ -2421,6 +2403,7 @@ local function buildTrinketsPanel(parent)
         watchdogCB:SetChecked(d.swapWatchdog ~= false)
         softQDD.Refresh()
         swapDD.Refresh()
+        kbModCB:SetChecked(d.modKeybindActions or false)
         showBindCB:SetChecked(d.showBindings ~= false)
         truncBindCB:SetChecked(d.truncateBindings ~= false)
         ctrlCB:SetChecked(d.blockModCtrl or false)
@@ -2510,36 +2493,15 @@ local function buildTrinketsPanel(parent)
     end)
 
     -- ── Sub-tabs ──────────────────────────────────────────────────────────────
-    panel.subTabs["display"]   = createTab(subBar, "General", 80)
-    panel.subTabs["order"]     = createTab(subBar, "Menu Order", 100)
-    panel.subTabs["specific"]  = createTab(subBar, "Specific Auto Queue (beta)", 205)
-    panel.subTabs["autoqueue"] = createTab(subBar, "Auto Queue", 100)
-    panel.subPanels["display"] = displayShell
-    panel.subPanels["order"]   = menuOrderPanel
+    addSubTab("display", "General",    80,  displayShell)
+    addSubTab("order",   "Menu Order", 100, menuOrderPanel)
     -- By far the heaviest panel in the addon (every raid × boss × four trinket
-    -- dropdowns), so it's built the first time the sub-tab is opened rather than
-    -- with the rest of the Trinkets tab. See resolvePanel in core's UI.lua.
-    panel.subPanels["specific"] = function()
-        return buildSpecificAutoQueuePanel(subContent, getTData)
-    end
-    panel.subPanels["autoqueue"] = autoQueueShell
-
-    -- Tab order: Display, Menu Order, Specific Auto Queue, Auto Queue
-    panel.subTabs["display"]:SetHeight(22)
-    panel.subTabs["display"]:SetPoint("LEFT", 4, 0)
-    panel.subTabs["display"]:SetScript("OnClick", function() selectSubTab(panel, "display") end)
-
-    panel.subTabs["order"]:SetHeight(22)
-    panel.subTabs["order"]:SetPoint("LEFT", panel.subTabs["display"], "RIGHT", 4, 0)
-    panel.subTabs["order"]:SetScript("OnClick", function() selectSubTab(panel, "order") end)
-
-    panel.subTabs["specific"]:SetHeight(22)
-    panel.subTabs["specific"]:SetPoint("LEFT", panel.subTabs["order"], "RIGHT", 4, 0)
-    panel.subTabs["specific"]:SetScript("OnClick", function() selectSubTab(panel, "specific") end)
-
-    panel.subTabs["autoqueue"]:SetHeight(22)
-    panel.subTabs["autoqueue"]:SetPoint("LEFT", panel.subTabs["specific"], "RIGHT", 4, 0)
-    panel.subTabs["autoqueue"]:SetScript("OnClick", function() selectSubTab(panel, "autoqueue") end)
+    -- dropdowns), so it's the one sub-tab passed as a builder: it's constructed
+    -- the first time it's opened rather than with the rest of the Trinkets tab.
+    addSubTab("specific", "Specific Auto Queue (beta)", 205, function(content)
+        return buildSpecificAutoQueuePanel(content, getTData)
+    end)
+    addSubTab("autoqueue", "Auto Queue", 100, autoQueueShell)
 
     selectSubTab(panel, "display")
     return panel

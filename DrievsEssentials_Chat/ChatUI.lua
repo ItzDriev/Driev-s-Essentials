@@ -6,6 +6,7 @@ local C  = UI.colors
 local W  = UI.widgets
 
 local createCheckbox  = W.createCheckbox
+local colorSwatch     = W.createColorSwatch
 local createDropdown  = W.createDropdown
 local createScrollDropdown = W.createScrollDropdown
 local createSideTab   = W.createSideTab
@@ -16,6 +17,7 @@ local flatButton      = W.flatButton
 local makeScrollPanel = W.makeScrollPanel
 local applyBackdrop   = W.applyBackdrop
 local buildStepper    = W.buildStepper
+local attachTooltip   = W.attachTooltip
 
 local function getChatData()
     addon.db.settings.chat = addon.db.settings.chat or {}
@@ -33,24 +35,25 @@ end
 
 -- ── Small shared row builders (used by the DataTexts sub-tab) ───────────────
 
--- [label] [-][ typable value ][+] [suffix] row. onChange fires after the value
--- is committed, in addition to set().
---
--- The value is an EditBox rather than the shared buildStepper's read-only
--- FontString, so a number can be typed straight in instead of being clicked to.
--- That matters most for the wide ranges here — nudging a bar from 40px to 600px
--- one click at a time is not a real option.
---
--- Returns (row, control); control.Refresh() re-reads the stored value, matching
--- what buildStepper returned so existing callers are unaffected.
-local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onChange, suffix)
+-- The [label] half of a settings row, shared by both row builders below.
+local function labelledRow(panel, anchorAbove, label, indent)
     local row = CreateFrame("Frame", nil, panel)
     row:SetSize(320, 22)
-    row:SetPoint("TOPLEFT", anchorAbove, "BOTTOMLEFT", 0, -8)
+    row:SetPoint("TOPLEFT", anchorAbove, "BOTTOMLEFT", indent or 0, -8)
 
     local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     lbl:SetPoint("LEFT", 0, 0); lbl:SetWidth(130); lbl:SetJustifyH("LEFT")
-    lbl:SetText(label); lbl:SetTextColor(unpack(C.textGrey))
+    lbl:SetText(label); UI.tint(lbl, C.textGrey)
+    return row, lbl
+end
+
+-- [label] [-][ typable value ][+] [suffix]. An EditBox rather than buildStepper's
+-- read-only value, since nudging a bar from 40px to 600px one click at a time
+-- isn't realistic. `indent` marks the row as a sub-setting of the control above;
+-- `desc` is hover help, attached to all three parts. Returns (row, control),
+-- control.Refresh() re-reading the stored value.
+local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onChange, suffix, indent, desc)
+    local row, lbl = labelledRow(panel, anchorAbove, label, indent)
 
     local minus = CreateFrame("Button", nil, row, "BackdropTemplate")
     minus:SetSize(20, 20)
@@ -58,7 +61,7 @@ local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onCh
     applyBackdrop(minus, 1, C.panelDark, C.tabBorder)
     local minusLbl = minus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     minusLbl:SetPoint("CENTER"); minusLbl:SetText("-")
-    minusLbl:SetTextColor(unpack(C.textWhite))
+    UI.tint(minusLbl, C.textWhite)
 
     local boxWrap = CreateFrame("Frame", nil, row, "BackdropTemplate")
     boxWrap:SetSize(46, 20)
@@ -67,14 +70,12 @@ local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onCh
 
     local box = CreateFrame("EditBox", nil, boxWrap)
     box:SetSize(38, 16); box:SetPoint("CENTER")
-    -- Not SetNumeric(true): that WoW EditBox flag only allows digits 0-9,
-    -- silently stripping the "-" from any negative value (including one set
-    -- programmatically via SetText) - fatal for steppers like the X/Y offset
-    -- rows that need negative numbers. tonumber() on commit already rejects
-    -- anything that isn't a valid number, so free-form text is safe here.
+    -- Not SetNumeric(true): that flag allows only digits 0-9 and silently strips the
+    -- "-" from negative values (even ones set via SetText), which breaks the X/Y
+    -- offset rows. tonumber() on commit already rejects non-numbers.
     box:SetAutoFocus(false); box:SetMaxLetters(5)
     box:SetJustifyH("CENTER"); box:SetFontObject("GameFontNormalSmall")
-    box:SetTextColor(unpack(C.textWhite))
+    UI.tint(box, C.textWhite)
 
     local plus = CreateFrame("Button", nil, row, "BackdropTemplate")
     plus:SetSize(20, 20)
@@ -82,12 +83,12 @@ local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onCh
     applyBackdrop(plus, 1, C.panelDark, C.tabBorder)
     local plusLbl = plus:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     plusLbl:SetPoint("CENTER"); plusLbl:SetText("+")
-    plusLbl:SetTextColor(unpack(C.textWhite))
+    UI.tint(plusLbl, C.textWhite)
 
     if suffix then
         local s = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         s:SetPoint("LEFT", plus, "RIGHT", 6, 0)
-        s:SetText(suffix); s:SetTextColor(unpack(C.textDim))
+        s:SetText(suffix); UI.tint(s, C.textDim)
     end
 
     -- Never overwrite the box while it has focus, or typing "12" on the way to
@@ -107,10 +108,10 @@ local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onCh
 
     minus:SetScript("OnClick", function() commit((get() or min) - 1) end)
     plus:SetScript("OnClick",  function() commit((get() or min) + 1) end)
-    minus:SetScript("OnEnter", function(s) s:SetBackdropBorderColor(unpack(C.red)) end)
-    minus:SetScript("OnLeave", function(s) s:SetBackdropBorderColor(unpack(C.tabBorder)) end)
-    plus:SetScript("OnEnter",  function(s) s:SetBackdropBorderColor(unpack(C.red)) end)
-    plus:SetScript("OnLeave",  function(s) s:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    minus:SetScript("OnEnter", function(s) UI.tintBorder(s, C.red) end)
+    minus:SetScript("OnLeave", function(s) UI.tintBorder(s, C.tabBorder) end)
+    plus:SetScript("OnEnter",  function(s) UI.tintBorder(s, C.red) end)
+    plus:SetScript("OnLeave",  function(s) UI.tintBorder(s, C.tabBorder) end)
 
     box:SetScript("OnEnterPressed", function(self)
         local n = tonumber(self:GetText())
@@ -127,70 +128,24 @@ local function addStepperRow(panel, anchorAbove, label, min, max, get, set, onCh
         self:ClearFocus()
         refresh()
     end)
-    boxWrap:SetScript("OnEnter", function(s) s:SetBackdropBorderColor(unpack(C.red)) end)
-    boxWrap:SetScript("OnLeave", function(s) s:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+    boxWrap:SetScript("OnEnter", function(s) UI.tintBorder(s, C.red) end)
+    boxWrap:SetScript("OnLeave", function(s) UI.tintBorder(s, C.tabBorder) end)
+
+    if desc then
+        for _, part in ipairs({ minus, plus, boxWrap }) do
+            attachTooltip(part, label:gsub(":%s*$", ""), desc)
+        end
+    end
 
     local control = { Refresh = refresh, box = box, minus = minus, plus = plus }
     refresh()
     return row, control
 end
 
--- A clickable color swatch opening WoW's native color picker (RGB only — this
--- addon uses a separate opacity stepper rather than the picker's own alpha
--- slider, so the two controls don't fight over the same value). Handles both
--- the modern SetupColorPickerAndShow API and the older field-based one, since
--- which is present isn't guaranteed across every Classic Era build.
-local function colorSwatch(parent, getRGB, setRGB, onChange)
-    local swatch = CreateFrame("Button", nil, parent, "BackdropTemplate")
-    swatch:SetSize(20, 20)
-    applyBackdrop(swatch, 1, { 1, 1, 1 }, C.tabBorder)
-
-    local function refresh()
-        local r, g, b = getRGB()
-        swatch:SetBackdropColor(r or 1, g or 1, b or 1, 1)
-    end
-
-    swatch:SetScript("OnClick", function()
-        local r, g, b = getRGB()
-        local function apply()
-            local nr, ng, nb = ColorPickerFrame:GetColorRGB()
-            setRGB(nr, ng, nb)
-            refresh()
-            if onChange then onChange() end
-        end
-        local function cancel()
-            setRGB(r, g, b)
-            refresh()
-            if onChange then onChange() end
-        end
-        if ColorPickerFrame.SetupColorPickerAndShow then
-            ColorPickerFrame:SetupColorPickerAndShow({
-                r = r, g = g, b = b, hasOpacity = false,
-                swatchFunc = apply, cancelFunc = cancel,
-            })
-        else
-            ColorPickerFrame.hasOpacity = false
-            ColorPickerFrame.func = apply
-            ColorPickerFrame.cancelFunc = cancel
-            ColorPickerFrame:SetColorRGB(r, g, b)
-            ColorPickerFrame:Hide() -- force OnShow to refire with the values above
-            ColorPickerFrame:Show()
-        end
-    end)
-
-    swatch.Refresh = refresh
-    refresh()
-    return swatch
-end
-
-local function addColorRow(panel, anchorAbove, label, getRGB, setRGB, onChange)
-    local row = CreateFrame("Frame", nil, panel)
-    row:SetSize(320, 22)
-    row:SetPoint("TOPLEFT", anchorAbove, "BOTTOMLEFT", 0, -8)
-
-    local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lbl:SetPoint("LEFT", 0, 0); lbl:SetWidth(130); lbl:SetJustifyH("LEFT")
-    lbl:SetText(label); lbl:SetTextColor(unpack(C.textGrey))
+-- `indent` steps the row in from the control it hangs under, marking it as a
+-- sub-setting of that control rather than one more entry in the same column.
+local function addColorRow(panel, anchorAbove, label, getRGB, setRGB, onChange, indent)
+    local row, lbl = labelledRow(panel, anchorAbove, label, indent)
 
     local swatch = colorSwatch(row, getRGB, setRGB, onChange)
     swatch:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
@@ -200,12 +155,7 @@ end
 -- ── Chat sub-tab ──────────────────────────────────────────────────
 -- LSM font list with a leading "Default" (= Blizzard's chat font).
 local function chatFontList()
-    local list = { "Default" }
-    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
-    if LSM then
-        for _, name in ipairs(LSM:List("font")) do list[#list + 1] = name end
-    end
-    return list
+    return addon.MediaList("font", { lead = "Default" })
 end
 
 local function buildChatSettingsPanel(parent)
@@ -214,18 +164,17 @@ local function buildChatSettingsPanel(parent)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
     header:SetText("Chat")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
     desc:SetWidth(500); desc:SetJustifyH("LEFT")
     desc:SetText("Small tweaks to Blizzard's chat. Blizzard still handles chat layout, docking and tabs.")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
-    -- The parent switch for the whole Chat module — Panels, DataTexts and
-    -- Alerts all check addon.Chat.isEnabled() too, so switching this off
-    -- overrides their own tabs' enable checkboxes rather than sitting
-    -- alongside them as an unrelated toggle.
+    -- Parent switch for the whole Chat module — Panels, DataTexts and Alerts all
+    -- check addon.Chat.isEnabled(), so this overrides their own enable checkboxes
+    -- rather than sitting alongside them.
     local enableCB = createCheckbox(panel, "Enable Chat System", 260)
     enableCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -10)
     enableCB.OnChange = function(_, checked)
@@ -246,96 +195,69 @@ local function buildChatSettingsPanel(parent)
 
     local fontLbl = fontRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     fontLbl:SetPoint("LEFT", 0, 0); fontLbl:SetWidth(50); fontLbl:SetJustifyH("LEFT")
-    fontLbl:SetText("Font:"); fontLbl:SetTextColor(unpack(C.textGrey))
+    fontLbl:SetText("Font:"); UI.tint(fontLbl, C.textGrey)
 
     local fontDD = createScrollDropdown(fontRow, 200, chatFontList, function(name)
         getChatData().font = (name ~= "Default") and name or false
         if addon.Chat      then addon.Chat.refresh() end
         if addon.DataTexts then addon.DataTexts.refresh() end
-    end, { preview = "font" })
+    end, {
+        preview = "font",
+        tipTitle = "Font",
+        tipBody  = "Font for chat message text, tab names and the DataText bars. \"Default\" keeps Blizzard's.",
+    })
     fontDD:SetPoint("LEFT", fontLbl, "RIGHT", 6, 0)
 
-    local fontHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    fontHint:SetPoint("TOPLEFT", fontRow, "BOTTOMLEFT", 0, -4)
-    fontHint:SetWidth(460); fontHint:SetJustifyH("LEFT")
-    fontHint:SetText("Font for chat message text, tab names and the DataText bars. \"Default\" keeps Blizzard's.")
-    fontHint:SetTextColor(unpack(C.textDim))
-
-    local buttonsCB = createCheckbox(panel, "Hide chat buttons", 300)
-    buttonsCB:SetPoint("TOPLEFT", fontHint, "BOTTOMLEFT", 0, -10)
+    local buttonsCB = createCheckbox(panel, "Hide chat buttons", 300,
+        "Hides the scroll arrows, chat menu button and the voice / text-to-speech buttons around the chat. Unticking needs a /reload to bring them back.")
+    buttonsCB:SetPoint("TOPLEFT", fontRow, "BOTTOMLEFT", 0, -10)
     buttonsCB.OnChange = function(_, checked)
         getChatData().hideButtons = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local buttonsHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    buttonsHint:SetPoint("TOPLEFT", buttonsCB, "BOTTOMLEFT", 20, -4)
-    buttonsHint:SetWidth(460); buttonsHint:SetJustifyH("LEFT")
-    buttonsHint:SetText("Hides the scroll arrows, chat menu button and the voice / text-to-speech buttons around the chat. Unticking needs a /reload to bring them back.")
-    buttonsHint:SetTextColor(unpack(C.textDim))
-
-    local moveCB = createCheckbox(panel, "Allow moving chat anywhere", 300)
-    moveCB:SetPoint("TOPLEFT", buttonsHint, "BOTTOMLEFT", -20, -10)
+    local moveCB = createCheckbox(panel, "Allow moving chat anywhere", 300,
+        "Removes the margin Blizzard keeps around the chat, which otherwise stops it being dragged to the screen edges. Drag the chat by its tab as usual.")
+    moveCB:SetPoint("TOPLEFT", buttonsCB, "BOTTOMLEFT", 0, -6)
     moveCB.OnChange = function(_, checked)
         getChatData().freeMovement = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local moveHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    moveHint:SetPoint("TOPLEFT", moveCB, "BOTTOMLEFT", 20, -4)
-    moveHint:SetWidth(460); moveHint:SetJustifyH("LEFT")
-    moveHint:SetText("Removes the margin Blizzard keeps around the chat, which otherwise stops it being dragged to the screen edges. Drag the chat by its tab as usual.")
-    moveHint:SetTextColor(unpack(C.textDim))
-
-    local fadeCB = createCheckbox(panel, "Remove chat hover fade", 320)
-    fadeCB:SetPoint("TOPLEFT", moveHint, "BOTTOMLEFT", -20, -10)
+    local fadeCB = createCheckbox(panel, "Remove chat hover fade", 320,
+        "Stops the chat background fading in when you mouse over it. Unticking needs a /reload.")
+    fadeCB:SetPoint("TOPLEFT", moveCB, "BOTTOMLEFT", 0, -6)
     fadeCB.OnChange = function(_, checked)
         getChatData().noHoverFade = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local fadeHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    fadeHint:SetPoint("TOPLEFT", fadeCB, "BOTTOMLEFT", 20, -4)
-    fadeHint:SetWidth(460); fadeHint:SetJustifyH("LEFT")
-    fadeHint:SetText("Stops the chat background fading in when you mouse over it. Unticking needs a /reload.")
-    fadeHint:SetTextColor(unpack(C.textDim))
-
-    local textFadeCB = createCheckbox(panel, "Keep chat text visible", 320)
-    textFadeCB:SetPoint("TOPLEFT", fadeHint, "BOTTOMLEFT", -20, -10)
+    local textFadeCB = createCheckbox(panel, "Keep chat text visible", 320,
+        "Stops chat messages fading out after a couple of minutes of nothing happening, so the backlog stays readable without scrolling or hovering.")
+    textFadeCB:SetPoint("TOPLEFT", fadeCB, "BOTTOMLEFT", 0, -6)
     textFadeCB.OnChange = function(_, checked)
         getChatData().noTextFade = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local textFadeHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    textFadeHint:SetPoint("TOPLEFT", textFadeCB, "BOTTOMLEFT", 20, -4)
-    textFadeHint:SetWidth(460); textFadeHint:SetJustifyH("LEFT")
-    textFadeHint:SetText("Stops chat messages fading out after a couple of minutes of nothing happening, so the backlog stays readable without scrolling or hovering.")
-    textFadeHint:SetTextColor(unpack(C.textDim))
-
-    local tabsCB = createCheckbox(panel, "Flat, always-visible chat tabs", 320)
-    tabsCB:SetPoint("TOPLEFT", textFadeHint, "BOTTOMLEFT", -20, -10)
+    local tabsCB = createCheckbox(panel, "Flat, always-visible chat tabs", 320,
+        "Removes the raised tab graphics and the border that lights up on hover, and keeps every tab name fully legible instead of fading out. Unticking needs a /reload.")
+    tabsCB:SetPoint("TOPLEFT", textFadeCB, "BOTTOMLEFT", 0, -6)
     tabsCB.OnChange = function(_, checked)
         getChatData().flatTabs = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local tabsHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    tabsHint:SetPoint("TOPLEFT", tabsCB, "BOTTOMLEFT", 20, -4)
-    tabsHint:SetWidth(460); tabsHint:SetJustifyH("LEFT")
-    tabsHint:SetText("Removes the raised tab graphics and the border that lights up on hover, and keeps every tab name fully legible instead of fading out. Unticking needs a /reload.")
-    tabsHint:SetTextColor(unpack(C.textDim))
-
     local function onTabColorChange()
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local tabColorRow, tabSwatch = addColorRow(panel, tabsHint, "Tab name color:",
+    local tabColorRow, tabSwatch = addColorRow(panel, tabsCB, "Tab name color:",
         function()
             local c = getChatData().tabColor or { 0.75, 0.75, 0.80 }
             return c[1], c[2], c[3]
         end,
-        function(r, g, b) getChatData().tabColor = { r, g, b } end, onTabColorChange)
+        function(r, g, b) getChatData().tabColor = { r, g, b } end, onTabColorChange, 20)
 
     local tabSelColorRow, tabSelSwatch = addColorRow(panel, tabColorRow, "Selected tab color:",
         function()
@@ -344,32 +266,26 @@ local function buildChatSettingsPanel(parent)
         end,
         function(r, g, b) getChatData().tabSelectedColor = { r, g, b } end, onTabColorChange)
 
-    local editBoxCB = createCheckbox(panel, "Skin the chat edit box", 300)
-    -- -20 steps back out of the indent the two colour rows inherit from
-    -- tabsHint, so this lines up with the checkboxes above rather than with the
-    -- sub-settings.
+    local editBoxCB = createCheckbox(panel, "Skin the chat edit box", 300,
+        "Replaces the box you type in with a flat themed one, its border tinted by the channel you're talking in, plus a remaining-character count. Unticking needs a /reload.")
+    -- -20 steps back out of the indent the two colour rows carry, so this lines
+    -- up with the checkboxes above rather than with the sub-settings.
     editBoxCB:SetPoint("TOPLEFT", tabSelColorRow, "BOTTOMLEFT", -20, -12)
     editBoxCB.OnChange = function(_, checked)
         getChatData().skinEditBox = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local editBoxHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    editBoxHint:SetPoint("TOPLEFT", editBoxCB, "BOTTOMLEFT", 20, -4)
-    editBoxHint:SetWidth(460); editBoxHint:SetJustifyH("LEFT")
-    editBoxHint:SetText("Replaces the box you type in with a flat themed one, its border tinted by the channel you're talking in, plus a remaining-character count. Unticking needs a /reload.")
-    editBoxHint:SetTextColor(unpack(C.textDim))
-
     -- Blizzard's chatStyle CVar rather than a setting of our own. It's stored
     -- per WoW account instead of in the profile, so it's the usual explanation
     -- for the edit box behaving differently on two accounts sharing a profile.
     local chatStyleRow = CreateFrame("Frame", nil, panel)
     chatStyleRow:SetSize(420, 24)
-    chatStyleRow:SetPoint("TOPLEFT", editBoxHint, "BOTTOMLEFT", -20, -12)
+    chatStyleRow:SetPoint("TOPLEFT", editBoxCB, "BOTTOMLEFT", 0, -12)
 
     local chatStyleLbl = chatStyleRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     chatStyleLbl:SetPoint("LEFT", 0, 0); chatStyleLbl:SetWidth(130); chatStyleLbl:SetJustifyH("LEFT")
-    chatStyleLbl:SetText("Edit box behaviour:"); chatStyleLbl:SetTextColor(unpack(C.textGrey))
+    chatStyleLbl:SetText("Edit box behaviour:"); UI.tint(chatStyleLbl, C.textGrey)
 
     local CHAT_STYLES = {
         { value = "classic", label = "Classic" },
@@ -378,75 +294,52 @@ local function buildChatSettingsPanel(parent)
     local chatStyleDD = createDropdown(chatStyleRow, 170, CHAT_STYLES,
         function() return getChatData().chatStyle or "classic" end,
         function(v) getChatData().chatStyle = v end,
-        function() if addon.Chat then addon.Chat.refresh() end end)
+        function() if addon.Chat then addon.Chat.refresh() end end,
+        "Edit box behaviour",
+        "Classic opens the edit box when you press Enter and hides it again once you're done. Instant Messenger leaves it on screen permanently. This is Blizzard's own chatStyle option (Interface > Social), which is saved per WoW account and not in your profile — if the edit box is stuck visible on one character but not another, this is why.")
     chatStyleDD:SetPoint("LEFT", chatStyleLbl, "RIGHT", 6, 0)
-
-    local chatStyleHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    chatStyleHint:SetPoint("TOPLEFT", chatStyleRow, "BOTTOMLEFT", 0, -4)
-    chatStyleHint:SetWidth(460); chatStyleHint:SetJustifyH("LEFT")
-    chatStyleHint:SetText("Classic opens the edit box when you press Enter and hides it again once you're done. Instant Messenger leaves it on screen permanently. This is Blizzard's own chatStyle option (Interface > Social), which is saved per WoW account and not in your profile — if the edit box is stuck visible on one character but not another, this is why.")
-    chatStyleHint:SetTextColor(unpack(C.textDim))
 
     -- Message decorations.
     local msgHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    msgHeader:SetPoint("TOPLEFT", chatStyleHint, "BOTTOMLEFT", 0, -18)
+    msgHeader:SetPoint("TOPLEFT", chatStyleRow, "BOTTOMLEFT", 0, -18)
     msgHeader:SetText("Messages")
-    msgHeader:SetTextColor(unpack(C.red))
+    UI.tint(msgHeader, C.red)
 
-    local arrowCB = createCheckbox(panel, "Copy arrow on each message", 320)
+    local arrowCB = createCheckbox(panel, "Copy arrow on each message", 320,
+        "Puts a small white arrow at the start of each line. Clicking it drops that line's text into the edit box, where you can read or copy it. Only affects messages printed from then on.")
     arrowCB:SetPoint("TOPLEFT", msgHeader, "BOTTOMLEFT", 0, -8)
     arrowCB.OnChange = function(_, checked)
         getChatData().copyArrow = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local arrowHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    arrowHint:SetPoint("TOPLEFT", arrowCB, "BOTTOMLEFT", 20, -4)
-    arrowHint:SetWidth(460); arrowHint:SetJustifyH("LEFT")
-    arrowHint:SetText("Puts a small white arrow at the start of each line. Clicking it drops that line's text into the edit box, where you can read or copy it. Only affects messages printed from then on.")
-    arrowHint:SetTextColor(unpack(C.textDim))
-
-    local copyBtnCB = createCheckbox(panel, "Copy button on the chat", 320)
-    copyBtnCB:SetPoint("TOPLEFT", arrowHint, "BOTTOMLEFT", -20, -10)
+    local copyBtnCB = createCheckbox(panel, "Copy button on the chat", 320,
+        "Adds a button to the chat's top-right that opens a window with the recent chat as selectable, copy-pasteable text.")
+    copyBtnCB:SetPoint("TOPLEFT", arrowCB, "BOTTOMLEFT", 0, -6)
     copyBtnCB.OnChange = function(_, checked)
         getChatData().copyButton = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local copyBtnHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    copyBtnHint:SetPoint("TOPLEFT", copyBtnCB, "BOTTOMLEFT", 20, -4)
-    copyBtnHint:SetWidth(460); copyBtnHint:SetJustifyH("LEFT")
-    copyBtnHint:SetText("Adds a button to the chat's top-right that opens a window with the recent chat as selectable, copy-pasteable text.")
-    copyBtnHint:SetTextColor(unpack(C.textDim))
-
-    local bottomBtnCB = createCheckbox(panel, "Jump-to-newest button on the chat", 320)
-    bottomBtnCB:SetPoint("TOPLEFT", copyBtnHint, "BOTTOMLEFT", -20, -10)
+    local bottomBtnCB = createCheckbox(panel, "Jump-to-newest button on the chat", 320,
+        "Sits just below the copy button and scrolls a scrolled-back chat frame straight back to the newest message. Blizzard's own version of this lives in the button column that \"Hide chat buttons\" removes.")
+    bottomBtnCB:SetPoint("TOPLEFT", copyBtnCB, "BOTTOMLEFT", 0, -6)
     bottomBtnCB.OnChange = function(_, checked)
         getChatData().scrollBottomButton = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local bottomBtnHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    bottomBtnHint:SetPoint("TOPLEFT", bottomBtnCB, "BOTTOMLEFT", 20, -4)
-    bottomBtnHint:SetWidth(460); bottomBtnHint:SetJustifyH("LEFT")
-    bottomBtnHint:SetText("Sits just below the copy button and scrolls a scrolled-back chat frame straight back to the newest message. Blizzard's own version of this lives in the button column that \"Hide the chat's side buttons\" removes.")
-    bottomBtnHint:SetTextColor(unpack(C.textDim))
-
-    local linkifyCB = createCheckbox(panel, "Detect links in messages", 320)
-    linkifyCB:SetPoint("TOPLEFT", bottomBtnHint, "BOTTOMLEFT", -20, -10)
+    local linkifyCB = createCheckbox(panel, "Detect links in messages", 320,
+        "Outlines any http(s) link as [link] and colours it. Clicking it drops the plain URL into the edit box, where you can read or copy it. Only affects messages printed from then on.")
+    linkifyCB:SetPoint("TOPLEFT", bottomBtnCB, "BOTTOMLEFT", 0, -6)
     linkifyCB.OnChange = function(_, checked)
         getChatData().linkifyURLs = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local linkifyHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    linkifyHint:SetPoint("TOPLEFT", linkifyCB, "BOTTOMLEFT", 20, -4)
-    linkifyHint:SetWidth(460); linkifyHint:SetJustifyH("LEFT")
-    linkifyHint:SetText("Outlines any http(s) link as [link] and colours it. Clicking it drops the plain URL into the edit box, where you can read or copy it. Only affects messages printed from then on.")
-    linkifyHint:SetTextColor(unpack(C.textDim))
-
-    local stampCB = createCheckbox(panel, "Show timestamps", 320)
-    stampCB:SetPoint("TOPLEFT", linkifyHint, "BOTTOMLEFT", -20, -10)
+    local stampCB = createCheckbox(panel, "Show timestamps", 320,
+        "Prints the time in front of each message. The copy arrow, when on, always sits to the left of the timestamp. Copying a line leaves the timestamp out.")
+    stampCB:SetPoint("TOPLEFT", linkifyCB, "BOTTOMLEFT", 0, -6)
     stampCB.OnChange = function(_, checked)
         getChatData().timestamps = checked
         if addon.Chat then addon.Chat.refresh() end
@@ -454,11 +347,11 @@ local function buildChatSettingsPanel(parent)
 
     local stampRow = CreateFrame("Frame", nil, panel)
     stampRow:SetSize(320, 22)
-    stampRow:SetPoint("TOPLEFT", stampCB, "BOTTOMLEFT", 0, -8)
+    stampRow:SetPoint("TOPLEFT", stampCB, "BOTTOMLEFT", 20, -8)
 
     local stampLbl = stampRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     stampLbl:SetPoint("LEFT", 0, 0); stampLbl:SetWidth(130); stampLbl:SetJustifyH("LEFT")
-    stampLbl:SetText("Format:"); stampLbl:SetTextColor(unpack(C.textGrey))
+    stampLbl:SetText("Format:"); UI.tint(stampLbl, C.textGrey)
 
     local STAMP_FORMATS = {
         { value = "%H:%M:%S",    label = "15:25:46" },
@@ -469,71 +362,47 @@ local function buildChatSettingsPanel(parent)
     local stampDD = createDropdown(stampRow, 150, STAMP_FORMATS,
         function() return getChatData().timestampFormat or "%H:%M:%S" end,
         function(v) getChatData().timestampFormat = v end,
-        function() if addon.Chat then addon.Chat.refresh() end end)
+        function() if addon.Chat then addon.Chat.refresh() end end,
+        "Timestamp format",
+        "Each option is written the way it will appear in front of a message.")
     stampDD:SetPoint("LEFT", stampLbl, "RIGHT", 6, 0)
 
-    local stampHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    stampHint:SetPoint("TOPLEFT", stampRow, "BOTTOMLEFT", 0, -4)
-    stampHint:SetWidth(460); stampHint:SetJustifyH("LEFT")
-    stampHint:SetText("Prints the time in front of each message. The copy arrow, when on, always sits to the left of the timestamp. Copying a line leaves the timestamp out.")
-    stampHint:SetTextColor(unpack(C.textDim))
-
-    local stampWidthCB = createCheckbox(panel, "Equal-width timestamps", 320)
-    stampWidthCB:SetPoint("TOPLEFT", stampHint, "BOTTOMLEFT", 0, -8)
+    local stampWidthCB = createCheckbox(panel, "Equal-width timestamps", 320,
+        "Off by default. Pads timestamps with spaces so they always take up the same width, even though some digits render narrower than others in most fonts. Only affects messages printed from then on.")
+    stampWidthCB:SetPoint("TOPLEFT", stampRow, "BOTTOMLEFT", 0, -8)
     stampWidthCB.OnChange = function(_, checked)
         getChatData().timestampEqualWidth = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local stampWidthHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    stampWidthHint:SetPoint("TOPLEFT", stampWidthCB, "BOTTOMLEFT", 20, -4)
-    stampWidthHint:SetWidth(460); stampWidthHint:SetJustifyH("LEFT")
-    stampWidthHint:SetText("Off by default. Pads timestamps with spaces so they always take up the same width, even though some digits render narrower than others in most fonts. Only affects messages printed from then on.")
-    stampWidthHint:SetTextColor(unpack(C.textDim))
-
-    local stickyCB = createCheckbox(panel, "Sticky chat", 320)
-    stickyCB:SetPoint("TOPLEFT", stampWidthHint, "BOTTOMLEFT", -20, -12)
+    local stickyCB = createCheckbox(panel, "Sticky chat", 320,
+        "Reopens the edit box on whatever channel you last spoke in, instead of dropping back to Say every time.")
+    stickyCB:SetPoint("TOPLEFT", stampWidthCB, "BOTTOMLEFT", -20, -12)
     stickyCB.OnChange = function(_, checked)
         getChatData().stickyChat = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local stickyHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    stickyHint:SetPoint("TOPLEFT", stickyCB, "BOTTOMLEFT", 20, -4)
-    stickyHint:SetWidth(460); stickyHint:SetJustifyH("LEFT")
-    stickyHint:SetText("Reopens the edit box on whatever channel you last spoke in, instead of dropping back to Say every time.")
-    stickyHint:SetTextColor(unpack(C.textDim))
-
-    local stickyWCB = createCheckbox(panel, "...including whispers", 320)
-    stickyWCB:SetPoint("TOPLEFT", stickyHint, "BOTTOMLEFT", 0, -6)
+    local stickyWCB = createCheckbox(panel, "...including whispers", 320,
+        "Off by default on purpose: with whispers sticky, a message meant for Say goes to whoever you last whispered.")
+    stickyWCB:SetPoint("TOPLEFT", stickyCB, "BOTTOMLEFT", 0, -6)
     stickyWCB.OnChange = function(_, checked)
         getChatData().stickyWhispers = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local stickyWHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    stickyWHint:SetPoint("TOPLEFT", stickyWCB, "BOTTOMLEFT", 20, -4)
-    stickyWHint:SetWidth(460); stickyWHint:SetJustifyH("LEFT")
-    stickyWHint:SetText("Off by default on purpose: with whispers sticky, a message meant for Say goes to whoever you last whispered.")
-    stickyWHint:SetTextColor(unpack(C.textDim))
-
-    local historyCB = createCheckbox(panel, "Remember sent messages", 320)
-    historyCB:SetPoint("TOPLEFT", stickyWHint, "BOTTOMLEFT", -20, -12)
+    local historyCB = createCheckbox(panel, "Remember sent messages", 320,
+        "With the edit box open, Up and Down step through messages you've sent before so you can re-send or edit them. Saved per character, and kept across sessions.")
+    historyCB:SetPoint("TOPLEFT", stickyWCB, "BOTTOMLEFT", 0, -12)
     historyCB.OnChange = function(_, checked)
         getChatData().chatHistory = checked
         if addon.Chat then addon.Chat.refresh() end
     end
 
-    local historyHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    historyHint:SetPoint("TOPLEFT", historyCB, "BOTTOMLEFT", 20, -4)
-    historyHint:SetWidth(460); historyHint:SetJustifyH("LEFT")
-    historyHint:SetText("With the edit box open, Up and Down step through messages you've sent before so you can re-send or edit them. Saved per character, and kept across sessions.")
-    historyHint:SetTextColor(unpack(C.textDim))
-
-    local historyRow, historyStepper = addStepperRow(panel, historyHint, "Messages kept:", 5, 100,
+    local historyRow, historyStepper = addStepperRow(panel, historyCB, "Messages kept:", 5, 100,
         function() return getChatData().historySize or 30 end,
         function(v) getChatData().historySize = v end,
-        function() if addon.Chat then addon.Chat.refresh() end end)
+        function() if addon.Chat then addon.Chat.refresh() end end, nil, 20)
 
     -- Edit box appearance. Kept in its own block below the toggles since it's
     -- the only part of this tab with more than a checkbox's worth of settings.
@@ -549,7 +418,7 @@ local function buildChatSettingsPanel(parent)
     local styleHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     styleHeader:SetPoint("TOPLEFT", historyRow, "BOTTOMLEFT", -20, -18)
     styleHeader:SetText("Edit Box Appearance")
-    styleHeader:SetTextColor(unpack(C.red))
+    UI.tint(styleHeader, C.red)
 
     local heightRow, heightStepper = addStepperRow(panel, styleHeader, "Height:", 14, 60,
         function() return style().height or 24 end,
@@ -570,20 +439,15 @@ local function buildChatSettingsPanel(parent)
         function() return style().bgOpacity or 90 end,
         function(v) style().bgOpacity = v end, onStyleChange, "%")
 
-    local channelCB = createCheckbox(panel, "Colour border by channel", 300)
+    local channelCB = createCheckbox(panel, "Colour border by channel", 300,
+        "Tints the border to match what you're typing in (Say, Party, Guild...). Turn it off to use the fixed border colour below instead.")
     channelCB:SetPoint("TOPLEFT", bgOpRow, "BOTTOMLEFT", 0, -8)
     channelCB.OnChange = function(_, checked)
         style().useChannelColor = checked
         onStyleChange()
     end
 
-    local channelHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    channelHint:SetPoint("TOPLEFT", channelCB, "BOTTOMLEFT", 20, -4)
-    channelHint:SetWidth(460); channelHint:SetJustifyH("LEFT")
-    channelHint:SetText("Tints the border to match what you're typing in (Say, Party, Guild...). Turn it off to use the fixed border colour below instead.")
-    channelHint:SetTextColor(unpack(C.textDim))
-
-    local bdColorRow, bdSwatch = addColorRow(panel, channelHint, "Border color:",
+    local bdColorRow, bdSwatch = addColorRow(panel, channelCB, "Border color:",
         function()
             local c = style().borderColor or { 0.30, 0.31, 0.42 }
             return c[1], c[2], c[3]
@@ -630,9 +494,8 @@ local function buildChatSettingsPanel(parent)
 end
 
 -- ── Panels sub-tab ──────────────────────────────────────────────────────────
--- Purely decorative backdrops meant to sit behind the chat. They don't move,
--- resize or reparent anything Blizzard owns — see ChatPanels.lua for why that
--- separation matters.
+-- Purely decorative backdrops behind the chat. They move, resize and reparent
+-- nothing Blizzard owns — see ChatPanels.lua for why that separation matters.
 
 -- The dock dropdown's options are "Name (#id)" strings — both the id AND the
 -- name are shown because bar names aren't guaranteed unique, but the id (the
@@ -673,7 +536,7 @@ local function buildPanelSection(panel, anchorAbove, index, xOffset)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", anchorAbove, "BOTTOMLEFT", xOffset or 0, -20)
     header:SetText("Panel " .. index)
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local enableCB = createCheckbox(panel, "Enable this panel", 260)
     enableCB:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
@@ -725,21 +588,18 @@ local function buildPanelSection(panel, anchorAbove, index, xOffset)
     local dockHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     dockHeader:SetPoint("TOPLEFT", bdOpRow, "BOTTOMLEFT", 0, -14)
     dockHeader:SetText("Dock to bar:")
-    dockHeader:SetTextColor(unpack(C.textGrey))
+    UI.tint(dockHeader, C.textGrey)
 
     local dockDD = createScrollDropdown(panel, 200, barDockOptions, function(opt)
         get().dockBarID = barIDFromOption(opt)
         onChange()
-    end)
+    end, {
+        tipTitle = "Dock to bar",
+        tipBody  = "Docked, the panel follows that bar instead of its own saved position.",
+    })
     dockDD:SetPoint("LEFT", dockHeader, "RIGHT", 6, 0)
 
-    local dockHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    dockHint:SetPoint("TOPLEFT", dockHeader, "BOTTOMLEFT", 0, -6)
-    dockHint:SetWidth(300); dockHint:SetJustifyH("LEFT")
-    dockHint:SetText("Docked, the panel follows that bar instead of its own saved position.")
-    dockHint:SetTextColor(unpack(C.textDim))
-
-    local offXRow, offXStepper = addStepperRow(panel, dockHint, "X offset:", -500, 500,
+    local offXRow, offXStepper = addStepperRow(panel, dockHeader, "X offset:", -500, 500,
         function() return get().dockOffsetX or 0 end,
         function(v) get().dockOffsetX = v end, onChange, "px")
 
@@ -773,42 +633,33 @@ local function buildPanelsPanel(parent)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
     header:SetText("Chat Panels")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
     desc:SetWidth(500); desc:SetJustifyH("LEFT")
     desc:SetText("Background panels to sit behind your chat. Drag a chat window by its tab and drop it onto a panel to dock it — the chat resizes to fit. Drag it off again to undock.")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
-    local lockCB = createCheckbox(panel, "Lock chat position", 300)
+    local lockCB = createCheckbox(panel, "Lock chat position", 300,
+        "Locked, the chat stays exactly where it is and can't be dragged. Unlock it to move it around or drop it onto a panel.")
     lockCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -10)
     lockCB.OnChange = function(_, checked)
         if addon.ChatDock then addon.ChatDock.setLocked(checked) end
     end
 
-    local lockHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lockHint:SetPoint("TOPLEFT", lockCB, "BOTTOMLEFT", 20, -4)
-    lockHint:SetWidth(460); lockHint:SetJustifyH("LEFT")
-    lockHint:SetText("Locked, the chat stays exactly where it is and can't be dragged. Unlock it to move it around or drop it onto a panel.")
-    lockHint:SetTextColor(unpack(C.textDim))
-
     local undockBtn = flatButton(panel, "Undock all", 110, 22)
-    undockBtn:SetPoint("TOPLEFT", lockHint, "BOTTOMLEFT", -20, -10)
+    undockBtn:SetPoint("TOPLEFT", lockCB, "BOTTOMLEFT", 0, -10)
     undockBtn:SetScript("OnClick", function()
         if addon.ChatDock then addon.ChatDock.undockAll() end
     end)
-
-    local undockHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    undockHint:SetPoint("TOPLEFT", undockBtn, "BOTTOMLEFT", 0, -6)
-    undockHint:SetWidth(460); undockHint:SetJustifyH("LEFT")
-    undockHint:SetText("Releases every docked chat window. They stay where they are — they just stop following their panel.")
-    undockHint:SetTextColor(unpack(C.textDim))
+    attachTooltip(undockBtn, "Undock all",
+        "Releases every docked chat window. They stay where they are — they just stop following their panel.")
 
     -- Both sections hang off the same top anchor; the x-offset on the second
     -- puts it in a column beside the first rather than below it.
-    local _, refresh1 = buildPanelSection(panel, undockHint, 1, 0)
-    local _, refresh2 = buildPanelSection(panel, undockHint, 2, 350)
+    local _, refresh1 = buildPanelSection(panel, undockBtn, 1, 0)
+    local _, refresh2 = buildPanelSection(panel, undockBtn, 2, 350)
 
     shell:HookScript("OnShow", function()
         lockCB:SetChecked(addon.ChatDock and addon.ChatDock.isLocked() or false)
@@ -841,20 +692,20 @@ local function getEditorPopup()
 
     local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", 0, -14)
-    title:SetTextColor(unpack(C.red))
+    UI.tint(title, C.red)
     panel.title = title
 
     local closeBtn = CreateFrame("Button", nil, panel)
     closeBtn:SetSize(24, 24)
     closeBtn:SetPoint("TOPRIGHT", -6, -6)
     local closeLbl = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    closeLbl:SetPoint("CENTER"); closeLbl:SetText("X"); closeLbl:SetTextColor(unpack(C.red))
+    closeLbl:SetPoint("CENTER"); closeLbl:SetText("X"); UI.tint(closeLbl, C.red)
     closeBtn:SetScript("OnClick", function() panel:Hide() end)
 
     local labelLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     labelLbl:SetPoint("TOPLEFT", 16, -46)
     labelLbl:SetText("Label:")
-    labelLbl:SetTextColor(unpack(C.textWhite))
+    UI.tint(labelLbl, C.textWhite)
 
     local labelBoxWrap = CreateFrame("Frame", nil, panel, "BackdropTemplate")
     labelBoxWrap:SetSize(280, 22)
@@ -863,13 +714,13 @@ local function getEditorPopup()
     local labelBox = CreateFrame("EditBox", nil, labelBoxWrap)
     labelBox:SetSize(266, 18); labelBox:SetPoint("CENTER")
     labelBox:SetAutoFocus(false); labelBox:SetMaxLetters(40)
-    labelBox:SetFontObject("GameFontNormal"); labelBox:SetTextColor(unpack(C.textWhite))
+    labelBox:SetFontObject("GameFontNormal"); UI.tint(labelBox, C.textWhite)
     panel.labelBox = labelBox
 
     local codeLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     codeLbl:SetPoint("TOPLEFT", labelLbl, "BOTTOMLEFT", 0, -16)
     codeLbl:SetText('Code (Lua, must return a string/number — e.g. return GetFramerate())')
-    codeLbl:SetTextColor(unpack(C.textWhite))
+    UI.tint(codeLbl, C.textWhite)
 
     local codeBoxWrap = CreateFrame("Frame", nil, panel, "BackdropTemplate")
     codeBoxWrap:SetPoint("TOPLEFT", codeLbl, "BOTTOMLEFT", 0, -6)
@@ -885,14 +736,14 @@ local function getEditorPopup()
     codeBox:SetFontObject("ChatFontNormal")
     codeBox:SetWidth(356)
     codeBox:SetAutoFocus(false)
-    codeBox:SetTextColor(unpack(C.textWhite))
+    UI.tint(codeBox, C.textWhite)
     codeScroll:SetScrollChild(codeBox)
     panel.codeBox = codeBox
 
     local pollLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     pollLbl:SetPoint("TOPLEFT", codeBoxWrap, "BOTTOMLEFT", 0, -12)
     pollLbl:SetText("Refresh every:")
-    pollLbl:SetTextColor(unpack(C.textGrey))
+    UI.tint(pollLbl, C.textGrey)
 
     local pollStepper = buildStepper(panel, {
         min = 0.5, max = 60, step = 0.5,
@@ -903,13 +754,13 @@ local function getEditorPopup()
     pollStepper:SetPoint("LEFT", pollLbl, "RIGHT", 8, 0)
     local pollSuffix = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     pollSuffix:SetPoint("LEFT", pollStepper.plus, "RIGHT", 4, 0)
-    pollSuffix:SetText("s"); pollSuffix:SetTextColor(unpack(C.textDim))
+    pollSuffix:SetText("s"); UI.tint(pollSuffix, C.textDim)
     panel.pollStepper = pollStepper
 
     local errText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     errText:SetPoint("TOPLEFT", pollLbl, "BOTTOMLEFT", 0, -10)
     errText:SetWidth(388); errText:SetJustifyH("LEFT")
-    errText:SetTextColor(unpack(C.red))
+    UI.tint(errText, C.red)
     panel.errText = errText
 
     local saveBtn = flatButton(panel, "Save", 90, 24)
@@ -968,14 +819,11 @@ local function openEditor(id)
     panel:Show()
 end
 -- ── DataTexts sub-tab ────────────────────────────────────────────────────────
--- Bar-centric: pick (or create) a bar on the left, configure that bar's look
--- and which datatexts it carries on the right. Bars are positioned through
--- the addon's Edit Mode, same as every other movable element.
+-- Bar-centric: pick or create a bar on the left, configure its look and contents
+-- on the right. Bars are positioned through the addon's Edit Mode.
 local function buildDataTextsPanel(parent)
-    -- Trinkets -> General style: header/enable up top, then an inner left
-    -- sidebar (DataText Bars / Labels) with the content to its right. The
-    -- DataText Bars section splits further into Create / Stats tabs; the Labels
-    -- section into General / Blacklist / Custom Stats.
+    -- Header/enable up top, then an inner left sidebar (DataText Bars / Labels) with
+    -- content to its right, same as Trinkets → General.
     local panel = CreateFrame("Frame", nil, parent)
     panel:SetAllPoints()
     panel:Hide()
@@ -988,13 +836,13 @@ local function buildDataTextsPanel(parent)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
     header:SetText("DataTexts")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
     desc:SetWidth(560); desc:SetJustifyH("LEFT")
     desc:SetText("Create as many bars as you like, put whichever stats you want on each, and drag them anywhere via Edit Mode.")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
     local enableCB = createCheckbox(panel, "Enable DataText bars", 260)
     enableCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -10)
@@ -1003,10 +851,9 @@ local function buildDataTextsPanel(parent)
         if addon.DataTexts then addon.DataTexts.refresh() end
     end
 
-    -- Every scrollable content area, so re-opening (or switching to) a tab can
-    -- force a re-fit: a makeScrollPanel shown while an ancestor was hidden won't
-    -- re-fire OnShow when the ancestor reappears, leaving its scroll range
-    -- stale. Hide+Show re-triggers its own refit with valid geometry.
+    -- Every scrollable content area, so re-opening a tab can force a re-fit: a
+    -- makeScrollPanel shown while an ancestor was hidden won't re-fire OnShow when
+    -- the ancestor reappears, leaving its scroll range stale. Hide+Show refits.
     local scrollShells = {}
     local function forceActiveRefit()
         for _, sh in ipairs(scrollShells) do
@@ -1096,13 +943,13 @@ local function buildDataTextsPanel(parent)
     local function styleSideBtn(btn, active)
         btn.active = active
         if active then
-            btn:SetBackdropColor(unpack(C.tabActive))
-            btn:SetBackdropBorderColor(unpack(C.tabActiveBdr))
-            btn.text:SetTextColor(unpack(C.textWhite))
+            UI.tintBg(btn, C.tabActive)
+            UI.tintBorder(btn, C.tabActiveBdr)
+            UI.tint(btn.text, C.textWhite)
         else
-            btn:SetBackdropColor(unpack(C.tabIdle))
-            btn:SetBackdropBorderColor(unpack(C.tabBorder))
-            btn.text:SetTextColor(unpack(C.textGrey))
+            UI.tintBg(btn, C.tabIdle)
+            UI.tintBorder(btn, C.tabBorder)
+            UI.tint(btn.text, C.textGrey)
         end
     end
 
@@ -1166,7 +1013,7 @@ local function buildDataTextsPanel(parent)
 
     local cfgTitle = createInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     cfgTitle:SetPoint("TOPLEFT", cfgAnchor, "TOPLEFT", 0, 0)
-    cfgTitle:SetTextColor(unpack(C.red))
+    UI.tint(cfgTitle, C.red)
 
     local moveBtn = flatButton(createInner, "Move", 70, 22)
     moveBtn:SetPoint("LEFT", cfgTitle, "RIGHT", 12, 0)
@@ -1198,7 +1045,7 @@ local function buildDataTextsPanel(parent)
 
     local nameLbl = nameRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     nameLbl:SetPoint("LEFT", 0, 0); nameLbl:SetWidth(130); nameLbl:SetJustifyH("LEFT")
-    nameLbl:SetText("Bar name:"); nameLbl:SetTextColor(unpack(C.textGrey))
+    nameLbl:SetText("Bar name:"); UI.tint(nameLbl, C.textGrey)
 
     local nameWrap = CreateFrame("Frame", nil, nameRow, "BackdropTemplate")
     nameWrap:SetSize(170, 22)
@@ -1211,7 +1058,7 @@ local function buildDataTextsPanel(parent)
     nameBox:SetAutoFocus(false)
     nameBox:SetMaxLetters(32)
     nameBox:SetFontObject("GameFontNormal")
-    nameBox:SetTextColor(unpack(C.textWhite))
+    UI.tint(nameBox, C.textWhite)
     nameBox:SetTextInsets(4, 4, 0, 0)
 
     local function commitName()
@@ -1250,16 +1097,12 @@ local function buildDataTextsPanel(parent)
 
     local paddingRow, paddingStepper = addStepperRow(createInner, heightRow, "Side padding:", 0, 200,
         function() local c = getSelBar(); return c and c.padding or 6 end,
-        function(v) local c = getSelBar(); if c then c.padding = v end end, onBarChange, "px")
+        function(v) local c = getSelBar(); if c then c.padding = v end end, onBarChange, "px", nil,
+        "Inset from each end of the bar. The gap between datatexts is worked out from what's left, spread evenly — so raising this draws them together.")
 
-    local paddingHint = createInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    paddingHint:SetPoint("TOPLEFT", paddingRow, "BOTTOMLEFT", 0, -4)
-    paddingHint:SetWidth(430); paddingHint:SetJustifyH("LEFT")
-    paddingHint:SetText("Inset from each end of the bar. The gap between datatexts is worked out from what's left, spread evenly — so raising this draws them together.")
-    paddingHint:SetTextColor(unpack(C.textDim))
-
-    local fixedWCB = createCheckbox(createInner, "Fixed width", 300)
-    fixedWCB:SetPoint("TOPLEFT", paddingHint, "BOTTOMLEFT", 0, -10)
+    local fixedWCB = createCheckbox(createInner, "Fixed width", 300,
+        "Keeps the bar at a set width instead of growing to fit. Datatexts that don't fit are shortened rather than dropped, so nothing disappears without warning.")
+    fixedWCB:SetPoint("TOPLEFT", paddingRow, "BOTTOMLEFT", 0, -10)
     fixedWCB.OnChange = function(_, checked)
         local c = getSelBar()
         if not c then return end
@@ -1267,15 +1110,9 @@ local function buildDataTextsPanel(parent)
         onBarChange()
     end
 
-    local fixedWHint = createInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    fixedWHint:SetPoint("TOPLEFT", fixedWCB, "BOTTOMLEFT", 20, -4)
-    fixedWHint:SetWidth(430); fixedWHint:SetJustifyH("LEFT")
-    fixedWHint:SetText("Keeps the bar at a set width instead of growing to fit. Datatexts that don't fit are shortened rather than dropped, so nothing disappears without warning.")
-    fixedWHint:SetTextColor(unpack(C.textDim))
-
     local fixedWAnchor = CreateFrame("Frame", nil, createInner)
     fixedWAnchor:SetSize(1, 1)
-    fixedWAnchor:SetPoint("TOPLEFT", fixedWHint, "BOTTOMLEFT", -20, 0)
+    fixedWAnchor:SetPoint("TOPLEFT", fixedWCB, "BOTTOMLEFT", 0, -4)
 
     local widthRow, widthStepper = addStepperRow(createInner, fixedWAnchor, "Width:", 40, 1200,
         function() local c = getSelBar(); return c and c.width or 300 end,
@@ -1336,13 +1173,13 @@ local function buildDataTextsPanel(parent)
             row.text:SetText(bars[id].name or ("Bar " .. id))
             row.active = (id == selectedBarID)
             if row.active then
-                row:SetBackdropColor(unpack(C.tabActive))
-                row:SetBackdropBorderColor(unpack(C.tabActiveBdr))
-                row.text:SetTextColor(unpack(C.textWhite))
+                UI.tintBg(row, C.tabActive)
+                UI.tintBorder(row, C.tabActiveBdr)
+                UI.tint(row.text, C.textWhite)
             else
-                row:SetBackdropColor(unpack(C.tabIdle))
-                row:SetBackdropBorderColor(unpack(C.tabBorder))
-                row.text:SetTextColor(unpack(C.textGrey))
+                UI.tintBg(row, C.tabIdle)
+                UI.tintBorder(row, C.tabBorder)
+                UI.tint(row.text, C.textGrey)
             end
             row:SetScript("OnClick", function()
                 selectedBarID = id
@@ -1358,7 +1195,7 @@ local function buildDataTextsPanel(parent)
     local textsHeader = statsInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     textsHeader:SetPoint("TOPLEFT", 14, -14)
     textsHeader:SetText("Stats on this bar")
-    textsHeader:SetTextColor(unpack(C.red))
+    UI.tint(textsHeader, C.red)
 
     local textsAnchor = CreateFrame("Frame", nil, statsInner)
     textsAnchor:SetSize(1, 1)
@@ -1397,13 +1234,13 @@ local function buildDataTextsPanel(parent)
     local orderHeader = statsInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     orderHeader:SetPoint("TOPLEFT", textsAnchor, "TOPLEFT", 0, -(TEXT_PER_COL * TEXT_ROW_H) - 14)
     orderHeader:SetText("Order")
-    orderHeader:SetTextColor(unpack(C.red))
+    UI.tint(orderHeader, C.red)
 
     local orderHint = statsInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     orderHint:SetPoint("TOPLEFT", orderHeader, "BOTTOMLEFT", 0, -4)
     orderHint:SetWidth(460); orderHint:SetJustifyH("LEFT")
     orderHint:SetText("Left to right across the bar. Use the arrows to move a stat.")
-    orderHint:SetTextColor(unpack(C.textDim))
+    UI.tint(orderHint, C.textDim)
 
     local orderRows = {}
     local ORDER_ROW_H = 24
@@ -1415,12 +1252,12 @@ local function buildDataTextsPanel(parent)
 
         local idx = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         idx:SetPoint("LEFT", 8, 0); idx:SetWidth(22); idx:SetJustifyH("LEFT")
-        idx:SetTextColor(unpack(C.textDim))
+        UI.tint(idx, C.textDim)
         row.idx = idx
 
         local name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         name:SetPoint("LEFT", idx, "RIGHT", 2, 0)
-        name:SetTextColor(unpack(C.textWhite))
+        UI.tint(name, C.textWhite)
         row.name = name
 
         row.downBtn = flatButton(row, "|cffffffff>|r", 24, 18)
@@ -1476,8 +1313,8 @@ local function buildDataTextsPanel(parent)
     -- Shown/hidden together when a bar is (de)selected. Spans both Create and
     -- Stats tabs, since both only make sense with a bar selected.
     local cfgWidgets = {
-        cfgTitle, moveBtn, delBtn, nameRow, enableBarCB, heightRow, paddingRow, paddingHint,
-        fixedWCB, fixedWHint, widthRow, minWRow, borderRow,
+        cfgTitle, moveBtn, delBtn, nameRow, enableBarCB, heightRow, paddingRow,
+        fixedWCB, widthRow, minWRow, borderRow,
         bgColorRow, bgOpRow, bdColorRow, bdOpRow,
         textsHeader, orderHeader, orderHint,
     }
@@ -1486,7 +1323,7 @@ local function buildDataTextsPanel(parent)
     local valueColorHeader = genInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     valueColorHeader:SetPoint("TOPLEFT", 14, -14)
     valueColorHeader:SetText("Stat Value Color")
-    valueColorHeader:SetTextColor(unpack(C.red))
+    UI.tint(valueColorHeader, C.red)
 
     local valueColorRow, valueColorSwatch = addColorRow(genInner, valueColorHeader, "Value color:",
         function()
@@ -1495,24 +1332,20 @@ local function buildDataTextsPanel(parent)
         end,
         function(r, g, b) getDTData().valueColor = { r, g, b } end,
         function() if addon.DataTexts then addon.DataTexts.refresh() end end)
-
-    local valueColorHint = genInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    valueColorHint:SetPoint("TOPLEFT", valueColorRow, "BOTTOMLEFT", 0, -4)
-    valueColorHint:SetWidth(460); valueColorHint:SetJustifyH("LEFT")
-    valueColorHint:SetText("Colours just the value on every stat, never its label - except FPS/Latency, Durability and Gold, which already colour themselves.")
-    valueColorHint:SetTextColor(unpack(C.textDim))
+    attachTooltip(valueColorSwatch, "Value color",
+        "Colours just the value on every stat, never its label - except FPS/Latency, Durability and Gold, which already colour themselves.")
 
     -- ══ Labels › General (text prefixes) ══════════════════════════════════════
     local prefixHeader = genInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    prefixHeader:SetPoint("TOPLEFT", valueColorHint, "BOTTOMLEFT", 0, -18)
+    prefixHeader:SetPoint("TOPLEFT", valueColorRow, "BOTTOMLEFT", 0, -18)
     prefixHeader:SetText("Labels")
-    prefixHeader:SetTextColor(unpack(C.red))
+    UI.tint(prefixHeader, C.red)
 
     local prefixHint = genInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     prefixHint:SetPoint("TOPLEFT", prefixHeader, "BOTTOMLEFT", 0, -4)
     prefixHint:SetWidth(460); prefixHint:SetJustifyH("LEFT")
     prefixHint:SetText("The text shown in front of each value — change \"Stamina: \" to \"Stam: \", or clear it to show the number alone. Trailing spaces are kept.")
-    prefixHint:SetTextColor(unpack(C.textGrey))
+    UI.tint(prefixHint, C.textGrey)
 
     local prefixRows = {}
     local PREFIX_ROW_H = 26
@@ -1523,21 +1356,21 @@ local function buildDataTextsPanel(parent)
 
         local name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         name:SetPoint("LEFT", 0, 0); name:SetWidth(130); name:SetJustifyH("LEFT")
-        name:SetTextColor(unpack(C.textGrey))
+        UI.tint(name, C.textGrey)
         row.name = name
 
         local wrap = CreateFrame("Frame", nil, row, "BackdropTemplate")
         wrap:SetSize(160, 22)
         wrap:SetPoint("LEFT", name, "RIGHT", 6, 0)
         applyBackdrop(wrap, 1, C.panelDark, C.tabBorder)
-        wrap:SetScript("OnEnter", function(sf) sf:SetBackdropBorderColor(unpack(C.red)) end)
-        wrap:SetScript("OnLeave", function(sf) sf:SetBackdropBorderColor(unpack(C.tabBorder)) end)
+        wrap:SetScript("OnEnter", function(sf) UI.tintBorder(sf, C.red) end)
+        wrap:SetScript("OnLeave", function(sf) UI.tintBorder(sf, C.tabBorder) end)
 
         local box = CreateFrame("EditBox", nil, wrap)
         box:SetSize(148, 16); box:SetPoint("CENTER")
         box:SetAutoFocus(false); box:SetMaxLetters(24)
         box:SetFontObject("GameFontNormalSmall")
-        box:SetTextColor(unpack(C.textWhite))
+        UI.tint(box, C.textWhite)
         box:SetTextInsets(4, 4, 0, 0)
         row.box = box
 
@@ -1587,13 +1420,13 @@ local function buildDataTextsPanel(parent)
     local goldHeader = blInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     goldHeader:SetPoint("TOPLEFT", 14, -14)
     goldHeader:SetText("Gold Tooltip")
-    goldHeader:SetTextColor(unpack(C.red))
+    UI.tint(goldHeader, C.red)
 
     local goldHint = blInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     goldHint:SetPoint("TOPLEFT", goldHeader, "BOTTOMLEFT", 0, -4)
     goldHint:SetWidth(460); goldHint:SetJustifyH("LEFT")
     goldHint:SetText("Hovering the Gold datatext lists every character it has seen, and their total. Characters listed here are left out of both the list and the total. Either \"Name\" or \"Name - Realm\" works.")
-    goldHint:SetTextColor(unpack(C.textGrey))
+    UI.tint(goldHint, C.textGrey)
 
     local function blacklist()
         local d = getDTData()
@@ -1610,7 +1443,7 @@ local function buildDataTextsPanel(parent)
     blBox:SetSize(188, 16); blBox:SetPoint("CENTER")
     blBox:SetAutoFocus(false); blBox:SetMaxLetters(48)
     blBox:SetFontObject("GameFontNormalSmall")
-    blBox:SetTextColor(unpack(C.textWhite))
+    UI.tint(blBox, C.textWhite)
     blBox:SetTextInsets(4, 4, 0, 0)
 
     local blRows = {}
@@ -1646,7 +1479,7 @@ local function buildDataTextsPanel(parent)
 
         local name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         name:SetPoint("LEFT", 8, 0)
-        name:SetTextColor(unpack(C.textWhite))
+        UI.tint(name, C.textWhite)
         row.name = name
 
         row.delBtn = flatButton(row, "Remove", 70, 18)
@@ -1676,13 +1509,13 @@ local function buildDataTextsPanel(parent)
     local customHeader = custInner:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     customHeader:SetPoint("TOPLEFT", 14, -14)
     customHeader:SetText("Custom Stats")
-    customHeader:SetTextColor(unpack(C.red))
+    UI.tint(customHeader, C.red)
 
     local customDesc = custInner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     customDesc:SetPoint("TOPLEFT", customHeader, "BOTTOMLEFT", 0, -4)
     customDesc:SetWidth(560); customDesc:SetJustifyH("LEFT")
     customDesc:SetText("Write a small Lua snippet that returns the text to display, then tick it on a bar's Stats list. Runs only on your own client.")
-    customDesc:SetTextColor(unpack(C.textGrey))
+    UI.tint(customDesc, C.textGrey)
 
     local newCustomBtn = flatButton(custInner, "New Custom Stat", 160, 24)
     newCustomBtn:SetPoint("TOPLEFT", customDesc, "BOTTOMLEFT", 0, -10)
@@ -1696,7 +1529,7 @@ local function buildDataTextsPanel(parent)
 
         local nameFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         nameFS:SetPoint("LEFT", 8, 0)
-        nameFS:SetTextColor(unpack(C.textWhite))
+        UI.tint(nameFS, C.textWhite)
         row.nameFS = nameFS
 
         row.editBtn = flatButton(row, "Edit", 60, 20)
@@ -1784,6 +1617,818 @@ local function buildDataTextsPanel(parent)
     return panel
 end
 
+-- ── Shared bits for the Chat Windows / Channels sub-tabs ────────────────────
+-- Both tabs are about pushing one character's chat setup onto every other, so
+-- they share the same "act now" affordances: a status line under the buttons and
+-- a grid of tick boxes.
+
+-- A themed single-line text box. The blacklist row below does this inline, but
+-- these two tabs need five of them, so it's worth a factory.
+local function makeEditBox(parent, w, maxLetters)
+    local wrap = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    wrap:SetSize(w, 22)
+    applyBackdrop(wrap, 1, C.panelDark, C.tabBorder)
+    wrap:SetScript("OnEnter", function(s) UI.tintBorder(s, C.red) end)
+    wrap:SetScript("OnLeave", function(s) UI.tintBorder(s, C.tabBorder) end)
+
+    local box = CreateFrame("EditBox", nil, wrap)
+    box:SetSize(w - 12, 16); box:SetPoint("CENTER")
+    box:SetAutoFocus(false); box:SetMaxLetters(maxLetters or 48)
+    box:SetFontObject("GameFontNormalSmall")
+    box:SetTextInsets(4, 4, 0, 0)
+    UI.tint(box, C.textWhite)
+    box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+    wrap.box = box
+    return wrap, box
+end
+
+-- Re-fitting the scroll child twice: the grids below resize during a refresh, and
+-- a frame's GetBottom() can still report its old position on the frame that
+-- changed, which measures the panel short. The deferred pass reads the settled
+-- layout — the same two-pass shape makeScrollPanel uses for its own OnShow.
+local function deferredRefit(refit)
+    return function()
+        refit()
+        C_Timer.After(0, refit)
+    end
+end
+
+-- A pooled grid of checkboxes laid out in columns. The item list is handed in on
+-- every refresh rather than at build time, because the channel grids are driven
+-- by whatever channels exist right now, which changes while the panel is open.
+--
+-- The grid resizes itself to the rows it ended up with, so anything anchored
+-- below it moves with the content instead of overlapping or leaving a hole.
+local function makeCheckGrid(parent, cols, colW, rowH)
+    local grid = CreateFrame("Frame", nil, parent)
+    grid:SetSize(cols * colW, 1)
+
+    local pool = {}
+    -- items = { { key, label, desc }, … }; isChecked(key) -> boolean.
+    function grid.setItems(items, isChecked)
+        while #pool < #items do
+            local cb = createCheckbox(grid, "", colW - 6)
+            cb.text:SetFontObject("GameFontNormalSmall")
+            pool[#pool + 1] = cb
+        end
+
+        for i, item in ipairs(items) do
+            local cb  = pool[i]
+            local col = (i - 1) % cols
+            local row = math.floor((i - 1) / cols)
+            cb:ClearAllPoints()
+            cb:SetPoint("TOPLEFT", grid, "TOPLEFT", col * colW, -row * rowH)
+            cb.text:SetText(item.label)
+            cb:SetChecked(isChecked(item.key) and true or false)
+            cb.OnChange = function(_, checked)
+                if grid.OnToggle then grid.OnToggle(item.key, checked) end
+            end
+            cb:Show()
+        end
+        for i = #items + 1, #pool do pool[i]:Hide() end
+
+        grid:SetHeight(math.max(1, math.ceil(#items / cols) * rowH))
+    end
+
+    return grid
+end
+
+-- ── Chat Windows sub-tab ────────────────────────────────────────────────────
+local function buildChatWindowsPanel(parent)
+    local shell, panel, rawRefit = makeScrollPanel(parent)
+    local refit = deferredRefit(rawRefit)
+
+    local CW = function() return addon.ChatWindows end
+    local selected = 1
+
+    local function windows()
+        local mod = CW()
+        return (mod and mod.list()) or {}
+    end
+    local function selectedCfg() return windows()[selected] end
+
+    local refreshAll   -- forward declaration; the row handlers call it
+
+    local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    header:SetPoint("TOPLEFT", 14, -14)
+    header:SetText("Chat Windows")
+    UI.tint(header, C.red)
+
+    local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
+    desc:SetWidth(620); desc:SetJustifyH("LEFT")
+    desc:SetText("WoW saves your chat windows per character, so every alt starts with just General and the Combat Log. The list below lives in your profile, and at login each character's tabs are reconciled against it — missing windows created, the rest renamed and refilled — so they all end up with the same tabs showing the same things. Closing windows the list doesn't mention is opt-in below. The first two are WoW's own and can't be removed, only renamed.")
+    UI.tint(desc, C.textGrey)
+
+    local enableCB = createCheckbox(panel, "Build these chat windows on login", 320,
+        "A few seconds after you log in, this character's tabs are reconciled against the list below: missing windows are created, and the rest are renamed and refilled to match.")
+    enableCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -12)
+    enableCB.OnChange = function(_, checked)
+        addon.db.settings.chatWindows = addon.db.settings.chatWindows or {}
+        addon.db.settings.chatWindows.enabled = checked
+    end
+
+    local closeCB = createCheckbox(panel, "Close windows that aren't on the list", 320,
+        "Makes the reconciliation work both ways, so a character with leftover tabs from an older layout ends up matching the list exactly. Off by default, since it's the half that destroys something: leave it off and windows are only ever added. The first two are WoW's own and are never closed, and neither are open whisper tabs.")
+    closeCB:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -6)
+    closeCB.OnChange = function(_, checked)
+        addon.db.settings.chatWindows = addon.db.settings.chatWindows or {}
+        addon.db.settings.chatWindows.closeExtra = checked
+    end
+
+    local status = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+    local applyBtn = flatButton(panel, "Apply Now", 100, 22)
+    applyBtn:SetPoint("TOPLEFT", closeCB, "BOTTOMLEFT", 0, -12)
+    attachTooltip(applyBtn, "Apply Now",
+        "Runs the same pass that happens at login against this character, without waiting for a reload.")
+    applyBtn:SetScript("OnClick", function()
+        local mod = CW()
+        if not mod then return end
+        if not mod.isEnabled() then
+            status:SetText("Tick the box above (and \"Enable Chat System\" on the Chat tab) first.")
+            return
+        end
+        local unplaced, closed = mod.apply()
+        unplaced, closed = unplaced or 0, closed or 0
+        if unplaced > 0 then
+            -- WoW allows ten windows and no more; saying so beats a list entry
+            -- that silently never appears.
+            status:SetText(("Applied — but %d window%s couldn't be created; every chat window slot is in use.")
+                :format(unplaced, unplaced == 1 and "" or "s"))
+        elseif closed > 0 then
+            status:SetText(("Applied — %d window%s closed to match the list.")
+                :format(closed, closed == 1 and " was" or "s were"))
+        else
+            status:SetText("Applied to this character.")
+        end
+        refreshAll()
+    end)
+
+    local captureBtn = flatButton(panel, "Capture This Character", 170, 22)
+    captureBtn:SetPoint("LEFT", applyBtn, "RIGHT", 8, 0)
+    attachTooltip(captureBtn, "Capture This Character",
+        "Replaces the list below with the chat windows this character already has, so a setup you built by hand can be pushed to everyone else. Temporary whisper tabs are skipped.")
+    captureBtn:SetScript("OnClick", function()
+        local mod = CW()
+        if not mod then return end
+        UI.showConfirmPopup({
+            title       = "Capture Chat Windows",
+            message     = "Replace the list below with this character's current chat windows?",
+            confirmText = "Capture",
+            onConfirm   = function()
+                local n = mod.captureCurrent()
+                selected = 1
+                status:SetText(("Captured %d window%s."):format(n, n == 1 and "" or "s"))
+                refreshAll()
+            end,
+        })
+    end)
+
+    status:SetPoint("TOPLEFT", applyBtn, "BOTTOMLEFT", 0, -6)
+    status:SetWidth(620); status:SetJustifyH("LEFT")
+    UI.tint(status, C.red)
+
+    -- Every edit on this tab lands on the live window as it's made, so nothing
+    -- here needs Apply Now. Changes arrive in bursts though — someone ticking six
+    -- message types in a row — and each one would otherwise drive a full rewrite
+    -- of the window's lists plus a restyle of every chat frame, so a burst is
+    -- coalesced into one pass. Pending windows are tracked by index rather than a
+    -- single flag: switching window mid-burst must not drop the earlier edit.
+    local livePending, liveQueued = {}, false
+    local function liveApply()
+        local mod = CW()
+        if not mod then return end
+        if not mod.isEnabled() then
+            status:SetText("Saved to the list — tick the box above for changes to reach the chat window.")
+            return
+        end
+
+        livePending[selected] = true
+        if liveQueued then return end
+        liveQueued = true
+        C_Timer.After(0.25, function()
+            liveQueued = false
+            local todo = livePending
+            livePending = {}
+            for index in pairs(todo) do mod.applyOne(index) end
+
+            -- A ticked channel only reaches a window this character has actually
+            -- joined. Naming the ones that didn't take beats leaving the box
+            -- ticked and the window silent with no explanation.
+            local cfg = selectedCfg()
+            local wanted = cfg and cfg.channels
+            if wanted and #wanted > 0 then
+                local live, missing = mod.liveChannels(selected), {}
+                for _, name in ipairs(wanted) do
+                    if not live[name:lower()] then missing[#missing + 1] = name end
+                end
+                status:SetText(#missing > 0
+                    and ("Not receiving yet: " .. table.concat(missing, ", ")
+                         .. " — add them on the Channels tab so this character joins them.")
+                    or "")
+            end
+
+            -- A toggle can create a window that didn't exist yet, which clears
+            -- its "(new)" marker.
+            refreshAll()
+        end)
+    end
+
+    -- ── Window list ─────────────────────────────────────────────────────────
+    local newBtn = flatButton(panel, "New Window", 110, 22)
+    newBtn:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -10)
+    newBtn:SetScript("OnClick", function()
+        local mod = CW()
+        if not mod then return end
+        local index, err = mod.addWindow()
+        if not index then status:SetText(err or "") return end
+        selected = index
+
+        -- Opened on the spot rather than at the next login: a "New Window" button
+        -- that adds a row and nothing else reads as broken.
+        if not mod.isEnabled() then
+            status:SetText("Added to the list — tick the box above for it to be created in game.")
+        elseif not mod.applyOne(index) then
+            status:SetText("Added to the list, but every chat window slot is already in use.")
+        else
+            status:SetText("")
+        end
+        refreshAll()
+    end)
+
+    local listCol = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+    listCol:SetPoint("TOPLEFT", newBtn, "BOTTOMLEFT", 0, -8)
+    -- Tall enough for all ten windows WoW allows, so the box never has to scroll.
+    listCol:SetSize(170, 3 + 10 * 26 + 3)
+    applyBackdrop(listCol, 1, C.panelDark)
+
+    local cfgAnchor = CreateFrame("Frame", nil, panel)
+    cfgAnchor:SetSize(1, 1)
+    cfgAnchor:SetPoint("TOPLEFT", listCol, "TOPRIGHT", 14, 0)
+
+    local listRows = {}
+    local function makeListRow()
+        local row = createSideTab(listCol, "", 24)
+        row.text:SetFontObject("GameFontNormalSmall")
+        return row
+    end
+
+    -- ── Selected window ─────────────────────────────────────────────────────
+    local nameRow = CreateFrame("Frame", nil, panel)
+    nameRow:SetSize(420, 24)
+    nameRow:SetPoint("TOPLEFT", cfgAnchor, "TOPLEFT", 0, 0)
+
+    local nameLbl = nameRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    nameLbl:SetPoint("LEFT", 0, 0); nameLbl:SetWidth(90); nameLbl:SetJustifyH("LEFT")
+    nameLbl:SetText("Window name:"); UI.tint(nameLbl, C.textGrey)
+
+    local nameWrap, nameBox = makeEditBox(nameRow, 170, 32)
+    nameWrap:SetPoint("LEFT", nameLbl, "RIGHT", 6, 0)
+
+    local function commitName()
+        local cfg, mod = selectedCfg(), CW()
+        if not (cfg and mod) then return end
+        local text = (nameBox:GetText() or ""):match("^%s*(.-)%s*$")
+        -- An empty box is a mis-edit rather than a request for a nameless tab.
+        if text == "" or text == cfg.name then
+            nameBox:SetText(cfg.name or "")
+            return
+        end
+        if not mod.renameWindow(selected, text) and not mod.isEnabled() then
+            -- Renaming is the one edit here with an immediate, visible effect, so
+            -- it's worth saying when the module being off is what swallowed it.
+            status:SetText("Renamed on the list — tick the box above for it to reach the chat tab.")
+        end
+        refreshAll()
+    end
+    nameBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    nameBox:SetScript("OnEditFocusLost", commitName)
+
+    -- Reordering swaps which window an entry drives, so the two tabs trade names
+    -- and contents on the spot. Both have to be pushed to the client, not just
+    -- the one that moved.
+    local function moveSelected(delta)
+        local mod = CW()
+        if not (mod and mod.moveWindow(selected, delta)) then return end
+        local from, to = selected, selected + delta
+        selected = to
+        mod.applyOne(to)
+        mod.applyOne(from)
+        status:SetText("")
+        refreshAll()
+    end
+
+    local upBtn = flatButton(nameRow, "^", 22, 22, "GameFontNormalSmall")
+    upBtn:SetPoint("LEFT", nameWrap, "RIGHT", 8, 0)
+    attachTooltip(upBtn, "Move Up",
+        "Moves this window one place earlier in the list, swapping it with the one above. The first two are WoW's own and always lead, so nothing moves past them.")
+    upBtn:SetScript("OnClick", function() moveSelected(-1) end)
+
+    local downBtn = flatButton(nameRow, "v", 22, 22, "GameFontNormalSmall")
+    downBtn:SetPoint("LEFT", upBtn, "RIGHT", 2, 0)
+    attachTooltip(downBtn, "Move Down",
+        "Moves this window one place later in the list, swapping it with the one below.")
+    downBtn:SetScript("OnClick", function() moveSelected(1) end)
+
+    local delBtn = flatButton(nameRow, "Delete", 70, 22)
+    delBtn:SetPoint("LEFT", downBtn, "RIGHT", 8, 0)
+    attachTooltip(delBtn, "Delete",
+        "Drops this window from the list and closes it on this character. Other characters keep theirs until they next log in, and only if \"Close windows that aren't on the list\" is ticked.")
+    delBtn:SetScript("OnClick", function()
+        local cfg = selectedCfg()
+        local mod = CW()
+        if not (cfg and mod) then return end
+        UI.showConfirmPopup({
+            title       = "Delete Window",
+            message     = ('Delete "%s"? It closes here straight away.')
+                :format(cfg.name or ("Chat " .. selected)),
+            confirmText = "Delete",
+            onConfirm   = function()
+                -- Closed before the entry is dropped: windows pair with entries by
+                -- position, so removing it first would close the next one along.
+                mod.closeOne(selected)
+                mod.removeWindow(selected)
+                selected = 1
+                status:SetText("")
+                refreshAll()
+            end,
+        })
+    end)
+
+    -- Stands in for the whole configuration block on the Combat Log, which has
+    -- nothing to configure. A bare panel with the name box and nothing under it
+    -- would read as something failing to load.
+    local fixedNote = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fixedNote:SetPoint("TOPLEFT", nameRow, "BOTTOMLEFT", 0, -14)
+    fixedNote:SetWidth(520); fixedNote:SetJustifyH("LEFT")
+    fixedNote:SetText("What the Combat Log shows is driven by WoW's own combat log filters, not by message types or channels, so there's nothing else to set here. Renaming it applies to every character on this profile.")
+    UI.tint(fixedNote, C.textGrey)
+    fixedNote:Hide()
+
+    local typesHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    typesHeader:SetPoint("TOPLEFT", nameRow, "BOTTOMLEFT", 0, -14)
+    typesHeader:SetText("Message Types")
+    UI.tint(typesHeader, C.red)
+
+    -- One grid per section, chained top to bottom. Sections come from
+    -- ChatWindows.sections(), which has already dropped anything this client
+    -- build doesn't know about.
+    local sectionUI = {}
+    local anchor = typesHeader
+    for _, sec in ipairs((CW() and CW().sections()) or {}) do
+        local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        title:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -8)
+        title:SetText(sec.title)
+        UI.tint(title, C.textWhite)
+
+        local grid = makeCheckGrid(panel, 3, 160, 20)
+        grid:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+        grid.OnToggle = function(key, checked)
+            local cfg = selectedCfg()
+            if not cfg then return end
+            cfg.groups = cfg.groups or {}
+            cfg.groups[key] = checked or nil
+            liveApply()
+        end
+
+        local items = {}
+        for _, g in ipairs(sec.groups) do
+            items[#items + 1] = { key = g.key, label = g.label }
+        end
+        sectionUI[#sectionUI + 1] = { grid = grid, items = items }
+        anchor = grid
+    end
+
+    local chanHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    chanHeader:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -16)
+    chanHeader:SetText("Channels")
+    UI.tint(chanHeader, C.red)
+
+    local chanDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    chanDesc:SetPoint("TOPLEFT", chanHeader, "BOTTOMLEFT", 0, -4)
+    chanDesc:SetWidth(480); chanDesc:SetJustifyH("LEFT")
+    chanDesc:SetText("Everything on the Channels tab, plus whatever this character is currently in.")
+    UI.tint(chanDesc, C.textGrey)
+
+    local chanGrid = makeCheckGrid(panel, 3, 160, 20)
+    chanGrid:SetPoint("TOPLEFT", chanDesc, "BOTTOMLEFT", 0, -6)
+    chanGrid.OnToggle = function(key, checked)
+        local cfg = selectedCfg()
+        if not cfg then return end
+        cfg.channels = cfg.channels or {}
+        for i, name in ipairs(cfg.channels) do
+            if name:lower() == key:lower() then
+                if not checked then
+                    table.remove(cfg.channels, i)
+                    liveApply()
+                end
+                return
+            end
+        end
+        if checked then
+            cfg.channels[#cfg.channels + 1] = key
+            liveApply()
+        end
+    end
+
+    -- Every channel we can offer this window: the shared roster, plus anything
+    -- already assigned to the window that isn't on it (a capture from another
+    -- realm, say), so ticking a box can never silently drop an entry.
+    local function channelItems(cfg)
+        local items, seen = {}, {}
+        local function add(name)
+            if name and name ~= "" and not seen[name:lower()] then
+                seen[name:lower()] = true
+                items[#items + 1] = { key = name, label = name }
+            end
+        end
+        for _, name in ipairs((addon.ChatChannels and addon.ChatChannels.knownChannels()) or {}) do
+            add(name)
+        end
+        for _, name in ipairs((cfg and cfg.channels) or {}) do add(name) end
+        return items
+    end
+
+    refreshAll = function()
+        local d = addon.db and addon.db.settings and addon.db.settings.chatWindows or {}
+        enableCB:SetChecked(d.enabled or false)
+        closeCB:SetChecked(d.closeExtra or false)
+
+        local list = windows()
+        if selected > #list then selected = #list end
+        if selected < 1 then selected = 1 end
+
+        -- Entries past the windows this character actually has are ones the login
+        -- pass will create, which is the whole point of the tab on a fresh alt.
+        local mod = CW()
+        local have = (mod and mod.frameCount()) or 0
+
+        while #listRows < #list do listRows[#listRows + 1] = makeListRow() end
+        for i, cfg in ipairs(list) do
+            local row = listRows[i]
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT",  listCol, "TOPLEFT",   3, -3 - (i - 1) * 26)
+            row:SetPoint("TOPRIGHT", listCol, "TOPRIGHT", -3, -3 - (i - 1) * 26)
+            -- The index is the window's position in the tab strip, and the one
+            -- thing that makes an unnamed row identifiable, so it's always shown.
+            row.text:SetText(("%d. %s%s"):format(i, cfg.name or "",
+                i <= have and "" or "  |cff888888(new)|r"))
+            row.active = (i == selected)
+            if row.active then
+                UI.tintBg(row, C.tabActive); UI.tintBorder(row, C.tabActiveBdr)
+                UI.tint(row.text, C.textWhite)
+            else
+                UI.tintBg(row, C.tabIdle); UI.tintBorder(row, C.tabBorder)
+                UI.tint(row.text, C.textGrey)
+            end
+            row:SetScript("OnClick", function() selected = i; refreshAll() end)
+            row:Show()
+        end
+        for i = #list + 1, #listRows do listRows[i]:Hide() end
+
+        local cfg = selectedCfg()
+        local has = cfg ~= nil
+        -- The Combat Log is rename-only: its contents come from WoW's combat log
+        -- filters, so message types and channels would be controls that do nothing.
+        local renameOnly = has and cfg.combatLog or false
+        local configurable = has and not renameOnly
+
+        nameRow:SetShown(has)
+        fixedNote:SetShown(renameOnly)
+        typesHeader:SetShown(configurable)
+        chanHeader:SetShown(configurable)
+        chanDesc:SetShown(configurable)
+
+        -- The main window and the Combat Log exist on every character whether or
+        -- not this list mentions them, so there's nothing a removal — or a
+        -- reorder around them — could mean.
+        local movable = has and mod and not mod.isPermanent(selected)
+        delBtn:SetShown(movable or false)
+        upBtn:SetShown((movable and not mod.isPermanent(selected - 1)) or false)
+        downBtn:SetShown((movable and selected < #list) or false)
+
+        if not nameBox:HasFocus() then nameBox:SetText(has and (cfg.name or "") or "") end
+
+        for _, s in ipairs(sectionUI) do
+            s.grid:SetShown(configurable)
+            if configurable then
+                s.grid.setItems(s.items, function(key) return cfg.groups and cfg.groups[key] end)
+            end
+        end
+
+        chanGrid:SetShown(configurable)
+        if configurable then
+            local assigned = {}
+            for _, name in ipairs(cfg.channels or {}) do assigned[name:lower()] = true end
+            chanGrid.setItems(channelItems(cfg), function(key) return assigned[key:lower()] end)
+        end
+
+        refit()
+    end
+
+    shell:HookScript("OnShow", function()
+        status:SetText("")
+        refreshAll()
+    end)
+    return shell
+end
+
+-- ── Channels sub-tab ────────────────────────────────────────────────────────
+local function buildChannelsPanel(parent)
+    local shell, panel, rawRefit = makeScrollPanel(parent)
+    local refit = deferredRefit(rawRefit)
+
+    local CC = function() return addon.ChatChannels end
+    local refreshAll
+
+    local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    header:SetPoint("TOPLEFT", 14, -14)
+    header:SetText("Channels")
+    UI.tint(header, C.red)
+
+    local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
+    desc:SetWidth(620); desc:SetJustifyH("LEFT")
+    desc:SetText("Channels every character on this profile should be in. They're joined a few seconds after login if you aren't in them already, and land in your main chat window unless the Chat Windows tab assigns them somewhere else. WoW hands out channel numbers (/1, /2, ...) in join order, which differs per character because the client joins your zone channels before we get a look in — so pin the ones you care about to a fixed number below.")
+    UI.tint(desc, C.textGrey)
+
+    local enableCB = createCheckbox(panel, "Join these channels on login", 320,
+        "Joins anything on the list you aren't already in, then applies the numbers and colours below. Removing an entry never leaves a channel for you — use /leave for that.")
+    enableCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -12)
+    enableCB.OnChange = function(_, checked)
+        addon.db.settings.chatChannels = addon.db.settings.chatChannels or {}
+        addon.db.settings.chatChannels.enabled = checked
+    end
+
+    local autoCB = createCheckbox(panel, "Add channels I join automatically", 320,
+        "Watches for channels this character is in that aren't on the list yet and adds them, so joining something once on one character puts it on every other. Channels you Remove by hand stay off the list even while you're still in them.")
+    autoCB:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -6)
+    autoCB.OnChange = function(_, checked)
+        addon.db.settings.chatChannels = addon.db.settings.chatChannels or {}
+        addon.db.settings.chatChannels.autoAdd = checked
+        -- Ticking it should populate the list there and then, not at next login.
+        if checked and addon.ChatChannels then addon.ChatChannels.settle() end
+        refreshAll()
+    end
+
+    local status = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+    -- ── Add row ─────────────────────────────────────────────────────────────
+    local addRow = CreateFrame("Frame", nil, panel)
+    addRow:SetSize(600, 24)
+    addRow:SetPoint("TOPLEFT", autoCB, "BOTTOMLEFT", 0, -14)
+
+    local nameLbl = addRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    nameLbl:SetPoint("LEFT", 0, 0); nameLbl:SetWidth(55); nameLbl:SetJustifyH("LEFT")
+    nameLbl:SetText("Channel:"); UI.tint(nameLbl, C.textGrey)
+
+    local nameWrap, nameBox = makeEditBox(addRow, 160, 48)
+    nameWrap:SetPoint("LEFT", nameLbl, "RIGHT", 6, 0)
+
+    local passLbl = addRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    passLbl:SetPoint("LEFT", nameWrap, "RIGHT", 12, 0)
+    passLbl:SetWidth(65); passLbl:SetJustifyH("LEFT")
+    passLbl:SetText("Password:"); UI.tint(passLbl, C.textGrey)
+
+    local passWrap, passBox = makeEditBox(addRow, 110, 32)
+    passWrap:SetPoint("LEFT", passLbl, "RIGHT", 6, 0)
+    attachTooltip(passWrap, "Password", "Only needed for private channels. Leave empty otherwise.")
+
+    local addBtn = flatButton(addRow, "Add", 70, 22)
+    addBtn:SetPoint("LEFT", passWrap, "RIGHT", 8, 0)
+
+    local function addEntry()
+        local mod = CC()
+        if not mod then return end
+        local entry, err = mod.addChannel(nameBox:GetText(), passBox:GetText())
+        if not entry then
+            status:SetText(err or "")
+            return
+        end
+        nameBox:SetText(""); passBox:SetText("")
+        status:SetText("")
+        -- Joins it straight away when the module is on, so the list and what
+        -- you're actually in don't disagree until the next login.
+        mod.apply()
+        refreshAll()
+    end
+
+    addBtn:SetScript("OnClick", addEntry)
+    nameBox:SetScript("OnEnterPressed", function(self) self:ClearFocus(); addEntry() end)
+    passBox:SetScript("OnEnterPressed", function(self) self:ClearFocus(); addEntry() end)
+
+    local joinBtn = flatButton(panel, "Join Now", 100, 22)
+    joinBtn:SetPoint("TOPLEFT", addRow, "BOTTOMLEFT", 0, -10)
+    attachTooltip(joinBtn, "Join Now",
+        "Runs the same pass that happens at login against this character, without waiting for a reload.")
+    joinBtn:SetScript("OnClick", function()
+        local mod = CC()
+        if not mod then return end
+        if not mod.isEnabled() then
+            status:SetText("Tick the box above (and \"Enable Chat System\" on the Chat tab) first.")
+            return
+        end
+        mod.apply()
+        status:SetText("Joining — channel numbers and colours settle after a few seconds.")
+        refreshAll()
+    end)
+
+    local captureBtn = flatButton(panel, "Capture This Character", 170, 22)
+    captureBtn:SetPoint("LEFT", joinBtn, "RIGHT", 8, 0)
+    attachTooltip(captureBtn, "Capture This Character",
+        "Adds every channel this character is currently in that isn't already listed, keeping their present colours. Nothing already on the list is touched, and unlike the automatic pass this also brings back anything you removed by hand.")
+    captureBtn:SetScript("OnClick", function()
+        local mod = CC()
+        if not mod then return end
+        local n = mod.captureCurrent()
+        status:SetText(n == 0
+            and "Nothing new — the list already covers every channel you're in."
+            or ("Added %d channel%s."):format(n, n == 1 and "" or "s"))
+        refreshAll()
+    end)
+
+    status:SetPoint("TOPLEFT", joinBtn, "BOTTOMLEFT", 0, -8)
+    status:SetWidth(620); status:SetJustifyH("LEFT")
+    UI.tint(status, C.red)
+
+    -- ── Channel rows ────────────────────────────────────────────────────────
+    local ROW_H = 24
+    local rows = {}
+
+    local function makeRow()
+        local row = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+        row:SetSize(640, 22)
+        applyBackdrop(row, 1, C.panelDeep, C.tabBorder)
+
+        local num = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        num:SetPoint("LEFT", 8, 0); num:SetWidth(22); num:SetJustifyH("LEFT")
+        UI.tint(num, C.textDim)
+        row.num = num
+
+        local name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        name:SetPoint("LEFT", num, "RIGHT", 4, 0); name:SetWidth(150); name:SetJustifyH("LEFT")
+        UI.tint(name, C.textWhite)
+        row.name = name
+
+        -- The number to pin this channel to. Empty means "wherever join order puts
+        -- it", which is the right answer for most channels and the only answer on a
+        -- character that isn't in enough channels to reach the pinned slot.
+        local slash = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        slash:SetPoint("LEFT", name, "RIGHT", 2, 0); slash:SetWidth(10); slash:SetJustifyH("RIGHT")
+        slash:SetText("/"); UI.tint(slash, C.textDim)
+
+        local wantWrap, wantBox = makeEditBox(row, 34, 2)
+        wantWrap:SetHeight(18)
+        wantBox:SetHeight(14)
+        wantWrap:SetPoint("LEFT", slash, "RIGHT", 2, 0)
+        attachTooltip(wantWrap, "Channel number",
+            "Pins this channel to a fixed number on every character, by reordering the channel list the way WoW's own chat settings do. Leave it empty to let join order decide.")
+        row.wantBox = wantBox
+
+        local function storedWant()
+            return (row.entry and row.entry.number) and tostring(row.entry.number) or ""
+        end
+        wantBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        wantBox:SetScript("OnEditFocusLost", function()
+            local mod = CC()
+            if not (mod and row.index) then return end
+            local text = (wantBox:GetText() or ""):match("^%s*(.-)%s*$")
+            mod.setNumber(row.index, text ~= "" and text or nil)
+            -- Reorder now rather than at the next login, so the result — or the
+            -- reason it can't happen yet — is visible immediately.
+            mod.settle()
+            refreshAll()
+        end)
+        wantBox:SetScript("OnEscapePressed", function(self)
+            -- Restore before dropping focus: OnEditFocusLost commits, so escaping
+            -- has to put the stored value back or it would save the half-typed one.
+            self:SetText(storedWant())
+            self:ClearFocus()
+        end)
+
+        -- Where the channel actually sits right now. Without it there's no way to
+        -- tell a typo'd name from one that simply hasn't been joined yet, or to see
+        -- that a pinned number hasn't taken effect.
+        local state = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        state:SetPoint("LEFT", wantWrap, "RIGHT", 8, 0); state:SetWidth(84); state:SetJustifyH("LEFT")
+        UI.tint(state, C.textDim)
+        row.state = state
+
+        row.colorCB = createCheckbox(row, "Colour", 70)
+        row.colorCB:SetPoint("LEFT", state, "RIGHT", 6, 0)
+        attachTooltip(row.colorCB, "Colour",
+            "Recolours this channel's messages. Left off, WoW's own colour for the channel number is kept.")
+
+        -- Rows are pooled and show a different entry after a move or a delete, so
+        -- the swatch reads row.entry live rather than closing over one entry.
+        row.swatch = colorSwatch(row,
+            function()
+                local c = (row.entry and row.entry.color) or { 1, 1, 1 }
+                return c[1] or 1, c[2] or 1, c[3] or 1
+            end,
+            function(r, g, b)
+                if row.entry then row.entry.color = { r, g, b } end
+            end,
+            function()
+                -- Picking a colour is the whole intent, so it ticks the box for you
+                -- rather than being quietly ignored.
+                if row.entry then row.entry.useColor = true end
+                row.colorCB:SetChecked(true)
+                if addon.ChatChannels then addon.ChatChannels.applyColors() end
+            end,
+            { size = 16, hover = true })
+        row.swatch:SetPoint("LEFT", row.colorCB, "RIGHT", 2, 0)
+
+        row.upBtn = flatButton(row, "^", 20, 18, "GameFontNormalSmall")
+        row.upBtn:SetPoint("LEFT", row.swatch, "RIGHT", 10, 0)
+        attachTooltip(row.upBtn, "Move Up", "Joined earlier, so it takes a lower channel number.")
+
+        row.downBtn = flatButton(row, "v", 20, 18, "GameFontNormalSmall")
+        row.downBtn:SetPoint("LEFT", row.upBtn, "RIGHT", 2, 0)
+        attachTooltip(row.downBtn, "Move Down", "Joined later, so it takes a higher channel number.")
+
+        row.delBtn = flatButton(row, "Remove", 70, 18)
+        row.delBtn:SetPoint("LEFT", row.downBtn, "RIGHT", 10, 0)
+
+        return row
+    end
+
+    local emptyText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    emptyText:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -10)
+    emptyText:SetWidth(600); emptyText:SetJustifyH("LEFT")
+    emptyText:SetText("No channels listed yet. Type one above, or hit Capture This Character to pull in the ones you're already in.")
+    UI.tint(emptyText, C.textDim)
+
+    refreshAll = function()
+        local d = addon.db and addon.db.settings and addon.db.settings.chatChannels or {}
+        enableCB:SetChecked(d.enabled or false)
+        autoCB:SetChecked(d.autoAdd ~= false)
+
+        local mod = CC()
+        local list = (mod and mod.list()) or {}
+        emptyText:SetShown(#list == 0)
+
+        local reorderable = not mod or mod.canReorder()
+
+        while #rows < #list do rows[#rows + 1] = makeRow() end
+
+        for i, entry in ipairs(list) do
+            local row = rows[i]
+            row.entry = entry
+            row.index = i
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -10 - (i - 1) * ROW_H)
+            row.num:SetText(i .. ".")
+            row.name:SetText(entry.name or "")
+
+            if not row.wantBox:HasFocus() then
+                row.wantBox:SetText(entry.number and tostring(entry.number) or "")
+            end
+            row.wantBox:EnableMouse(reorderable)
+            UI.tint(row.wantBox, reorderable and C.textWhite or C.textDim)
+
+            local id = mod and mod.channelIndex(entry.name) or 0
+            -- Calling out a pin that hasn't landed, rather than showing the number
+            -- and leaving it looking like it worked.
+            local pending = entry.number and id > 0 and id ~= entry.number
+            row.state:SetText(id > 0 and ((pending and "now /" or "is /") .. id) or "not joined")
+            UI.tint(row.state, (id > 0 and not pending) and C.textGrey or C.textDim)
+
+            row.colorCB:SetChecked(entry.useColor and true or false)
+            row.colorCB.OnChange = function(_, checked)
+                entry.useColor = checked or nil
+                if mod then mod.applyColors() end
+            end
+            row.swatch.Refresh()
+
+            row.delBtn:SetScript("OnClick", function()
+                if not mod then return end
+                mod.removeChannel(i)
+                refreshAll()
+            end)
+            row.upBtn:SetScript("OnClick", function()
+                if mod and mod.moveChannel(i, -1) then refreshAll() end
+            end)
+            row.downBtn:SetScript("OnClick", function()
+                if mod and mod.moveChannel(i, 1) then refreshAll() end
+            end)
+
+            row:Show()
+        end
+        for i = #list + 1, #rows do rows[i]:Hide() end
+
+        refit()
+    end
+
+    shell:HookScript("OnShow", function()
+        status:SetText("")
+        refreshAll()
+    end)
+    return shell
+end
+
 -- ── Alerts sub-tab ──────────────────────────────────────────────────────────
 local function buildAlertsPanel(parent)
     local shell, panel = makeScrollPanel(parent)
@@ -1796,13 +2441,13 @@ local function buildAlertsPanel(parent)
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     header:SetPoint("TOPLEFT", 14, -14)
     header:SetText("Whispers")
-    header:SetTextColor(unpack(C.red))
+    UI.tint(header, C.red)
 
     local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     desc:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -4)
     desc:SetWidth(520); desc:SetJustifyH("LEFT")
     desc:SetText("Play a sound when someone whispers you. The list comes from LibSharedMedia, so any sound pack you have installed shows up here automatically.")
-    desc:SetTextColor(unpack(C.textGrey))
+    UI.tint(desc, C.textGrey)
 
     local enableCB = createCheckbox(panel, "Play a sound on whisper", 300)
     enableCB:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -12)
@@ -1814,7 +2459,7 @@ local function buildAlertsPanel(parent)
 
     local soundLbl = soundRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     soundLbl:SetPoint("LEFT", 0, 0); soundLbl:SetWidth(60); soundLbl:SetJustifyH("LEFT")
-    soundLbl:SetText("Sound:"); soundLbl:SetTextColor(unpack(C.textGrey))
+    soundLbl:SetText("Sound:"); UI.tint(soundLbl, C.textGrey)
 
     local soundDD = createScrollDropdown(soundRow, 200,
         function() return (addon.Alerts and addon.Alerts.soundList()) or { "None" } end,
@@ -1841,18 +2486,13 @@ local function buildAlertsPanel(parent)
 
     status:SetPoint("TOPLEFT", soundRow, "BOTTOMLEFT", 0, -6)
     status:SetWidth(520); status:SetJustifyH("LEFT")
-    status:SetTextColor(unpack(C.red))
+    UI.tint(status, C.red)
     status:SetText("")
 
-    local throttleRow, throttleStepper = addStepperRow(panel, status, "Minimum gap:", 0, 30,
+    local _, throttleStepper = addStepperRow(panel, status, "Minimum gap:", 0, 30,
         function() return alerts().throttle or 3 end,
-        function(v) alerts().throttle = v end, nil, "sec")
-
-    local throttleHint = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    throttleHint:SetPoint("TOPLEFT", throttleRow, "BOTTOMLEFT", 0, -6)
-    throttleHint:SetWidth(520); throttleHint:SetJustifyH("LEFT")
-    throttleHint:SetText("How long to wait before the sound can play again. Whispers often arrive in bursts, and without a gap they stack into one long noise.")
-    throttleHint:SetTextColor(unpack(C.textDim))
+        function(v) alerts().throttle = v end, nil, "sec", nil,
+        "How long to wait before the sound can play again. Whispers often arrive in bursts, and without a gap they stack into one long noise.")
 
     local function refreshPanel()
         local d = alerts()
@@ -1866,47 +2506,16 @@ local function buildAlertsPanel(parent)
     return shell
 end
 
--- ── Top-level Chat tab (nested sub-tabs: Chat / Panels / DataTexts / Alerts) ─
+-- ── Top-level Chat tab (nested sub-tabs) ────────────────────────────────────
 local function buildChatShell(parent)
-    local panel = CreateFrame("Frame", nil, parent)
-    panel:SetAllPoints()
+    local panel, _, _, addSubTab = W.makeSubTabPanel(parent)
 
-    local subBar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subBar:SetHeight(26)
-    subBar:SetPoint("TOPLEFT", 4, -4)
-    subBar:SetPoint("TOPRIGHT", -4, -4)
-    applyBackdrop(subBar, 1, C.panelDark)
-
-    local subContent = CreateFrame("Frame", nil, panel, "BackdropTemplate")
-    subContent:SetPoint("TOPLEFT", subBar, "BOTTOMLEFT", 0, -2)
-    subContent:SetPoint("BOTTOMRIGHT", -4, 4)
-    applyBackdrop(subContent, 1, C.panelDeep)
-
-    panel.subTabs, panel.subPanels = {}, {}
-
-    local chatTab = createTab(subBar, "Chat", 80)
-    chatTab:SetHeight(22); chatTab:SetPoint("LEFT", 4, 0)
-    chatTab:SetScript("OnClick", function() selectSubTab(panel, "chat") end)
-    panel.subTabs["chat"]   = chatTab
-    panel.subPanels["chat"] = function() return buildChatSettingsPanel(subContent) end
-
-    local panelsTab = createTab(subBar, "Panels", 80)
-    panelsTab:SetHeight(22); panelsTab:SetPoint("LEFT", chatTab, "RIGHT", 4, 0)
-    panelsTab:SetScript("OnClick", function() selectSubTab(panel, "panels") end)
-    panel.subTabs["panels"]   = panelsTab
-    panel.subPanels["panels"] = function() return buildPanelsPanel(subContent) end
-
-    local dtTab = createTab(subBar, "DataTexts", 100)
-    dtTab:SetHeight(22); dtTab:SetPoint("LEFT", panelsTab, "RIGHT", 4, 0)
-    dtTab:SetScript("OnClick", function() selectSubTab(panel, "datatexts") end)
-    panel.subTabs["datatexts"]   = dtTab
-    panel.subPanels["datatexts"] = function() return buildDataTextsPanel(subContent) end
-
-    local alertsTab = createTab(subBar, "Alerts", 80)
-    alertsTab:SetHeight(22); alertsTab:SetPoint("LEFT", dtTab, "RIGHT", 4, 0)
-    alertsTab:SetScript("OnClick", function() selectSubTab(panel, "alerts") end)
-    panel.subTabs["alerts"]   = alertsTab
-    panel.subPanels["alerts"] = function() return buildAlertsPanel(subContent) end
+    addSubTab("chat",      "Chat",          80,  buildChatSettingsPanel)
+    addSubTab("windows",   "Chat Windows",  110, buildChatWindowsPanel)
+    addSubTab("channels",  "Channels",      90,  buildChannelsPanel)
+    addSubTab("panels",    "Panels",        80,  buildPanelsPanel)
+    addSubTab("datatexts", "DataTexts",     100, buildDataTextsPanel)
+    addSubTab("alerts",    "Alerts",        80,  buildAlertsPanel)
 
     selectSubTab(panel, "chat")
     return panel

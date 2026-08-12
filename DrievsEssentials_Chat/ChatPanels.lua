@@ -5,22 +5,16 @@ local UI = addon.UI
 
 -- Two standalone background panels, intended to sit behind the chat.
 --
--- These are PURELY DECORATIVE. They do not touch chat frames, tabs, or
--- Blizzard's dock manager in any way — no reparenting, no anchoring, no
--- resizing of anything Blizzard owns. A previous version of this file did all
--- of that ("docking") and it repeatedly broke tab dragging, because Blizzard's
--- FloatingChatFrame code keeps running its own layout and drag math on frames
--- it still believes it owns. Docking may come back later, but it has to be
--- built as a deliberate, separate step on top of this.
---
--- So: position and size a panel to sit behind your chat, and move the chat over
+-- PURELY DECORATIVE: nothing here touches chat frames, tabs or Blizzard's dock
+-- manager. An earlier version did ("docking") and repeatedly broke tab dragging,
+-- because FloatingChatFrame keeps running its own layout and drag math on frames
+-- it believes it owns. Position a panel behind your chat and move the chat over
 -- it with Blizzard's normal tab dragging.
 
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 
--- Size/color mirror this addon author's own live setup (pulled from
--- SavedVariables), so both panels start dialed-in instead of at generic
--- placeholder values.
+-- Size/colour mirror the author's own live setup, so both panels start
+-- dialed-in rather than at generic placeholder values.
 local PANEL_DEFAULTS = {
     enabled         = false,
     width           = 400,
@@ -30,19 +24,16 @@ local PANEL_DEFAULTS = {
     bgOpacity       = 50,
     borderColor     = { 0, 0, 0 },
     borderOpacity   = 100,
-    -- px/py (saved position) are absent until moved; each panel then falls back
-    -- to its own default corner.
-    -- Auto-docking to a DataText bar: dockBarID is nil when off. Docked, the
-    -- panel's position tracks the bar's frame directly (a live anchor, not a
-    -- copied coordinate) so it keeps following the bar with no extra hook.
+    -- px/py are absent until moved; each panel falls back to its default corner.
+    -- dockBarID is nil when not auto-docked to a DataText bar. Docked, position
+    -- tracks the bar's frame as a live anchor, so it follows with no extra hook.
     dockBarID      = nil,
     dockOffsetX    = 0,
     -- -1, not 0: sits the panel 1px lower by default, snug against the bar's
     -- top edge instead of leaving a hairline gap.
     dockOffsetY    = -1,
-    -- When docked, take on the bar's current width instead of the panel's own
-    -- `width` - off by default since a panel might be sized deliberately
-    -- differently from its bar.
+    -- When docked, take the bar's width instead of the panel's own. Off by default,
+    -- since a panel may be sized deliberately differently.
     dockMatchWidth = false,
 }
 
@@ -93,17 +84,13 @@ local function getOrCreateFrame(i)
     return f
 end
 
--- The DataText bar's own frame, via its mover (DataTexts.lua exposes no
--- separate "get frame by id", but the mover's getFrame() is the same object
--- and already part of its public API). nil if not docked, the bar was
--- deleted, or it isn't currently shown.
+-- The DataText bar's frame, via its mover. nil if not docked, the bar was
+-- deleted, or it isn't shown.
 local function dockBarFrame(d)
     if not (d.dockBarID and addon.DataTexts) then return nil end
-    -- Checked against listBars() rather than calling getBarMover() directly:
-    -- getBarMover/getOrCreateBarFrame auto-vivify a bar's config and frame on
-    -- first access, so calling it for an id that no longer exists (its bar was
-    -- deleted while this was still set) would silently resurrect an empty,
-    -- ghost bar entry instead of just reporting "not docked".
+    -- Checked against listBars() rather than getBarMover(), which auto-vivifies a
+    -- bar's config and frame on first access — calling it for a deleted id would
+    -- resurrect a ghost bar instead of reporting "not docked".
     local bars = addon.DataTexts.listBars()
     if not (bars and bars[d.dockBarID]) then return nil end
 
@@ -117,10 +104,9 @@ end
 -- defined until after applyPosition below.
 local applyPanel
 
--- Re-applies applyPanel(i) whenever a docked-to bar's frame resizes, so
--- dockMatchWidth stays correct as the bar's content changes. Hooked once per
--- bar frame (harmless if it later ends up docked to a different bar - the
--- old hook just becomes a no-op re-check).
+-- Re-applies applyPanel(i) when a docked-to bar resizes, so dockMatchWidth stays
+-- correct. Hooked once per bar frame; harmless if the panel later docks
+-- elsewhere, as the old hook just becomes a no-op re-check.
 local sizeHooked = {}
 local function ensureSizeHook(i, barFrame)
     if sizeHooked[barFrame] then return end
@@ -148,9 +134,8 @@ local function applyPosition(i)
     end
 end
 
--- "Enable Chat System" (chat.enabled) is the parent switch for this whole
--- module — a panel enabled on its own tab still shouldn't show while that's
--- off.
+-- chat.enabled is the parent switch for the whole module — a panel enabled on
+-- its own tab still shouldn't show while it's off.
 local function chatSystemEnabled()
     return not addon.Chat or addon.Chat.isEnabled()
 end
@@ -212,16 +197,10 @@ local function makeMover(i)
         if addon.ChatDock then addon.ChatDock.reapply() end
     end
 
-    -- reapply() re-docks every chat window currently assigned to this panel —
-    -- necessary when the panel actually moved (docked chats need to follow),
-    -- but ExitMoveMode calls savePosition() on every active movable
-    -- regardless of whether it was touched. Without the "did it move" guard,
-    -- merely opening Move Mode with this panel enabled — even to reposition
-    -- something else entirely — would re-run reapply() on Lock and could
-    -- overwrite a chat window's own just-finished drag with stale docked
-    -- data (ChatDock.lua's movers resolve dock-vs-free the instant a drag is
-    -- released specifically to guard against this, but there's no reason to
-    -- fire the call needlessly either).
+    -- reapply() re-docks chat windows assigned to this panel, needed when it
+    -- actually moved. But ExitMoveMode calls savePosition() on every movable whether
+    -- or not it was touched, so without the "did it move" guard, merely opening Move
+    -- Mode could overwrite a chat window's own just-finished drag with stale data.
     function mover.savePosition()
         local f = frames[i]
         if not f then return end

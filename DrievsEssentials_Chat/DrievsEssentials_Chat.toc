@@ -1,6 +1,6 @@
 ## Interface: 11507
 ## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Chat
-## Notes: Chat button hiding, free chat positioning, background chat panels, and customizable movable DataText stat bars. Requires Driev's Essentials.
+## Notes: Chat button hiding, free chat positioning, background chat panels, profile-wide chat windows and channels, and customizable movable DataText stat bars. Requires Driev's Essentials.
 ## Version: 1.1.3
 ## Author: Driev
 ## Dependencies: DrievsEssentials
@@ -11,6 +11,8 @@
 Chat.lua
 ChatPanels.lua
 ChatDock.lua
+ChatChannels.lua
+ChatWindows.lua
 DataTexts.lua
 Alerts.lua
 ChatUI.lua

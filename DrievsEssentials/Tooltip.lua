@@ -1,15 +1,12 @@
 local addonName, addon = ...
 
--- ElvUI-flavoured tooltip skin. Recolors the existing Blizzard tooltip backdrop
--- (rather than replacing its textures) so toggling the master switch off cleanly
--- restores the stock look, then rewrites unit tooltips into ElvUI's compact
--- style: class-colored name, a difficulty-colored "<level> <race> <class>" line
--- in place of "Level 60 Human Mage (Player)", a green guild line, health text on
--- the status bar, plus a class/reaction-colored border and health-bar outline.
--- Also does optional realm-name stripping, a cursor-follow anchor, and a movable
--- anchor via Edit Mode. Deliberately NOT a full port of ElvUI's Tooltip.lua
--- (aura tooltips, inspect caching, spec/ilvl lines, etc. are out of scope) — this
--- addon favors small, testable reskins over full feature parity.
+-- ElvUI-flavoured tooltip skin. Recolors Blizzard's existing backdrop rather
+-- than replacing its textures, so the master toggle cleanly restores the stock
+-- look. Unit tooltips are rewritten into ElvUI's compact style: class-coloured
+-- name, difficulty-coloured "<level> <race> <class>" line, green guild line,
+-- health text on the bar, class/reaction border and health-bar outline. Plus
+-- optional realm stripping, cursor-follow anchor and a movable Edit Mode anchor.
+-- Not a full port — aura tooltips, inspect caching and ilvl lines are out.
 
 -- addon.db only exists once Core has applied the active profile at
 -- PLAYER_LOGIN. The hooks below are attached to Blizzard frames that can be
@@ -44,12 +41,9 @@ local REACTION_COLORS = {
 -- original look instead of a guessed approximation.
 local originalColors = {}
 
--- The border colour used whenever no class/reaction tint applies: item and
--- spell tooltips, objects, and any unit that yields no colour of its own.
---
--- This is the same setting the "always use a fixed border" override uses, so
--- there's one colour to pick rather than two that could disagree. The override
--- only changes WHEN it applies — the colour itself is this one either way.
+-- Border colour when no class/reaction tint applies: items, spells, objects, and
+-- units with no colour of their own. Same setting the fixed-border override
+-- uses, so there's one colour to pick; the override only changes WHEN it applies.
 local function restingBorder()
     local c = getData().borderColor or SKIN_BORDER
     return c[1], c[2], c[3], 1
@@ -75,15 +69,11 @@ local function unitBorderColor(unit)
     return nil
 end
 
--- The border colour a tooltip frame should have *right now*. A unit tooltip gets
--- the class (player) / reaction (NPC) tint when colouring is on and the fixed-
--- border override is off; everything else — item/spell tooltips, units with no
--- colour, or when the override is set — gets the resting border.
---
--- Both the OnShow skin (styleFrame) and the unit post-call go through this, so
--- they can never disagree. That's the fix for the intermittent class border:
--- previously styleFrame always stamped the resting border and the post-call the
--- class tint, and whichever fired last won — which varied per tooltip.
+-- The border colour a tooltip should have right now. Unit tooltips get the
+-- class/reaction tint when colouring is on and the override off; everything else
+-- gets the resting border. Both the OnShow skin and the unit post-call go
+-- through this, so they can't disagree — previously each stamped its own and
+-- whichever fired last won, which is what made the class border intermittent.
 local function frameBorderColor(tt)
     local d = getData()
     if tt == GameTooltip and d.colorByUnit ~= false and not d.customBorder then
@@ -96,10 +86,9 @@ local function frameBorderColor(tt)
     return restingBorder()
 end
 
--- Applies (or, with the master toggle off, restores) the backdrop recolor on
--- one tooltip frame. Only ever touches SetBackdropColor/SetBackdropBorderColor
--- — never SetBackdrop itself — so Blizzard's own backdrop template (and its
--- textures/insets) is untouched and trivially revertible.
+-- Applies (or with the master toggle off, restores) the backdrop recolor. Only
+-- touches SetBackdropColor/SetBackdropBorderColor, never SetBackdrop, so
+-- Blizzard's own template and insets stay intact and trivially revertible.
 local function styleFrame(tt)
     if not isReady() then return end
     if not (tt and tt.SetBackdropColor and tt.GetBackdropColor) then return end
@@ -120,10 +109,9 @@ local function styleFrame(tt)
 end
 
 -- ── Health bar outline ──────────────────────────────────────────────────────
--- GameTooltipStatusBar is a bare texture with no frame of its own, so there is
--- nothing on it to recolour — an outline has to be created. It's a sibling
--- anchored around the bar rather than a child, so the bar's own texture can't
--- draw over the border.
+-- GameTooltipStatusBar is a bare texture with no frame, so there's nothing to
+-- recolour — the outline has to be created. A sibling anchored around the bar
+-- rather than a child, so the bar's texture can't draw over it.
 local healthBorder
 local function ensureHealthBorder()
     if healthBorder then return healthBorder end
@@ -166,10 +154,9 @@ local function styleHealthBorder(r, g, b)
 end
 
 -- ── ElvUI-style unit reformatting ────────────────────────────────────────────
--- The default Blizzard unit tooltip reads "Level 60 Human Mage (Player)"; ElvUI
--- compresses that to a coloured "60 Human Mage" and tints the name and guild.
--- We rewrite the existing FontStrings rather than clearing and rebuilding the
--- tooltip, so any lines other addons appended survive untouched.
+-- Blizzard's "Level 60 Human Mage (Player)" becomes a coloured "60 Human Mage",
+-- with name and guild tinted. Existing FontStrings are rewritten rather than the
+-- tooltip cleared and rebuilt, so lines other addons appended survive.
 
 -- Blizzard's localized "Level" word, lowercased, so the level line can be found
 -- regardless of client language. TOOLTIP_UNIT_LEVEL is "Level %s"; strip the
@@ -232,11 +219,10 @@ local function isLevelLine(text)
     return text:lower():find(LEVEL_WORD, 1, true) ~= nil
 end
 
--- Insert a new left-hand line carrying `text` at position `idx` (1-based),
--- pushing the existing lines idx..n down by one. GameTooltip only grows via
--- AddLine (which appends), so we append a blank then copy each line's text +
--- colour up one slot. Needed because this client doesn't add a guild line of its
--- own for unit tooltips — there's nothing to rewrite, so we build one.
+-- Insert a left-hand line carrying `text` at position `idx`, pushing idx..n down
+-- one. GameTooltip only grows via AddLine (append), so append a blank and copy
+-- each line's text + colour up a slot. Needed because this client adds no guild
+-- line of its own — there's nothing to rewrite, so we build one.
 local function insertLineAt(tt, idx, text)
     local base = tt:GetName()
     if not base then return end
@@ -282,10 +268,9 @@ local function reformatUnit(tt, unit)
             nameFS:SetFormattedText("|cff%s%s%s|r", hex(cr, cg, cb), display, away)
         end
 
-        -- Guild line: green name, with the rank in brackets after it, matching
-        -- ElvUI's guildRanks look. Both parts are independently toggleable (default
-        -- on). This client doesn't add a guild line of its own (only name + level),
-        -- so when there's no existing line to rewrite we insert one under the name.
+        -- Guild line: green name, rank in brackets after it, matching ElvUI's
+        -- guildRanks. Both parts independently toggleable. This client adds only name +
+        -- level, so with no existing line to rewrite we insert one under the name.
         local guild, rank = GetGuildInfo(unit)
         local td = getData()
         if guild and td.showGuild ~= false then
@@ -399,10 +384,9 @@ local function onTooltipSetUnit(tt)
     local _, unit = tt:GetUnit()
     if not unit then return end
 
-    -- Border on the tooltip frame itself goes through the shared decision so it
-    -- always agrees with the OnShow skin (frameBorderColor handles the colorByUnit
-    -- and customBorder rules). The health bar outline stays unit-coloured
-    -- regardless of the frame border — that's the whole point of it.
+    -- The frame border goes through the shared decision so it always agrees with the
+    -- OnShow skin. The health-bar outline stays unit-coloured regardless — that's
+    -- the whole point of it.
     if tt.SetBackdropBorderColor then
         tt:SetBackdropBorderColor(frameBorderColor(tt))
     end
@@ -424,9 +408,9 @@ local function onTooltipSetUnit(tt)
 end
 
 -- ── Movable anchor ──────────────────────────────────────────────────────────
--- A small placeholder frame the tooltip parks itself against. It exists only to
--- be dragged in Edit Mode; the tooltip anchors its BOTTOMRIGHT to it, matching
--- where Blizzard's own default anchor sits.
+-- A placeholder frame the tooltip parks against. It exists only to be dragged in
+-- Edit Mode; the tooltip anchors its BOTTOMRIGHT to it, matching where
+-- Blizzard's default anchor sits.
 local anchorFrame
 local function getAnchor()
     if anchorFrame then return anchorFrame end
@@ -450,12 +434,9 @@ local function getAnchor()
     label:SetTextColor(0.75, 0.75, 0.80)
     f.label = label
 
-    -- Hidden until Edit Mode shows it (mover.enterMoveMode). Without this, the
-    -- first caller outside Edit Mode — notably the useAnchor tooltip hook, which
-    -- uses this frame purely as an anchor point — would leave it (and its
-    -- "Tooltip" label) visible during normal play. Anchoring to a hidden frame
-    -- still works, so the tooltip positions correctly regardless. TTK and
-    -- RaidFrames hide their handles on creation for the same reason.
+    -- Hidden until Edit Mode shows it. Otherwise the useAnchor hook, which uses this
+    -- purely as an anchor point, would leave it and its label visible during play.
+    -- Anchoring to a hidden frame still works. TTK and RaidFrames do the same.
     f:Hide()
 
     anchorFrame = f
@@ -538,12 +519,10 @@ local function init()
             tt:HookScript("OnShow", styleFrame)
         end
     end
-    -- Unit reformatting. The 1.14.4 / 10.0.2 tooltip rework retired the
-    -- OnTooltipSetUnit *script* — HookScript("OnTooltipSetUnit") simply never
-    -- fires on modern Classic Era, so all of reformatUnit (name/guild/rank/level/
-    -- health) silently did nothing. The replacement is a post-call registered
-    -- through TooltipDataProcessor; fall back to the old script only on clients
-    -- that predate it.
+    -- Unit reformatting. The 1.14.4 / 10.0.2 rework retired the OnTooltipSetUnit
+    -- script — HookScript on it never fires on modern Classic Era, so all of
+    -- reformatUnit silently did nothing. The replacement is a TooltipDataProcessor
+    -- post-call; fall back to the old script only on clients predating it.
     if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall
        and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Unit then
         TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, function(tt)
@@ -566,10 +545,9 @@ local function init()
         end)
     end
 
-    -- GameTooltip_SetDefaultAnchor is the shared function nearly every stock
-    -- tooltip call routes through (see Blizzard's own GameTooltip_ShowLoot,
-    -- unit frames, action bars, etc.), so hooking it here covers cursor-anchor
-    -- behavior addon-wide instead of only for manually-owned tooltips.
+    -- GameTooltip_SetDefaultAnchor is what nearly every stock tooltip call routes
+    -- through, so hooking it covers cursor-anchor behaviour addon-wide rather than
+    -- only for manually-owned tooltips.
     if GameTooltip_SetDefaultAnchor then
         hooksecurefunc("GameTooltip_SetDefaultAnchor", function(tt, parent)
             if not isReady() then return end

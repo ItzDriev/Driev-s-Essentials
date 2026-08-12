@@ -1,15 +1,10 @@
--- Driev's Essentials — Item Rack module: movable buttons, pop-out menus and the
--- character sheet integration.
+-- Item Rack module: movable buttons, pop-out menus and character sheet
+-- integration. Hovering a character sheet slot pops out every item that fits it;
+-- Alt+click a slot spawns a movable button, Alt+click the model spawns the set
+-- button.
 --
---   • Hovering a slot on the character sheet pops out every item that fits it;
---     click one to swap.
---   • Alt+click a character sheet slot spawns a movable button for that slot.
---   • Alt+click the character model in the middle of the sheet spawns the
---     equipment-set button.
---
--- Buttons snap ("dock") to each other when dragged close, forming a bar; the
--- dock relationship is what gets saved, not a raw position, so a whole chain
--- moves as one when its head moves.
+-- Buttons snap ("dock") to each other when dragged close, forming a bar. The
+-- dock relationship is saved rather than a raw position, so a chain moves as one.
 local addon = _G.DrievEssentials
 if not addon then return end
 
@@ -36,67 +31,18 @@ local buttons   = {}   -- [0..20] = frame, created lazily
 local menuFrame, menuButtons, menuControls
 local menuEntries = {} -- what the menu is currently showing, index -> id/setname
 
--- 1.15.9 backported the modernized ActionButtonTemplate, whose state textures are
--- nine-sliced atlas frames. Those slice margins live on the texture region and
--- survive a SetNormalTexture, stretching a plain classic texture into a huge
--- wrong frame — so reset slice/texcoord/tint before sizing. (Only visible
--- without Masque, which discards these regions and draws its own.)
-local ICON_REF     = 36
-local NORMAL_RATIO = 66 / ICON_REF
-local PUSHED_RATIO = 38 / ICON_REF
-
-local function resetTemplateTexture(tex)
-    if not tex then return end
-    if tex.SetTextureSliceMargins then tex:SetTextureSliceMargins(0, 0, 0, 0) end
-    if tex.SetTexCoord    then tex:SetTexCoord(0, 1, 0, 1) end
-    if tex.SetVertexColor then tex:SetVertexColor(1, 1, 1) end
-    if tex.SetAlpha       then tex:SetAlpha(1) end
-end
-
-local function styleSlotButton(btn, size)
-    -- The modern template's decorative SlotBackground/SlotArt only make sense on
-    -- a real type="action" slot; ours are type="item", so nothing hides them.
-    if btn.SlotBackground then btn.SlotBackground:Hide() end
-    if btn.SlotArt        then btn.SlotArt:Hide()        end
-    btn:UnregisterAllEvents()
-    btn:SetScript("OnEvent", nil)
-
-    btn:SetNormalTexture("Interface\\Buttons\\UI-Quickslot2")
-    local nt = btn:GetNormalTexture()
-    if nt then
-        resetTemplateTexture(nt)
-        nt:ClearAllPoints()
-        nt:SetSize(size * NORMAL_RATIO, size * NORMAL_RATIO)
-        nt:SetPoint("CENTER", btn, "CENTER", 0.5, -0.5)
-    end
-
-    btn:SetPushedTexture("Interface\\Buttons\\UI-Quickslot-Depress")
-    local pt = btn:GetPushedTexture()
-    if pt then
-        resetTemplateTexture(pt)
-        pt:ClearAllPoints()
-        pt:SetSize(size * PUSHED_RATIO, size * PUSHED_RATIO)
-        pt:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    end
-
-    btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-    local ht = btn:GetHighlightTexture()
-    if ht then resetTemplateTexture(ht); ht:ClearAllPoints(); ht:SetAllPoints(btn) end
-end
+-- Bakes the classic action-button art onto an ActionButtonTemplate button, and
+-- works around 1.15.9's nine-sliced state textures while doing it. Shared with
+-- the set editor and the Trinkets module — see addon.StyleSlotButton in Core.
+local styleSlotButton = addon.StyleSlotButton
 
 -- ── Masque ───────────────────────────────────────────────────────────────────
---
--- Masque is a shared LibStub library: any addon that embeds it (not just the
--- standalone "Masque" addon) makes LibStub("Masque") available and keeps
--- applying whichever skin was last chosen for a given group name. Registration
--- is unconditional — the buttons already carry the baked Blizzard Classic look
--- from styleSlotButton, so there's no in-addon toggle to gate it. Someone who
--- doesn't want skinning just disables our groups in Masque's own options, which
--- reverts them to that baked look.
---
--- Three groups rather than one, mirroring how the original ItemRack split them,
--- so the on-screen bar can be skinned separately from the pop-out menus and the
--- set editor's paper-doll grid.
+-- Masque is a shared LibStub library: any addon embedding it makes
+-- LibStub("Masque") available and keeps applying whichever skin was last chosen
+-- for a group name. Registration is unconditional — the buttons already carry
+-- the baked look, so anyone who doesn't want skinning disables our groups in
+-- Masque's own options. Three groups, mirroring upstream ItemRack, so the bar
+-- can be skinned separately from the menus and the editor grid.
 local MASQUE_LABELS = {
     buttons = "Item Rack Buttons",
     menus   = "Item Rack Menus",
@@ -104,15 +50,12 @@ local MASQUE_LABELS = {
 }
 local masqueGroups = {}
 
--- Masque's auto-detect (calling AddButton with no ButtonData) only reliably
--- finds a plain button's Icon and Cooldown; every other layer has to be listed
--- by hand or it keeps drawing with our un-skinned texture over the top of the
--- skin. Absent regions are simply nil here — menu and editor buttons have no
--- hotkey, editor buttons have no count — and Masque skips those.
+-- Masque's auto-detect only reliably finds Icon and Cooldown; every other layer
+-- must be listed by hand or it keeps drawing our un-skinned texture over the
+-- skin. Absent regions are nil here and Masque skips them.
 --
--- irBorder is deliberately NOT handed over: Masque applies its skin's own
--- colour to the Border layer, which would fight the red/blue tint we use there
--- to mean "missing" versus "in the bank".
+-- irBorder is deliberately NOT handed over: Masque would apply its skin's colour
+-- to the Border layer, fighting the red/blue "missing" vs "in the bank" tint.
 local function masqueButtonData(btn)
     return {
         Icon      = btn.icon,
@@ -142,11 +85,9 @@ end
 
 -- ── Docking geometry ─────────────────────────────────────────────────────────
 
--- A docked button's Side names the edge of ITSELF that meets its anchor. These
--- are the exact same xoff/yoff conventions upstream ItemRack used for its
--- button-to-button docking (offset is added to the anchor point named by
--- OppositeSide, so e.g. Side="LEFT" sits this button's LEFT edge against the
--- anchor's RIGHT edge, nudged out by xoff*spacing).
+-- A docked button's Side names the edge of ITSELF that meets its anchor — the
+-- same xoff/yoff convention upstream ItemRack used. Side="LEFT" sits this
+-- button's LEFT edge against the anchor's RIGHT edge, nudged by xoff*spacing.
 local DockOffset = {
     LEFT   = { xoff =  1, yoff =  0 },
     RIGHT  = { xoff = -1, yoff =  0 },
@@ -155,34 +96,25 @@ local DockOffset = {
 }
 local OppositeSide = { LEFT = "RIGHT", RIGHT = "LEFT", TOP = "BOTTOM", BOTTOM = "TOP" }
 
--- The grid a pop-out menu's icons are laid out on, one cell per icon. Icon
--- spacing is a user setting (menuIconSpacing), so the cell — and everything
--- measured in cells below — is read fresh rather than baked in as a constant.
+-- The grid a pop-out menu's icons lay out on, one cell per icon. Icon spacing is
+-- a user setting, so the cell is read fresh rather than baked in.
 local function getCell()
     return BTN_SIZE + (getData().menuIconSpacing or 4)
 end
 IR.GetMenuCell = getCell
 
--- Where a pop-out menu grows from once it's docked to a button corner-to-corner.
--- Keyed by mainDock..menuDock; see IR.DockWindows. Rebuilt (cheaply — eight
--- small tables) whenever the icon spacing changes, since two of its four
--- numbers per entry are measured in icon-spacing units:
+-- Where a pop-out menu grows from once docked corner-to-corner. Keyed by
+-- mainDock..menuDock; rebuilt when icon spacing changes, since two of its four
+-- numbers are in icon-spacing units:
 --
---   NEAR — how far the first icon sits from the menu's own backdrop border, on
---          whichever axis faces the button. Half the border's fixed 12px
---          (see getOrCreateMenu's frame size) plus half an icon-spacing gap,
---          since a uniform grid leaves half a gap's worth of room before the
---          first icon too, same as after every icon that follows it.
---   FAR  — the same measurement from the icon's FAR edge instead — needed
---          wherever the frame's anchor corner sits on the opposite side of the
---          grid from the button, so the first icon has to clear its own width
---          before the near-button padding even starts.
+--   NEAR — how far the first icon sits from the menu's backdrop border on the
+--          axis facing the button: half the border's 12px plus half a gap.
+--   FAR  — the same from the icon's FAR edge, for where the frame's anchor
+--          corner is on the opposite side of the grid from the button.
 --
--- xoff/yoff corner-match the menu against the button; one of the two is always
--- 0 here — that's the axis the menu actually separates from the button along
--- (the two corners share the other coordinate), and it's the axis the user's
--- menu-gap setting adds distance on. `side` names which one, so DockWindows
--- doesn't have to re-derive it from the corner names at every hover.
+-- xoff/yoff corner-match the menu to the button; one is always 0 — the axis the
+-- menu separates along, and the one the menu-gap setting adds to. `side` names
+-- it so DockWindows needn't re-derive it per hover.
 local function buildMenuDockInfo(near, far)
     return {
         TOPRIGHTTOPLEFT       = { xoff = 0,    yoff =  near, xdir =  1, ydir = -1, xstart =  near, ystart = -near, side = "RIGHT"  },
@@ -196,9 +128,8 @@ local function buildMenuDockInfo(near, far)
     }
 end
 
--- Cached and only rebuilt when the spacing setting actually changes, so a drag
--- preview polling this several times a second isn't allocating eight tables on
--- every tick for a value that essentially never moves mid-hover.
+-- Cached and rebuilt only when the spacing setting changes, so a drag preview
+-- polling this several times a second isn't allocating eight tables a tick.
 local menuDockInfoCache, menuDockInfoNear
 
 local function getMenuDockInfo()
@@ -214,14 +145,10 @@ end
 -- RIGHT/TOP need a bigger offset to push away, LEFT/BOTTOM need a smaller one.
 local MenuGapSign = { RIGHT = 1, LEFT = -1, TOP = 1, BOTTOM = -1 }
 
--- The frame edge touches the button at xoff/yoff=0 on the separating axis, but
--- the first ICON sits a further NEAR inside that edge — the menu's own backdrop
--- border (see buildMenuDockInfo above). That built-in padding is what a menu
--- gap of 0 was still showing: the FRAMES were flush, but the icon inside one
--- of them was not. Cancelled out here so "Menu Gap = 0" means what it says —
--- the icon itself sits flush against the button — and every extra unit the
--- user dials in becomes real, visible space, not padding on top of padding
--- that was already there.
+-- The frame edge touches the button at 0 on the separating axis, but the first
+-- ICON sits NEAR further inside it — the menu's own backdrop border. That
+-- padding is what a menu gap of 0 still showed: the FRAMES were flush, the icon
+-- wasn't. Cancelled out here so "Menu Gap = 0" means the icon sits flush.
 local function menuDockOffset(info, gap)
     local near  = 6 + (getData().menuIconSpacing or 4) / 2
     local delta = ((gap or 0) - near) * MenuGapSign[info.side]
@@ -237,35 +164,24 @@ end
 local getOrCreateButton
 
 -- ── Clusters ─────────────────────────────────────────────────────────────────
+-- A cluster is one bar of docked buttons, and it is pure bookkeeping —
+-- buttons[id] = { cluster, DockTo, Side } and clusters[cid] = { px, py, ... } —
+-- NOT a frame owning the buttons as children.
 --
--- A cluster is one bar of docked buttons. It's pure bookkeeping —
--- Layout().buttons[id] = { cluster, DockTo, Side } and Layout().clusters[cid] =
--- { px, py, scale, spacing, alpha, ... } — NOT a frame that owns the buttons as
--- children.
+-- That matters because :SetParent() on a secure frame taints whatever it's moved
+-- into. An earlier version made a container Frame the parent of each cluster
+-- (for shared scale/alpha via inheritance); every SetParent() quietly tainted
+-- it, and the first container:Show()/:Hide() raised ADDON_ACTION_BLOCKED. These
+-- are SecureActionButtonTemplate buttons — never reparent them after creation.
 --
--- This matters because of a hard WoW rule: reparenting a secure/protected frame
--- via :SetParent() taints whatever it's moved into. An earlier version of this
--- file made a plain "container" Frame the parent of each cluster's buttons (to
--- get shared scale/alpha "for free" via frame inheritance) — that worked for a
--- while, but every SetParent() call quietly tainted the container, and the
--- first time something called container:Show()/:Hide() afterwards (e.g.
--- ReflectHideOOC on leaving combat) the client raised ADDON_ACTION_BLOCKED.
--- Buttons are ActionButtonTemplate+SecureActionButtonTemplate, so they can
--- never be SetParent()'d after creation.
---
--- The fix (and what upstream ItemRack, Bartender4 and Dominos all actually do):
--- buttons stay parented to UIParent for life. The cluster's HEAD button (the
--- one with no DockTo) owns the absolute position; every other member is
--- SetPoint-anchored directly to its own dock-chain neighbour, exactly like
--- upstream's ConstructLayout. Scale/alpha are applied per-button, not
--- inherited from a parent. Dragging the head button (:StartMoving()) then
--- carries the whole chain along for free, since WoW re-evaluates each child's
--- anchor live — no per-frame reflow code needed, and nothing is ever
--- reparented.
+-- Instead, as upstream ItemRack, Bartender4 and Dominos all do: buttons stay on
+-- UIParent for life. The HEAD (no DockTo) owns the absolute position and every
+-- other member is SetPoint-anchored to its dock-chain neighbour, so dragging the
+-- head carries the chain for free. Scale/alpha are applied per button.
 
 -- Detached fallback for a nil/unknown cid — e.g. the settings UI reading a
--- stepper's value before the user has picked a bar to edit. Never written back
--- to the DB, so it can't accidentally create a phantom cluster entry.
+-- stepper before a bar is picked. Never written back, so it can't create a
+-- phantom cluster entry.
 local NO_CLUSTER = { scale = 1, spacing = 4, alpha = 1 }
 
 local function clusterData(cid)
@@ -304,10 +220,8 @@ local function clusterIDs()
 end
 IR.ClusterIDs = clusterIDs
 
--- Whichever member owns the cluster's absolute position: the one with no
--- DockTo, or (defensively — shouldn't happen once ConstructLayout has swept
--- everything, but layoutCluster also runs ad hoc after single operations) one
--- whose DockTo points outside this cluster or at itself.
+-- Whichever member owns the absolute position: the one with no DockTo, or
+-- (defensively) one whose DockTo points outside this cluster or at itself.
 local function clusterHead(cid, members)
     local buttonsDB = Layout().buttons
     for _, id in ipairs(members) do
@@ -335,10 +249,9 @@ local function newCluster(px, py, from)
     return cid
 end
 
--- Reads a button's own absolute (UIParent-space) position, the same
--- GetLeft()*scale technique upstream's ReflectMainScale uses — GetLeft()/
--- GetTop() are already reported in the parent's (UIParent's) coordinate space,
--- so multiplying by the button's own scale converts to actual screen pixels.
+-- Reads a button's absolute (UIParent-space) position, the same GetLeft()*scale
+-- technique upstream's ReflectMainScale uses: GetLeft()/GetTop() are already in
+-- the parent's space, so multiplying by the button's own scale gives pixels.
 local function buttonAbsolutePosition(btn)
     if not (btn and btn:GetLeft()) then return nil, nil end
     local scale = btn:GetScale() or 1
@@ -357,17 +270,14 @@ local function saveClusterHeadPosition(cid)
 end
 
 -- Screen clamping is the HEAD's job alone. Every other member is anchored to a
--- neighbour, so clamping it individually would let the screen edge override its
--- dock offset — which is exactly what made a bar pushed into a corner squash its
--- own icons together. With only the head clamped, and its clamp rectangle grown
--- to cover the whole bar (below), the bar simply stops at the edge instead.
+-- neighbour, so clamping it individually lets the screen edge override its dock
+-- offset — which is what made a bar pushed into a corner squash its icons
+-- together. With only the head clamped, and its clamp rect grown to cover the
+-- whole bar, the bar stops at the edge.
 --
--- SetClampRectInsets shifts each edge of the clamped rectangle relative to the
--- frame's own: a negative left inset moves that edge further left, a positive
--- right inset further right, and so on. Feeding it the bar's bounding box in the
--- head's coordinate space therefore makes the client clamp the bar, not the
--- button. Deltas are read off live frames, so this runs at drag time, when
--- everything is laid out and settled.
+-- SetClampRectInsets shifts each edge of the clamped rect relative to the
+-- frame's own, so feeding it the bar's bounding box in the head's coordinate
+-- space clamps the bar, not the button. Read off live frames at drag time.
 local function applyClusterClamp(cid)
     -- Same combat rule the rest of the layout code follows: these are secure
     -- buttons, so leave their clamping alone until the lockdown lifts.
@@ -389,17 +299,27 @@ local function applyClusterClamp(cid)
         end
     end
 
-    headBtn:SetClampRectInsets(
-        minL - headBtn:GetLeft(),
-        maxR - headBtn:GetRight(),
-        maxT - headBtn:GetTop(),
-        minB - headBtn:GetBottom())
+    local l = minL - headBtn:GetLeft()
+    local r = maxR - headBtn:GetRight()
+    local t = maxT - headBtn:GetTop()
+    local b = minB - headBtn:GetBottom()
+
+    -- "Allow dragging off screen" pulls that rectangle back to a small patch at the
+    -- middle of the bar. Same keep-a-handle rule core applies to single-frame
+    -- movables, against the bar's bounding box rather than one frame's rect.
+    if addon.GetEditOffscreen and addon.GetEditOffscreen() then
+        local barW, barH = maxR - minL, maxT - minB
+        local dx = math.max(0, (barW - addon.OffscreenKeep(barW)) / 2)
+        local dy = math.max(0, (barH - addon.OffscreenKeep(barH)) / 2)
+        l, r, t, b = l + dx, r - dx, t - dy, b + dy
+    end
+
+    headBtn:SetClampRectInsets(l, r, t, b)
 end
 
--- Anchors every member directly to its own dock-chain neighbour. The head owns
--- the cluster's absolute position (from clusterData); everything else is
--- positioned breadth-first outward from it, exactly like upstream ItemRack's
--- ConstructLayout. No frame is ever reparented.
+-- Anchors every member to its own dock-chain neighbour. The head owns the
+-- absolute position; the rest are positioned breadth-first outward from it, as
+-- upstream's ConstructLayout does. No frame is ever reparented.
 local function layoutCluster(cid)
     if InCombatLockdown() then return end
     local db      = Layout()
@@ -484,8 +404,8 @@ local function layoutCluster(cid)
 end
 
 -- Re-roots a cluster's dock chain at `newHead` by reversing every link between
--- it and the old head. Used when the button the user dragged onto a target
--- isn't the one its cluster currently hangs from — after this it is.
+-- it and the old head. Used when the dragged button isn't the one its cluster
+-- currently hangs from.
 local function reroot(newHead)
     local db = Layout()
     local prev, prevSide = nil, nil
@@ -502,9 +422,8 @@ local function reroot(newHead)
     end
 end
 
--- Anything docked to a departing button re-links to that button's own anchor,
--- so the tail of the bar isn't orphaned. If the departing button was the head,
--- the first child takes over as head and the rest hang off it.
+-- Anything docked to a departing button re-links to that button's own anchor, so
+-- the tail isn't orphaned. If it was the head, the first child takes over.
 local function relinkChildren(id)
     local db     = Layout()
     local data   = db.buttons[id]
@@ -526,9 +445,8 @@ local function relinkChildren(id)
 end
 
 -- ── Docking brackets ─────────────────────────────────────────────────────────
--- Two thin coloured bars lighting up the edges about to be joined while a
--- cluster is dragged. Plain textures rather than ItemRack's bracket art, so the
--- module ships no media of its own.
+-- Two thin coloured bars lighting up the edges about to be joined. Plain
+-- textures rather than ItemRack's bracket art, so no media ships with this.
 local brackets = {}
 local function getBracket(which)
     if brackets[which] then return brackets[which] end
@@ -549,10 +467,9 @@ local function hideBrackets()
     IR.docking = nil
 end
 
--- side is the edge of `frame` being highlighted. Brackets are plain frames
--- reparented onto whichever button they're highlighting — safe, since the
--- bracket itself is never secure and the button (self) isn't the one being
--- reparented here.
+-- `side` is the edge of `frame` being highlighted. Brackets are plain frames
+-- reparented onto the button they highlight — safe, since the bracket is never
+-- secure and the button itself isn't the thing being reparented.
 local function showBracket(which, side, frame)
     local f = getBracket(which)
     f:ClearAllPoints()
@@ -575,10 +492,9 @@ end
 
 local dockTicker
 
--- While a cluster is being dragged, look for one of its buttons sitting flush
--- against a button of some OTHER cluster. Comparisons are in screen space
--- (GetLeft() and friends are already scaled), so two clusters at different
--- scales still snap sensibly.
+-- While a cluster is dragged, look for one of its buttons flush against a button
+-- of another cluster. Comparisons are in screen space, so two clusters at
+-- different scales still snap sensibly.
 local function clusterDocking()
     local moving = IR.clusterMoving
     if not moving then
@@ -628,10 +544,9 @@ local function clusterDocking()
     end
 end
 
--- Pulls one button out of its cluster into a cluster of its own, placed exactly
--- where it already sits and inheriting the old cluster's look so it doesn't
--- change size or fade on the way out. Pure bookkeeping — no frame is moved or
--- reparented, layoutCluster below does the actual (re)anchoring.
+-- Pulls one button into a cluster of its own, placed where it already sits and
+-- inheriting the old cluster's look. Pure bookkeeping — layoutCluster does the
+-- actual re-anchoring.
 local function splitButton(id)
     local db   = Layout()
     local data = db.buttons[id]
@@ -650,10 +565,9 @@ local function splitButton(id)
     return cid
 end
 
--- Matches upstream ItemRack's StartMovingButton: no combat guard on
--- StartMoving() itself (only SetPoint/SetScale-driven layout, in
--- layoutCluster, needs that guard) — dragging the head button carries every
--- docked sibling along for free since their anchors are relative to it.
+-- No combat guard on StartMoving() itself; only the SetPoint/SetScale layout in
+-- layoutCluster needs one. Dragging the head carries every docked sibling for
+-- free, since their anchors are relative to it.
 local function startMovingButton(self)
     if getData().locked or IR.editMode then return end
     local db   = Layout()
@@ -695,9 +609,9 @@ local function stopMovingButton()
     if not cid then return end
 
     if dock and not InCombatLockdown() then
-        -- Merge into the target cluster: the dragged button that touched becomes
-        -- the link, so re-root its own cluster on it first. Every member then
-        -- adopts the target cluster's scale, padding and alpha by joining it.
+        -- Merge into the target cluster: the dragged button that touched becomes the
+        -- link, so re-root its own cluster on it first. Every member then adopts the
+        -- target's scale, padding and alpha.
         reroot(dock.from)
         db.buttons[dock.from].DockTo = dock.to
         db.buttons[dock.from].Side   = dock.side
@@ -716,9 +630,8 @@ end
 
 -- ── Button creation ──────────────────────────────────────────────────────────
 
--- Assigns the forward-declared local above. Parented to UIParent for life —
--- see the big comment on the Clusters section for why it must never be
--- SetParent()'d again after this.
+-- Parented to UIParent for life — see the Clusters comment for why it must never
+-- be SetParent()'d again.
 function getOrCreateButton(id)
     if buttons[id] then return buttons[id] end
     -- Secure frames and SetAttribute are both blocked in combat; callers must
@@ -734,21 +647,13 @@ function getOrCreateButton(id)
     -- layoutCluster; see applyClusterClamp for why it can't be per-button.
     btn:SetClampedToScreen(false)
     btn:RegisterForDrag("LeftButton", "RightButton")
-    -- BOTH click phases, always — never just one.
-    --
-    -- Using an inventory item is protected, and the client honours it on ONE
-    -- physical phase only: whichever `ActionButtonUseKeyDown` names, for the
-    -- mouse just as much as for a keybind. A button registered for the other
-    -- phase still gets its OnClick, but the protected use inside is silently
-    -- refused — which is what left these buttons unable to activate anything by
-    -- mouse at all once that CVar was turned on. Registering both phases puts a
-    -- use on whichever one the client will accept, and the other no-ops (so
-    -- nothing fires twice). Same shape as the trinket buttons and the action
-    -- bars, so all three follow the one setting under General → Input.
-    --
-    -- The non-secure half of a click is a different matter: PostClick now
-    -- arrives twice per press, so IR.ButtonPostClick keeps only the phase the
-    -- CVar selects.
+    -- BOTH click phases, always. Using an inventory item is protected, and the
+    -- client honours it on ONE physical phase only — whichever
+    -- `ActionButtonUseKeyDown` names, for mouse as much as keybind. A button on the
+    -- other phase still gets its OnClick, but the protected use is silently refused,
+    -- which is what left these unable to activate anything by mouse. Registering
+    -- both puts a use on the accepted phase and the other no-ops. PostClick now
+    -- arrives twice per press, so IR.ButtonPostClick keeps only the CVar's phase.
     btn:RegisterForClicks("LeftButtonDown", "LeftButtonUp", "RightButtonDown", "RightButtonUp")
     styleSlotButton(btn, BTN_SIZE)
 
@@ -787,9 +692,9 @@ function getOrCreateButton(id)
     time:SetPoint("BOTTOM", 0, 2)
     btn.irTime = time
 
-    -- Small overlay in the corner showing what is waiting to swap in once
-    -- combat ends. Inset into the button rather than hung off its corner, so it
-    -- can't overlap whatever the button is docked against.
+    -- Small overlay showing what's waiting to swap in once combat ends. Inset into
+    -- the button rather than hung off its corner, so it can't overlap whatever the
+    -- button is docked against.
     local queue = btn:CreateTexture(nil, "OVERLAY")
     queue:SetSize(16, 16)
     queue:SetPoint("TOPLEFT", 2, -2)
@@ -829,12 +734,9 @@ end
 
 -- ── Adding / removing buttons ────────────────────────────────────────────────
 
--- Every new button lands in the middle of the screen as a bar of its own,
--- never bolted onto whatever was spawned last — joining bars is a deliberate
--- act (drag one onto another), not something Alt+clicking a second slot should
--- do behind your back. Successive spawns are stepped down and right by a cell
--- at a time so a handful of them lands as a readable stack instead of one
--- opaque pile you'd have to peel apart.
+-- Every new button lands mid-screen as its own bar, never bolted onto the last
+-- one — joining bars is a deliberate drag. Successive spawns step down and right
+-- by a cell so several land as a readable stack.
 local function centreSpawnPosition()
     local n     = #clusterIDs() % 8
     local scale = getData().buttonScale or 1
@@ -898,16 +800,16 @@ function IR.ResetButtons()
     d.menuScale, d.locked = 0.85, false
 end
 
--- Rebuilds every cluster from saved data. Also sweeps up any button whose
--- cluster record went missing (a partial save, a hand-edited SavedVariables)
--- by giving it a cluster of its own rather than leaving it unplaceable.
+-- Rebuilds every cluster from saved data, and sweeps up any button whose cluster
+-- record went missing by giving it one of its own rather than leaving it
+-- unplaceable.
 function IR.ConstructLayout()
     if InCombatLockdown() then return end
     local saved = Layout().buttons
 
-    -- Frames live for the session but the layout they're built from belongs to
-    -- the profile, so a profile switch can leave a button on screen that the
-    -- new profile doesn't ask for. Nothing else hides those, so do it here.
+    -- Frames live for the session but their layout belongs to the profile, so a
+    -- profile switch can leave a button on screen the new profile doesn't ask for.
+    -- Nothing else hides those.
     for id, btn in pairs(buttons) do
         if not saved[id] then
             btn:Hide()
@@ -1023,19 +925,10 @@ function IR.UpdateButtonLocks()
     end
 end
 
--- GetMouseFocus was replaced by GetMouseFoci (a list, front-most first) part way
--- through 11.x; Classic Era still has the old one. Take whichever exists.
-local function mouseFocusFrame()
-    if GetMouseFoci then
-        local foci = GetMouseFoci()
-        return foci and foci[1]
-    end
-    return GetMouseFocus and GetMouseFocus()
-end
+local mouseFocusFrame = addon.GetMouseFocusFrame
 
--- Which Item Rack button, if any, the pointer is over. Walks up from whatever
--- has mouse focus because the focus can be a child region of the button (its
--- cooldown frame, say) rather than the button itself.
+-- Walks up from whatever has mouse focus, because the focus can be a child
+-- region of the button (its cooldown frame) rather than the button itself.
 function IR.HoveredSlotButtonID()
     local focus = mouseFocusFrame()
     while focus do
@@ -1056,14 +949,12 @@ end
 
 -- ── Keybind text ─────────────────────────────────────────────────────────────
 
--- Same abbreviations the action bars use (LibKeyBound's ToShortKey, which
--- LibActionButton drives its hotkey text from) — written out here rather than
--- reached for, because LibKeyBound ships with the Action Bars module and this
--- one has to stand on its own.
+-- Same abbreviations the action bars use (LibKeyBound's ToShortKey), written out
+-- here rather than reached for, because LibKeyBound ships with the Action Bars
+-- module and this one has to stand alone.
 --
--- Order matters: each replacement runs on the result of the last, so the longer
--- names have to be consumed before the shorter ones they contain (PAGEUP before
--- UP, MOUSEWHEELUP before UP).
+-- Order matters: each replacement runs on the last one's result, so longer names
+-- must be consumed before the shorter ones they contain (PAGEUP before UP).
 local KEY_SHORTENINGS = {
     { "ALT%-",   "A" },
     { "CTRL%-",  "C" },
@@ -1119,13 +1010,11 @@ function IR.AbbreviateKey(key)
     return key
 end
 
--- Font, size, colour and position of one button's keybind text.
---
--- Deliberately the same treatment LibActionButton gives the action bars' hotkey
--- text (UpdateTextElement: the game's number font path, an explicit size, and
--- OUTLINE): the plain drop-shadow the font object carries on its own is what
--- made this text look softer than the action bars', outline is what makes small
--- text crisp against an icon.
+-- Font, size, colour and position of a button's keybind text. Deliberately the
+-- same treatment LibActionButton gives the action bars (the game's number font,
+-- an explicit size, OUTLINE): the font object's own drop shadow is what made
+-- this text look softer than theirs, and outline is what keeps small text crisp
+-- against an icon.
 local HOTKEY_FLAGS = "OUTLINE"
 
 local function applyHotKeyStyle(btn)
@@ -1134,8 +1023,7 @@ local function applyHotKeyStyle(btn)
 
     local path = NumberFontNormalSmallGray:GetFont()
     if d.hotkeyFont then
-        local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
-        path = (LSM and LSM:Fetch("font", d.hotkeyFont)) or path
+        path = addon.FetchMedia("font", d.hotkeyFont) or path
     end
     if path then text:SetFont(path, d.hotkeyFontSize or 13, HOTKEY_FLAGS) end
 
@@ -1158,20 +1046,14 @@ function IR.UpdateHotKeys()
 end
 
 -- ── Keypress feedback ────────────────────────────────────────────────────────
--- Keys are bound to a hidden twin of the button (see IR.SetSlotBinding), so the
--- visible one hears nothing about a press unless the twin passes it on. The twin
--- is registered for both click phases, so a keypress arrives as a down click and
--- (where the client sends one) a matching up click — which is what lets the
--- pushed state last exactly as long as the key is held.
+-- Keys are bound to a hidden twin (see IR.SetSlotBinding), so the visible button
+-- hears nothing unless the twin passes it on. The twin registers both phases, so
+-- a keypress arrives as a down click and (where the client sends one) a matching
+-- up click — which is what lets the pushed state last as long as the key is held.
+-- PRESS_STUCK is a safety net for a release that never arrives.
 --
--- A press is therefore held until its release arrives, with PRESS_STUCK purely
--- as a safety net for a release that never does (alt-tabbing mid-press eats it).
---
--- PRESS_FLASH covers the one case where no release can be coming: a client that
--- sends only the UP half (this addon targets a single client build, which sends
--- both, but the up-only shape is what an ActionButtonUseKeyDown of 0 produces on
--- clients that dispatch one phase per binding). There, the up click IS the
--- press, so it gets a fixed flash instead of waiting for a second event.
+-- PRESS_FLASH covers the one case where no release can come: a client sending
+-- only the UP half, where the up click IS the press, so it gets a fixed flash.
 local PRESS_FLASH = 0.2
 local PRESS_STUCK = 5
 
@@ -1196,10 +1078,9 @@ function IR.SlotButtonClicked(id, down)
         return
     end
 
-    -- Otherwise this is the press — including a release with no press behind it
-    -- (see PRESS_FLASH). `lastPressID` is only ever set from a genuine down
-    -- click, so an up-only client's clicks can't be mistaken for each other's
-    -- halves however fast they come.
+    -- Otherwise this is the press — including a release with no press behind it (see
+    -- PRESS_FLASH). `lastPressID` is only set from a genuine down click, so an
+    -- up-only client's clicks can't be mistaken for each other's halves.
     local paired = down ~= false
     if heldID and heldID ~= id then releaseSlotButton() end
     heldID = id
@@ -1219,6 +1100,19 @@ function IR.ReflectHideOOC()
     -- Combat events fire whether or not the module is on, and this would happily
     -- re-show buttons the master toggle had just hidden.
     if not getData().enabled then return end
+
+    -- Both calls below are protected: these are SecureActionButtonTemplate
+    -- buttons, so Show() and Hide() are refused in combat — even when the frame
+    -- is already in the state being asked for. The one in-combat caller the
+    -- client lets through is PLAYER_REGEN_DISABLED, which gets a grace window
+    -- before the lockdown bites; that's what makes "show them as the fight
+    -- starts" work at all, and it flags itself here. Everything else arriving
+    -- mid-combat — PLAYER_ALIVE and PLAYER_UNGHOST both can, and so can a zone
+    -- change that re-fires PLAYER_REGEN_DISABLED with the lockdown long since up
+    -- — has to wait. Nothing is lost by waiting: leaving combat fires this again,
+    -- and mid-fight there was nothing to change anyway.
+    if InCombatLockdown() and not IR.regenGrace then return end
+
     local hide = getData().hideOOC and not IR.inCombat
     for id in pairs(Layout().buttons) do
         local btn = buttons[id]
@@ -1233,14 +1127,12 @@ function IR.ReflectAlpha()
 end
 
 -- ── Per-cluster layout ───────────────────────────────────────────────────────
--- Scale, padding and transparency belong to a cluster, not to the module, so a
+-- Scale, padding and transparency belong to a cluster, not the module, so a
 -- compact trinket bar and an oversized set button can coexist. Position is kept
--- in UIParent coordinates (see layoutCluster), which is what stops a cluster
--- wandering when its scale changes.
+-- in UIParent coordinates, which is what stops a cluster wandering on rescale.
 
--- All three no-op on a nil cid — nothing selected yet in the Layout tab's bar
--- picker — rather than writing into the detached NO_CLUSTER fallback and then
--- trying to lay out a bar that doesn't exist.
+-- All three no-op on a nil cid rather than writing into the detached NO_CLUSTER
+-- fallback and then laying out a bar that doesn't exist.
 function IR.SetClusterScale(cid, value)
     if not cid then return end
     clusterData(cid).scale = math.max(0.5, math.min(2, value))
@@ -1260,12 +1152,9 @@ function IR.SetClusterAlpha(cid, value)
 end
 
 -- A cluster is named after the slots it holds, so the Layout tab and Edit Mode
--- both identify a bar by what's actually in it rather than by a bare number.
---
--- `full` lists every member instead of truncating after three. A slot can only
--- ever live on one bar, so the full list is unique across bars — which is what
--- lets the Layout tab's picker tell two bars apart by name alone, with no id
--- hanging off the end of the label.
+-- identify a bar by contents rather than a bare number. `full` lists every
+-- member instead of truncating after three — a slot lives on only one bar, so
+-- the full list is unique, which lets the picker tell two bars apart.
 function IR.ClusterLabel(cid, full)
     local members = clusterMembers(cid)
     local names = {}
@@ -1311,10 +1200,9 @@ function IR.ReflectAltClick()
     end
 end
 
--- Every "Lock bars" checkbox the addon shows (settings panel, set editor's own
--- top bar, and any others added later) registers here rather than each place
--- overwriting a single global sync function — several of these can exist at
--- once, and locking from any one of them has to be reflected in the rest.
+-- Every "Lock bars" checkbox registers here rather than each place overwriting a
+-- single global sync function: several can exist at once, and locking from any
+-- one has to be reflected in the rest.
 IR.LockCheckboxes = IR.LockCheckboxes or {}
 
 function IR.RegisterLockCheckbox(cb)
@@ -1324,10 +1212,9 @@ end
 function IR.ReflectLock()
     if menuFrame then
         local locked = getData().locked
-        -- The background/border is the "this can be dragged" cue for a menu
-        -- docked to a movable cluster button; the set editor docks the same
-        -- shared menuFrame to its (non-movable) slot buttons, where that cue
-        -- would be meaningless, so only show it when IR.menuMovable is set.
+        -- The background/border is the "this can be dragged" cue for a menu docked to a
+        -- movable cluster button. The set editor docks the same shared menuFrame to its
+        -- non-movable slot buttons, where the cue would be meaningless.
         local showBorder = not locked and IR.menuMovable and true or false
         menuFrame:EnableMouse(not locked)
         menuFrame:SetBackdropBorderColor(0.3, 0.3, 0.3, showBorder and 1 or 0)
@@ -1352,15 +1239,11 @@ function IR.FlashButton(id)
     end)
 end
 
--- Set button shows the current set's own icon and name while gear matches it,
--- or while the engine is still actively getting you into it (IterateSwapList
--- hasn't finished, or a request is queued behind locks/casting/combat) — that
--- case fades the icon rather than swap it, since it'd otherwise flicker to the
--- generic icon and back the moment the pending move lands. Once gear has
--- genuinely drifted with nothing working towards fixing it — you swapped a
--- piece out yourself — it falls back to the default gear icon with no label,
--- same as a character that's never equipped a set at all, rather than keep
--- crediting a set you're not actually wearing.
+-- The set button shows the current set's icon and name while gear matches it, or
+-- while the engine is still working towards it — that case fades the icon rather
+-- than swapping it, which would flicker to the generic icon and back as the
+-- pending move lands. Once gear has drifted with nothing fixing it, it falls
+-- back to the default gear icon with no label.
 function IR.UpdateCurrentSet()
     local db  = DB()
     local set = db.currentSet and db.sets[db.currentSet]
@@ -1384,9 +1267,9 @@ end
 
 -- Pending-swap overlay, both on our own buttons and on the character sheet.
 function IR.UpdateCombatQueue()
-    -- Which set the queued items belong to, if they came from a set at all —
-    -- IR.combatSet only means anything while the queue still holds something
-    -- (EquipItemByID queues single items with no set behind them).
+    -- Which set the queued items belong to, if any — IR.combatSet only means
+    -- anything while the queue still holds something, since EquipItemByID queues
+    -- single items with no set behind them.
     local queuedSet = next(IR.CombatQueue) and IR.combatSet
     if queuedSet and string.match(queuedSet, "^~") then queuedSet = nil end
 
@@ -1427,15 +1310,11 @@ end
 
 -- ── Button clicks ────────────────────────────────────────────────────────────
 
--- Which half of a click counts as the press. The buttons register both phases
--- (see getOrCreateButton) so the protected item use always lands on the one the
--- client will accept, but everything non-secure hanging off a click has to
--- happen exactly once — otherwise a single right-click would open a menu and
--- close it again, and one Alt+click would try to remove the button twice.
---
--- Tied to the same CVar rather than just picking a phase, so the whole button
--- reacts at the moment the General tab says it should. `down` is nil on a
--- client that doesn't pass it, which means only one phase is arriving anyway.
+-- Which half of a click counts as the press. The buttons register both phases so
+-- the protected use lands on the accepted one, but everything non-secure must
+-- happen exactly once — otherwise one right-click would open a menu and close it
+-- again. Tied to the same CVar rather than a fixed phase. `down` is nil on a
+-- client that doesn't pass it, where only one phase arrives.
 local function isPressPhase(down)
     if down == nil then return true end
     return down == (GetCVarBool("ActionButtonUseKeyDown") and true or false)
@@ -1469,13 +1348,18 @@ function IR.ButtonPostClick(self, mouseButton, down)
         IR.RemoveButton(id)
 
     elseif id == SET_BTN then
+        -- Equipping the current set is all a plain click does. Opening the set editor
+        -- used to be the catch-all for every other click, so a stray right-click threw
+        -- the window open mid-fight. Now opt-in per mouse button, off by default.
         if mouseButton == "LeftButton" and DB().currentSet then
             if d.equipToggle then
                 IR.ToggleSet(DB().currentSet)
             else
                 IR.EquipSet(DB().currentSet)
             end
-        else
+        elseif mouseButton == "RightButton" then
+            if d.setEditorOnRight then IR.ToggleSetEditor() end
+        elseif d.setEditorOnLeft then
             IR.ToggleSetEditor()
         end
 
@@ -1487,15 +1371,10 @@ end
 -- ── Menu ─────────────────────────────────────────────────────────────────────
 
 -- Where the menu sits is a per-bar preference, and it SNAPS: dropping it picks
--- one of the eight corner pairings ItemRack has always used (four sides of the
--- button, each aligned two ways) rather than leaving it wherever the mouse was.
--- The menu therefore stays welded to its button — it can't drift a few pixels
--- off, and it can't be lost off the edge of the screen no matter where it was
--- dropped.
---
--- Which side of the button each pairing puts the menu on, and which way the grid
--- then grows, is buildMenuDockInfo above; this is just the map from a snap
--- decision back to the { mainDock, menuDock } that produces it.
+-- one of the eight corner pairings ItemRack has always used rather than leaving
+-- it under the mouse, so it can't drift or be lost off screen. Which side each
+-- pairing puts the menu on is buildMenuDockInfo; this is the map from a snap
+-- decision back to the { mainDock, menuDock } producing it.
 local SnapDocks = {
     -- Beside the button: aligning tops makes the menu hang downwards, aligning
     -- bottoms makes it rise.
@@ -1511,10 +1390,9 @@ local SnapDocks = {
                alignRight  = { "BOTTOMRIGHT", "TOPRIGHT"    } },
 }
 
--- Screen-space edges of a frame. GetLeft() and friends report in the frame's
--- OWN coordinate space, and the menu and the button it hangs off are at
--- different scales, so both have to go through their effective scale before
--- they can be compared.
+-- GetLeft() and friends report in the frame's OWN coordinate space, and the menu
+-- and its button are at different scales, so both must go through their
+-- effective scale before they can be compared.
 local function screenRect(f)
     local l, r, t, b = f:GetLeft(), f:GetRight(), f:GetTop(), f:GetBottom()
     if not l then return end
@@ -1524,10 +1402,8 @@ end
 
 local SIDE_ORDER = { "RIGHT", "LEFT", "TOP", "BOTTOM" }
 
--- Where the menu would land if it were dropped right now: the side of the button
--- it attaches to, plus the corner pairing that produces it. Kept separate from
--- applying it so the drag preview and the drop itself can't ever disagree —
--- they're the same decision, read twice.
+-- Where the menu would land if dropped now. Kept separate from applying it so
+-- the drag preview and the drop can't disagree — one decision, read twice.
 local function computeSnap()
     local owner = IR.menuOwner
     if not (menuFrame and owner) then return end
@@ -1537,9 +1413,8 @@ local function computeSnap()
     if not (ml and bl) then return end
 
     -- The side it clears outright wins. Measuring the gap rather than comparing
-    -- centres is what keeps a long strip of items honest: drag a twelve-item
-    -- column alongside the button and its centre is nowhere near it, but the
-    -- only side it has actually cleared is still the one the user aimed at.
+    -- centres keeps a long strip honest: a twelve-item column's centre is nowhere
+    -- near the button, but the only side it has cleared is still the one aimed at.
     local gaps = { RIGHT = ml - br, LEFT = bl - mr, TOP = mb - bt, BOTTOM = bb - mt }
     local side, best
     for _, name in ipairs(SIDE_ORDER) do
@@ -1556,12 +1431,10 @@ local function computeSnap()
         end
     end
 
-    -- Then the alignment, which is really a choice of which way the grid runs
-    -- from there: a menu dropped low beside its button wants to hang downwards
-    -- from the button's top, one dropped high wants to rise from its bottom.
-    -- The flip needs half a button of clearance to trigger, so a drop that was
-    -- aimed squarely at one side lands on the conventional alignment (down and
-    -- to the right) rather than turning on which pixel the mouse was nearer.
+    -- Then the alignment — which way the grid runs. A menu dropped low wants to hang
+    -- down from the button's top, one dropped high to rise from its bottom. The flip
+    -- needs half a button of clearance, so a drop aimed squarely at one side lands
+    -- on the conventional alignment rather than on which pixel was nearer.
     local align
     if side == "RIGHT" or side == "LEFT" then
         align = dy > (bt - bb) / 2 and "alignBottom" or "alignTop"
@@ -1575,10 +1448,8 @@ end
 
 -- ── Snap preview ─────────────────────────────────────────────────────────────
 -- A drag that snaps has to say where it will land before the mouse comes up, or
--- the first the user knows about it is the menu jumping somewhere they didn't
--- ask for. Two cues, both live: an outline of the exact footprint the menu will
--- occupy, and a bar down the button edge it's about to attach to — the same red
--- edge bar bars already use to show they're about to dock (see showBracket).
+-- the menu just jumps somewhere unasked. Two live cues: an outline of the
+-- footprint it will occupy, and a bar down the button edge it will attach to.
 
 local snapGhost
 
@@ -1604,9 +1475,8 @@ local function hideSnapPreview()
     if brackets.snap then brackets.snap:Hide() end
 end
 
--- Run from the menu's OnUpdate for the length of a drag. Recomputed a few times
--- a second rather than every frame: the outline only ever jumps between eight
--- fixed places, so there is nothing for the extra frames to draw.
+-- Run from the menu's OnUpdate during a drag, recomputed a few times a second
+-- rather than every frame: the outline only jumps between eight fixed places.
 local SNAP_PREVIEW_STEP = 0.05
 local snapPreviewAfter  = 0
 
@@ -1624,10 +1494,9 @@ local function updateSnapPreview(_, elapsed)
     local dockInfo = getMenuDockInfo()
     local info  = dockInfo[mainDock .. menuDock] or dockInfo.TOPLEFTBOTTOMLEFT
 
-    -- Parented to the button at the menu's own scale, so the outline is drawn in
-    -- exactly the coordinate space the menu will be re-docked into and its size
-    -- can be copied across as-is. Snapping never changes the menu's dimensions —
-    -- only which corner it grows from — so the current size is the landing size.
+    -- Parented to the button at the menu's own scale, so the outline is drawn in the
+    -- coordinate space the menu will be re-docked into and its size copies across
+    -- as-is. Snapping never changes the menu's dimensions, only its corner.
     local ox, oy = menuDockOffset(info, getData().menuGap)
     local ghost = getSnapGhost()
     if ghost:GetParent() ~= owner then ghost:SetParent(owner) end
@@ -1664,11 +1533,10 @@ function IR.ResetMenuPosition(cid)
     IR.HideMenu()
 end
 
--- Only menus belonging to a movable button can be dragged: the character
--- sheet's own slot menus have no bar to remember a position for. The whole menu
--- is a drag handle, entries included — the border alone would be a few pixels
--- of target — which costs nothing, since a click that turns into a drag doesn't
--- fire OnClick, so a plain click on an entry still equips it.
+-- Only menus belonging to a movable button can be dragged: the character sheet's
+-- own slot menus have no bar to remember a position for. The whole menu is a
+-- drag handle, entries included — a click that turns into a drag doesn't fire
+-- OnClick, so a plain click on an entry still equips it.
 local function startMenuDrag()
     if not menuFrame or getData().locked or not IR.menuMovable then return end
     menuFrame.isMoving = true
@@ -1686,20 +1554,17 @@ local function stopMenuDrag()
     menuFrame:SetScript("OnUpdate", nil)
     hideSnapPreview()
     snapMenuToOwner()
-    -- Re-anchor to the button (the menu is loose at the absolute spot
-    -- StartMoving left it at) and rebuild: the new pairing changes which corner
-    -- the grid starts from and which way it runs, so the entries have to be
-    -- laid out again, not just moved.
+    -- Re-anchor to the button (the menu is loose at the absolute spot StartMoving
+    -- left it) and rebuild: the new pairing changes which corner the grid starts
+    -- from and which way it runs, so the entries must be laid out again.
     if IR.menuOpen then
         IR.DockMenuToButton(IR.menuOpen)
         IR.BuildMenu()
     end
 end
 
--- Right-clicking the menu's own background — not an entry, which still equips —
--- flips which way the grid runs: out from the button, or along its side. Same
--- gate as dragging, so it's available exactly when the menu is unlocked and
--- belongs to a movable button.
+-- Right-clicking the menu's background — not an entry, which still equips —
+-- flips which way the grid runs. Same gate as dragging.
 local function cycleMenuDirection()
     if getData().locked or not IR.menuMovable then return end
     local data = Layout().buttons[IR.menuMovable]
@@ -1718,12 +1583,10 @@ local function getOrCreateMenu()
     local f = CreateFrame("Frame", "DrievIRMenuFrame", UIParent, "BackdropTemplate")
     f:SetSize(getCell() + 12, getCell() + 12)
     f:SetFrameStrata("HIGH")
-    -- Deliberately NOT clamped. The menu is anchored to its button and resized
-    -- on every build, so a screen edge would shove it off that anchor and back
-    -- over the button — and while dragging it would refuse to go past the edge
-    -- at all, making "snap below" unreachable for a button near the bottom of
-    -- the screen. Snapping is what guarantees it can't be lost: wherever it's
-    -- dropped, it lands back on one of the button's four sides.
+    -- Deliberately NOT clamped. The menu is anchored to its button and resized on
+    -- every build, so a screen edge would shove it off that anchor and back over the
+    -- button — and while dragging it would refuse to pass the edge at all, making
+    -- "snap below" unreachable near the bottom. Snapping is what stops it being lost.
     f:SetClampedToScreen(false)
     f:SetMovable(true)
     f:EnableMouse(true)
@@ -1768,10 +1631,9 @@ function IR.HideMenu()
     IR.menuLeftAt   = nil
 end
 
--- Frames the mouse may sit over without the menu closing: the menu itself, the
--- button it opened from, and anything registered as keep-alive. The character
--- sheet and the set editor register themselves, so travelling from a slot to
--- the menu across the gap between them doesn't dismiss it mid-move.
+-- Frames the mouse may sit over without the menu closing: the menu, its button,
+-- and anything registered as keep-alive. The character sheet and set editor
+-- register themselves, so crossing the gap between them doesn't dismiss it.
 IR.menuKeepAlive = {}
 
 function IR.RegisterMenuKeepAlive(f)
@@ -1788,12 +1650,10 @@ local function mouseIsInMenuRegion()
     return false
 end
 
--- A menu the user has dragged away from its button leaves bare screen between
--- the two, and crossing that gap counts as leaving the region — so the menu
--- can't close the instant the mouse is outside, or a repositioned one would be
--- impossible to reach. It has to be outside for this long first: long enough to
--- cross a gap in one movement, short enough that the menu isn't left hanging
--- around over whatever the mouse moved on to.
+-- A menu dragged away from its button leaves bare screen between the two, and
+-- crossing that gap counts as leaving the region — so it can't close the instant
+-- the mouse is outside. Long enough to cross a gap in one movement, short enough
+-- not to leave the menu hanging over whatever the mouse moved on to.
 local MENU_LINGER = 0.25
 
 local function menuMouseoverTick()
@@ -1810,9 +1670,8 @@ local function menuMouseoverTick()
     IR.HideMenu()
 end
 
--- Places the menu relative to a frame. menuDock/mainDock name the corners being
--- joined — which is what a drag picks, by snapping — and orient decides whether
--- the grid runs sideways or up/down from there.
+-- menuDock/mainDock name the corners being joined — what a drag picks by
+-- snapping — and orient decides whether the grid runs sideways or up/down.
 function IR.DockWindows(menuDock, relativeTo, mainDock, orient, movableID)
     local f = getOrCreateMenu()
     local key = mainDock .. menuDock
@@ -1825,14 +1684,10 @@ function IR.DockWindows(menuDock, relativeTo, mainDock, orient, movableID)
     f:SetPoint(menuDock, relativeTo, mainDock, ox, oy)
     f:SetScale(getData().menuScale or 0.85)
 
-    -- Reparenting doesn't renumber the frame level, and inside the set editor the
-    -- menu's new parent is a slot button sitting at the same depth as the side
-    -- set list and the icon grid's scrollbar — all of which would otherwise draw
-    -- straight over it. Walk up to the window the button belongs to, take the
-    -- deepest level on the way, and clear it: the menu is a popup and belongs
-    -- above everything in the frame it pops out of. `place()` in BuildMenu puts
-    -- the menu's own buttons one above this, and BuildMenu always runs after a
-    -- dock, so they follow.
+    -- Reparenting doesn't renumber the frame level, and in the set editor the menu's
+    -- new parent is a slot button at the same depth as the side set list and the
+    -- icon grid's scrollbar, which would draw over it. Walk up to the window the
+    -- button belongs to, take the deepest level on the way, and clear it.
     local deepest, node = relativeTo:GetFrameLevel(), relativeTo
     while node do
         local parent = node:GetParent()
@@ -1978,16 +1833,14 @@ local function alreadyInMenu(id)
     end
 end
 
--- Collects every item that could go into `slot`, from bags and (when open) the
--- bank. `include` also adds the worn item(s), which the set editor wants so a
--- currently-equipped piece can be picked into a set.
+-- Every item that could go into `slot`, from bags and (when open) the bank.
+-- `include` also adds the worn item(s), which the set editor wants.
 local function collectSlotEntries(slot, include)
     local d = getData()
 
-    -- `include` means the set editor opened this menu. Whatever it already has
-    -- in this slot is on the button being hovered, so listing it again only
-    -- offers a click that changes nothing. The paired slot's item is left in:
-    -- picking that one is a meaningful swap (see IR.OnMenuPickForEditor).
+    -- `include` means the set editor opened this menu. Whatever it already has in
+    -- this slot is on the hovered button, so listing it again offers a click that
+    -- changes nothing. The paired slot's item stays: picking that is a real swap.
     local skip = include and IR.GetEditorSlotID and IR.GetEditorSlotID(slot)
     if skip == 0 then skip = nil end
 
@@ -2162,9 +2015,9 @@ function IR.BuildMenu(id, include)
 
     if IR.menuTicker then IR.menuTicker:Cancel() end
     IR.menuLeftAt = nil
-    -- Polled rather than driven by OnLeave (the menu and its button are separate
-    -- frames with a gap between them). The tick has to be well under MENU_LINGER
-    -- or it, not the linger, is what sets how long the menu hangs around.
+    -- Polled rather than driven by OnLeave, since the menu and its button are
+    -- separate frames with a gap between them. The tick must be well under
+    -- MENU_LINGER or it, not the linger, sets how long the menu hangs around.
     IR.menuTicker = C_Timer.NewTicker(0.05, menuMouseoverTick)
 end
 
@@ -2333,10 +2186,9 @@ function IR.InitCharacterSheet()
                 if not getData().enabled then return end
                 if not IsAltKeyDown() then return end
                 IR.ToggleButton(slot)
-                -- Blizzard's own handler ran first and a plain left click on a
-                -- paper doll slot picks the worn item up onto the cursor. Put it
-                -- straight back — ClearCursor returns an inventory item to the
-                -- slot it came from, so this is safe whether or not it fired.
+                -- Blizzard's handler ran first and a plain left click on a paper doll slot picks
+                -- the worn item onto the cursor. Put it straight back — ClearCursor returns an
+                -- inventory item to the slot it came from, so this is safe either way.
                 if CursorHasItem() then ClearCursor() end
             end)
 
@@ -2360,18 +2212,14 @@ function IR.InitCharacterSheet()
 end
 
 -- ── Edit Mode ────────────────────────────────────────────────────────────────
+-- Each cluster is its own movable, so Edit Mode draws one red box per bar, each
+-- draggable (or positionable via the X/Y editor) independently.
 --
--- Each cluster is its own movable, so Driev's Essentials' Edit Mode draws one
--- red box per bar and each can be dragged (or positioned exactly, via the X/Y
--- editor) independently.
---
--- The box is a purely cosmetic overlay frame — plain, never has anything
--- SetParent()'d to it, exists only while Edit Mode is showing it — NOT the
--- buttons' container (see the big comment on the Clusters section for why
--- buttons can never be reparented at all). It's anchored to the head button's
--- own corner rather than to absolute screen coordinates, so it automatically
--- tracks the bar for free while the head is being dragged, the same way the
--- bar's own docked siblings do.
+-- The box is a purely cosmetic overlay — nothing is ever SetParent()'d to it,
+-- and it exists only while Edit Mode shows it (see the Clusters section for why
+-- buttons can never be reparented). It's anchored to the head button's corner
+-- rather than to screen coordinates, so it tracks the bar for free while the
+-- head is dragged.
 local editOverlays  = {}
 local clusterMovables = {}
 
@@ -2424,9 +2272,8 @@ local function clusterMovable(cid)
     local m = { clusterID = cid }
 
     m.getLabel = function() return IR.ClusterLabel(cid) end
-    -- Recomputed fresh every time Edit Mode opens (UI.EnterMoveMode calls this
-    -- once per movable), so a bar rearranged since the last time still gets an
-    -- accurately sized box.
+    -- Recomputed fresh each time Edit Mode opens, so a bar rearranged since last
+    -- time still gets an accurately sized box.
     m.getFrame = function() return layoutEditOverlay(cid) end
 
     m.getPosition = function()
@@ -2443,14 +2290,11 @@ local function clusterMovable(cid)
 
     m.savePosition = function() saveClusterHeadPosition(cid) end
 
-    -- Movement is driven straight off OnMouseDown/OnMouseUp rather than
-    -- RegisterForDrag, matching the other DE modules: it starts the instant the
-    -- mouse goes down, and the same pair does click-vs-drag detection so a plain
-    -- click (net movement under 4px) opens the precise position editor. The
-    -- actual StartMoving() targets the HEAD BUTTON (a secure frame) — calling
-    -- StartMoving()/StopMovingOrSizing() on it from insecure code is exactly
-    -- what the normal in-bar drag handler already does safely; what's unsafe is
-    -- SetParent(), which never happens here.
+    -- Movement runs off OnMouseDown/OnMouseUp rather than RegisterForDrag: it starts
+    -- instantly, and the same pair does click-vs-drag detection so a plain click
+    -- opens the position editor. StartMoving() targets the HEAD BUTTON (a secure
+    -- frame), which the normal in-bar drag handler already does safely; what's
+    -- unsafe is SetParent(), which never happens here.
     m.enterMoveMode = function()
         local overlay = layoutEditOverlay(cid)
         overlay:EnableMouse(true)
@@ -2504,10 +2348,9 @@ UI.RegisterMovableProvider(function()
     return list
 end)
 
--- While boxes are being positioned, hovering a button must not pop a menu open
--- over the top of them and dragging a button must not fight the box drag. Both
--- are gated on IR.editMode, which tracks Edit Mode via post-hooks on core's own
--- enter/exit functions rather than polling.
+-- While boxes are being positioned, hovering a button must not pop a menu over
+-- them and dragging must not fight the box drag. Both gate on IR.editMode, which
+-- tracks Edit Mode via post-hooks on core's enter/exit rather than polling.
 hooksecurefunc(UI, "EnterMoveMode", function()
     IR.editMode = true
     IR.HideMenu()
@@ -2524,11 +2367,29 @@ function IR.InitButtons()
     IR.ApplyEnabled()
 end
 
+-- Set when the toggle flips mid-combat, where none of the frame work below is
+-- allowed; cleared by the flush on leaving combat.
+local applyPending = false
+
 -- Called at login and whenever the module's master toggle flips.
 function IR.ApplyEnabled()
     -- Both ways round: switching the module off has to stop the event engine
-    -- reacting, not just hide the buttons.
+    -- reacting, not just hide the buttons. Ahead of the combat guard because
+    -- it's plain Lua — the module going quiet shouldn't have to wait for a
+    -- fight to end.
     if IR.ReflectEvents then IR.ReflectEvents() end
+
+    -- Everything past here shows, hides or moves SecureActionButtonTemplate
+    -- frames, all of which the client refuses under a combat lockdown — and
+    -- someone unticking the module because it's misbehaving is quite likely to
+    -- be doing it mid-fight. Deferred whole rather than guarded call by call: a
+    -- half-applied layout is worse than a late one.
+    if InCombatLockdown() then
+        applyPending = true
+        return
+    end
+    applyPending = false
+
     if not getData().enabled then
         IR.HideMenu()
         -- An editor left open from before the toggle flipped would otherwise sit
@@ -2547,15 +2408,24 @@ function IR.ApplyEnabled()
     IR.UpdateCombatQueue()
 end
 
+-- Combat-deferred half of the above, from PLAYER_REGEN_ENABLED.
+function IR.FlushPendingApply()
+    if not applyPending then return end
+    IR.ApplyEnabled()
+    -- The other half of what a toggle or a profile switch asks for: IR.Refresh
+    -- pairs these two, and SetSetBindings bails in combat on its own account, so
+    -- whatever sent us here left its keys unapplied as well.
+    IR.SetSetBindings()
+end
+
 -- Everything the settings UI can change that needs the live buttons re-derived.
--- Also runs on a profile switch, which is the other moment a profile predating
--- the keybind-text default can turn up.
+-- Also runs on a profile switch.
 function IR.Refresh()
     IR.MigrateHotKeyDefault()
     IR.ApplyEnabled()
-    -- Slot keys live in the profile, so a switch brings a different set of them:
-    -- apply this profile's and take the last one's back off (SetSetBindings
-    -- clears any key it applied that nothing wants any more).
+    -- Slot keys live in the profile, so a switch brings a different set: apply this
+    -- profile's and take the last one's back off (SetSetBindings clears any key it
+    -- applied that nothing wants any more).
     IR.SetSetBindings()
     IR.UpdateHotKeys()
 end

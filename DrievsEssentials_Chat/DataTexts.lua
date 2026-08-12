@@ -4,14 +4,10 @@ if not addon then return end
 local UI = addon.UI
 local C  = UI.colors
 
--- Movable ElvUI-style stat bars. The user can create any number of bars; each
--- has its own position (via the addon's Edit Mode), size, colors and its own
--- chosen set of datatexts.
---
--- Ten built-in providers (below) plus any user-created custom ones (see
--- registerCustomProvider); each is a small { label, events/poll, getText }
--- definition living in the same `providers` table regardless of origin, so
--- the bar/layout code never needs to tell built-in from custom apart.
+-- Movable ElvUI-style stat bars. Any number of bars, each with its own position
+-- (via Edit Mode), size, colours and chosen datatexts. Ten built-in providers
+-- plus user-created ones, all as { label, events/poll, getText } in the same
+-- `providers` table, so the bar code never tells built-in from custom apart.
 
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 
@@ -21,10 +17,9 @@ local BAR_DEFAULTS = {
     enabled         = true,
     height          = 24,
     minWidth        = 40,
-    -- Inset from the bar's left and right edges, applied to both sides. This is
-    -- the only spacing control: the gap BETWEEN datatexts is derived, splitting
-    -- whatever room is left over evenly, so raising the padding is what draws
-    -- them closer together.
+    -- Inset from the bar's left and right edges. The only spacing control: the gap
+    -- BETWEEN datatexts is derived by splitting whatever is left evenly, so raising
+    -- the padding draws them closer together.
     padding         = 6,
     -- With fixedWidth off the bar shrink-wraps its contents. On, it stays at
     -- `width` and long datatexts are truncated to fit instead.
@@ -42,10 +37,8 @@ local BAR_DEFAULTS = {
     -- to bottom-center of the screen when unset.
 }
 
--- The shipped default bar mirrors this addon author's own "Left Bar" setup,
--- position included (pulled from live SavedVariables), so a fresh Chat
--- module still lands on one usable, styled, positioned bar instead of
--- nothing.
+-- Mirrors the author's own "Left Bar" setup, position included, so a fresh Chat
+-- module lands on one usable, styled, positioned bar rather than nothing.
 local DEFAULT_BAR = {
     name            = "Left Bar",
     height          = 22,
@@ -66,11 +59,9 @@ local DEFAULT_BAR = {
 
 addon.RegisterDefaults("dataTexts", {
     enabled   = true,
-    -- Deliberately NOT pre-seeded with DEFAULT_BAR here: applyDefaults (Core.lua)
-    -- deep-merges missing keys back in on every login/profile-normalize, which
-    -- would treat an unchecked stat (texts[key] set to nil) as "never set" and
-    -- silently re-enable it. The starter bar is seeded once, for real first-run
-    -- only, in init() below.
+    -- Deliberately NOT pre-seeded with DEFAULT_BAR: applyDefaults deep-merges
+    -- missing keys on every login, which would treat an unchecked stat as "never
+    -- set" and silently re-enable it. Seeded once, for real first-run only, in init().
     bars      = {}, -- [id] = table shaped like BAR_DEFAULTS + { name }
     nextBarID = 0,
     -- User-created datatexts: [id] = { label, code, poll }. id is a string
@@ -90,10 +81,8 @@ addon.RegisterDefaults("dataTexts", {
     valueColor = { 1.00, 0.15, 0.15 },
 })
 
--- addon.db only exists once Core has applied the active profile at
--- PLAYER_LOGIN. The poll/event driver below is installed at file scope and so
--- starts ticking before that, hence every entry point checks this first rather
--- than indexing a nil profile.
+-- addon.db only exists once Core has applied the active profile. The poll/event
+-- driver is installed at file scope and starts ticking before that.
 local function isReady()
     return addon.db ~= nil and addon.db.settings ~= nil
 end
@@ -111,12 +100,9 @@ local function chatSystemEnabled()
 end
 
 -- ── Built-in providers ───────────────────────────────────────────────────────
--- providerOrder also defines the left-to-right order segments appear in on a
--- bar, so per-bar assignment can be stored as a plain set with no ordering.
--- ── Value colouring ─────────────────────────────────────────────────────────
--- Only the VALUE is coloured, never the label: the prefix is prepended by
--- updateSegment outside the colour code, so "FPS: " keeps the bar's text colour
--- and only the number shifts.
+-- providerOrder also defines the left-to-right order, so per-bar assignment can
+-- be a plain set with no ordering. Only the VALUE is coloured, never the label:
+-- updateSegment prepends the prefix outside the colour code.
 
 -- Interpolates through {threshold, r, g, b} stops ordered by ascending
 -- threshold, clamping outside the ends.
@@ -181,13 +167,10 @@ end
 
 local providers, providerOrder = {}, {}
 
--- Editable text prefixes, keyed independently of providers.
---
--- Usually a datatext has one label and its slot key IS the provider key. But a
--- datatext can show more than one value ("FPS: 220 MS: 22"), and each of those
--- needs its own renameable label — so slots live in their own registry, and a
--- provider may declare extras via `extraPrefixes`. Each extra gets its own row
--- in the Labels list, and the provider's getText reads it back with getPrefix.
+-- Editable text prefixes, keyed independently of providers. Usually a datatext
+-- has one label and its slot key IS the provider key, but one can show several
+-- values ("FPS: 220 MS: 22") each needing its own renameable label — so slots
+-- have their own registry and a provider may declare `extraPrefixes`.
 local prefixDefaults, prefixLabels, prefixOrder = {}, {}, {}
 
 -- Forward declaration: the provider closures below call this, but it can't be
@@ -221,11 +204,9 @@ local function openBags()
 end
 
 -- ── Gold across characters ──────────────────────────────────────────────────
--- Kept in DrievGoldDB, an ACCOUNT-WIDE SavedVariable, because the whole point
--- is reading it from a different character than the one that wrote it. It sits
--- outside the profile system deliberately: this is observed data, not a
--- setting, so copying a profile shouldn't carry another character's balance
--- around with it.
+-- DrievGoldDB is ACCOUNT-WIDE, since the whole point is reading it from a
+-- different character than wrote it. Outside the profile system deliberately:
+-- observed data, not a setting, so copying a profile shouldn't carry a balance.
 
 local function goldStore()
     DrievGoldDB = DrievGoldDB or {}
@@ -237,16 +218,12 @@ local function charKey()
     return (UnitName("player") or "?") .. " - " .. (GetRealmName() or "?")
 end
 
--- GetMoney() returns 0 in two situations that have nothing to do with an empty
--- purse: before the server has sent this character's balance after login, and
--- while the world is tearing down at logout. Both were being written, and the
--- logout one is what zeroed every alt — it happens on the way out of EVERY
--- session, so a character's last stored value was always 0.
+-- GetMoney() returns 0 in two cases that aren't an empty purse: before the
+-- server has sent the balance after login, and while the world tears down at
+-- logout. The logout one zeroed every alt, since it happens every session.
 --
--- So a zero is only accepted from PLAYER_MONEY, which fires precisely because
--- the balance changed and is therefore known-good (including a genuine drop to
--- nothing). From any other event a zero means "not a real reading" and is
--- discarded rather than overwriting what is stored.
+-- So a zero is only accepted from PLAYER_MONEY, which fires because the balance
+-- changed and is therefore known-good.
 local function recordGold(trusted)
     -- ElvUI's own guard in Gold.lua: money isn't meaningful until the player is
     -- actually in the world, and several of these events fire before that.
@@ -280,10 +257,8 @@ local function isBlacklisted(key)
     return false
 end
 
--- Sort order for faction groups (both the character list's section headers
--- and the per-faction total lines): Alliance then Horde if present, then
--- anything else (Neutral, or a character recorded before this field existed)
--- alphabetically after.
+-- Sort order for faction groups: Alliance then Horde if present, then anything
+-- else (Neutral, or a character recorded before this field existed).
 local FACTION_RANK  = { Alliance = 1, Horde = 2 }
 local FACTION_COLOR = {
     Alliance = { 0.30, 0.55, 1.00 },
@@ -362,9 +337,8 @@ end
 -- datatext at all.
 local goldWatcher = CreateFrame("Frame")
 -- Deliberately NOT PLAYER_LOGOUT: GetMoney() reads 0 while the world unloads,
--- and writing that zeroed every character on the way out of every session.
--- Nothing is lost by dropping it — the balance is already recorded on login and
--- on every change, and SavedVariables persist whatever is in memory at exit.
+-- which zeroed every character on the way out. Nothing is lost — the balance is
+-- recorded on login and on every change.
 goldWatcher:RegisterEvent("PLAYER_LOGIN")
 goldWatcher:RegisterEvent("PLAYER_ENTERING_WORLD")
 goldWatcher:RegisterEvent("PLAYER_MONEY")
@@ -513,10 +487,9 @@ RegisterDataText("haste", {
     label  = "Attack Speed",
     prefix = "Haste: ",
     events = { "UNIT_ATTACK_SPEED", "UNIT_AURA", "UNIT_INVENTORY_CHANGED", "PLAYER_ENTERING_WORLD" },
-    -- Classic Era has no haste RATING — the old CR_HASTE_MELEE lookup here
-    -- always failed, which is why this only ever printed "n/a". What actually
-    -- exists is bonus attack speed from buffs/enchants, which GetMeleeHaste
-    -- reports directly as a percentage.
+    -- Classic Era has no haste RATING, so the old CR_HASTE_MELEE lookup always
+    -- failed and this only ever printed "n/a". What exists is bonus attack speed
+    -- from buffs/enchants, which GetMeleeHaste reports as a percentage.
     getText = function()
         local bonus
         if GetMeleeHaste then
@@ -529,8 +502,7 @@ RegisterDataText("haste", {
         if bonus and bonus ~= 0 then
             return string.format("%+.0f%%", bonus)
         elseif speed and speed > 0 then
-            -- With no bonus active the raw swing timer is the useful number.
-            return string.format("0%% (%.2fs)", speed)
+            return "0%"
         end
         return bonus and "0%" or "n/a"
     end,
@@ -544,10 +516,9 @@ RegisterDataText("mail", {
 })
 
 -- ── Text prefixes ───────────────────────────────────────────────────────────
--- A provider's getText returns only the VALUE; the words in front of it
--- ("Stamina: ") are a separate prefix so they can be renamed without touching
--- the code that produces the number. Overrides are global per datatext rather
--- than per bar — the same stat on two bars reads the same way.
+-- getText returns only the VALUE; the words in front ("Stamina: ") are a
+-- separate, renameable prefix. Overrides are global per datatext, so the same
+-- stat reads the same on any bar.
 
 local function prefixStore()
     local d = getData()
@@ -584,16 +555,12 @@ local function listPrefixSlots()
 end
 
 -- ── Custom (user-created) providers ─────────────────────────────────────────
--- Compiled with loadstring, a full Lua environment and the same trust model
--- WeakAuras' custom triggers use — this is the user's own local addon,
--- running only on their own client.
--- Most users type a bare expression like "GetFramerate()" - matching the
--- editor's own hint example minus the "return " - which compiles fine as a
--- statement but produces nothing. Tried first as an expression; if that's not
--- valid Lua (e.g. it's a real multi-line script with its own return), falls
--- back to compiling it as a full chunk as-is.
--- WoW's Lua sandbox doesn't expose `load` (Lua 5.2+) as a callable global -
--- only `loadstring` (Lua 5.1's string-chunk compiler, no mode argument).
+-- Compiled with loadstring and a full Lua environment — the trust model
+-- WeakAuras' custom triggers use, since this is the user's own local addon.
+--
+-- Most users type a bare expression ("GetFramerate()"), which compiles as a
+-- statement but produces nothing, so it's tried as an expression first and falls
+-- back to a full chunk. WoW's sandbox exposes only `loadstring`, not `load`.
 local function compileCode(code, name)
     code = code or ""
     local exprFn = loadstring("return (" .. code .. ")", name)
@@ -722,7 +689,7 @@ local function ensureSegment(id, key)
     local btn = CreateFrame("Button", nil, bf.frame)
     local text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     text:SetPoint("CENTER")
-    text:SetTextColor(unpack(C.textWhite))
+    UI.tint(text, C.textWhite)
     -- Required for truncation: a FontString only clips (with an ellipsis) when
     -- it has a width and wrapping is off. Without this a too-long datatext
     -- would wrap onto a second line instead of being cut.
@@ -760,12 +727,9 @@ local function ensureSegment(id, key)
     return bf.segments[key]
 end
 
--- A bar's left-to-right display order.
---
--- cfg.texts stays the SET of which datatexts are on the bar; cfg.order is their
--- sequence. Rebuilt lazily on each read so it self-heals: bars saved before
--- ordering existed have no order at all, datatexts can be ticked on and off,
--- and a custom datatext can be deleted out from under it.
+-- cfg.texts is the SET of datatexts on the bar; cfg.order is their sequence.
+-- Rebuilt lazily on each read so it self-heals — bars saved before ordering
+-- existed have none, and datatexts can be ticked off or deleted underneath it.
 local function barOrder(id)
     local cfg = getBar(id)
     cfg.texts = cfg.texts or {}
@@ -807,9 +771,8 @@ local function moveInBar(id, key, delta)
 end
 
 -- Re-flows one bar's visible segments left-to-right, sized to their text, and
--- shrink-wraps the bar (down to its configured minimum width).
--- Fallback inset either side of the datatext group, when a bar predates the
--- padding setting.
+-- shrink-wraps the bar down to its configured minimum width. BAR_PAD is the
+-- fallback inset for a bar predating the padding setting.
 local BAR_PAD    = 6
 -- Breathing room around a datatext's text inside its own clickable segment.
 local SEG_PAD    = 12
@@ -823,13 +786,10 @@ local function layoutBar(id)
     local segH = math.max((cfg.height or 24) - 4, 10)
     local pad  = cfg.padding or BAR_PAD
 
-    -- Measure everything before placing anything: spreading and truncation both
-    -- need the total up front.
-    --
-    -- Widths are cleared first so GetStringWidth reports the text's natural
-    -- size. Measuring while a previous pass's width constraint is still applied
-    -- would feed the clamped value back in, and the segments would creep
-    -- narrower on every refresh.
+    -- Measure everything before placing anything: spreading and truncation both need
+    -- the total up front. Widths are cleared first so GetStringWidth reports natural
+    -- size — measuring under the previous pass's constraint would feed the clamped
+    -- value back and creep the segments narrower on every refresh.
     local order   = barOrder(id)
     local visible = {}
     local natural = {}
@@ -857,10 +817,9 @@ local function layoutBar(id)
         local avail = barW - pad * 2
 
         if sumW > avail then
-            -- Too much content to spread: fall back to a minimum gap and shrink
-            -- every segment by the same proportion. Scaling them all rather
-            -- than dropping the ones that don't fit means nothing silently
-            -- vanishes, and the short entries stay readable.
+            -- Too much content to spread: fall back to a minimum gap and shrink every
+            -- segment by the same proportion. Scaling them all rather than dropping the ones
+            -- that don't fit means nothing silently vanishes.
             gap = MIN_GAP
             local forSegs = avail - gap * math.max(n - 1, 0)
             scale = (forSegs > 0 and sumW > 0) and math.min(forSegs / sumW, 1) or 1
@@ -939,15 +898,10 @@ local function updateSegment(id, key)
         final = ""
     end
 
-    -- Polled datatexts re-render several times a second but very often produce a
-    -- byte-identical string: coordinates while standing still, durability at
-    -- full, a framerate that rounds to the same integer. Both the SetText and
-    -- especially the layoutBar below are comparatively expensive — layoutBar
-    -- re-measures every visible segment on the bar via GetStringWidth and
-    -- allocates several tables doing it — so an unchanged value stops here.
-    --
-    -- rebuildBar clears lastText, so anything that changes the font, prefix,
-    -- colour or shown-set still forces a full write and re-measure.
+    -- Polled datatexts re-render several times a second but usually produce a
+    -- byte-identical string. SetText and especially layoutBar (which re-measures
+    -- every segment and allocates tables) are expensive, so an unchanged value stops
+    -- here. rebuildBar clears lastText, so a font/prefix/colour change still redraws.
     if seg.lastText == final then return end
     seg.lastText = final
 
@@ -1148,11 +1102,9 @@ local pollList = {}
 -- instead of tearing everything down and re-adding it.
 local registeredEvents = {}
 
--- Every UNIT_* event these providers care about concerns the player and nobody
--- else, so they are registered filtered. RegisterUnitEvent applies the unit test
--- in C; unfiltered, UNIT_AURA alone fires for every member of a raid and every
--- visible nameplate, and each of those would reach our handler just to be
--- discarded.
+-- Every UNIT_* event these providers care about concerns the player alone, so
+-- they're registered filtered. RegisterUnitEvent applies the unit test in C;
+-- unfiltered, UNIT_AURA alone fires for every raid member and visible nameplate.
 local UNIT_FILTERED = {
     UNIT_AURA              = "player",
     UNIT_STATS             = "player",
@@ -1179,22 +1131,18 @@ local function pollTick(_, elapsed)
     end
 end
 
--- Works out which providers are actually displayed on a bar, then narrows the
--- event registrations and the poll list to exactly those.
---
--- Every provider's events used to be registered unconditionally at login, so a
--- user showing nothing but the clock still pulled every UNIT_AURA, BAG_UPDATE and
--- UNIT_INVENTORY_CHANGED in the game into Lua only to find no segment wanted
--- them. Driven from rebuildBar and rebuildAll, which every config change already
--- funnels through.
+-- Works out which providers are actually displayed, then narrows the event
+-- registrations and poll list to exactly those. Every provider's events used to
+-- be registered unconditionally at login, so a user showing only the clock still
+-- pulled every UNIT_AURA and BAG_UPDATE in the game into Lua to be discarded.
+-- Driven from rebuildBar and rebuildAll, which every config change funnels
+-- through.
 function syncEvents()   -- forward-declared local, see near barFrames
     if not isReady() then return end
 
     -- Mirrors rebuildBar's own `show` test. With the module or the parent chat
-    -- system switched off — or an individual bar disabled — those segments are
-    -- hidden and updateSegment would bail on them anyway, so there is nothing
-    -- worth listening for. Turning datatexts off now costs zero registrations
-    -- rather than the full set.
+    -- system off — or the bar disabled — those segments are hidden and updateSegment
+    -- would bail anyway, so there's nothing worth listening for.
     local live = getData().enabled ~= false and chatSystemEnabled()
     local inUse = {}
     if live then
@@ -1268,19 +1216,15 @@ local function init()
     for id, entry in pairs(d.custom) do
         registerCustomProvider(id, entry)
     end
-    -- First run only: give the user a bar to work with, pre-filled with the
-    -- common stats, rather than an empty screen with no obvious starting
-    -- point. Seeded directly from DEFAULT_BAR (a one-time copy) rather than
-    -- via the defaults-merge system, so later unchecking a stat on this bar
-    -- actually sticks - see the comment on RegisterDefaults above.
+    -- First run only: give the user a pre-filled bar rather than an empty screen.
+    -- Seeded directly from DEFAULT_BAR (a one-time copy) rather than through the
+    -- defaults-merge, so later unchecking a stat actually sticks.
     --
-    -- Deliberately keyed off d.seededDefaultBar, NOT "is d.bars empty" -
-    -- deleting the starter bar also leaves d.bars empty, and re-seeding it
-    -- on the next reload would make delete look like it silently didn't
-    -- work. d.seededDefaultBar isn't part of the registered defaults (so
-    -- applyDefaults never touches it); nextBarID being untouched (still its
-    -- registered default of 0) is what identifies a genuinely fresh profile
-    -- for anyone whose saved data predates this flag existing at all.
+    -- Keyed off d.seededDefaultBar, NOT "is d.bars empty" — deleting the starter bar
+    -- also leaves it empty, and re-seeding would make delete look broken.
+    -- seededDefaultBar isn't a registered default, so applyDefaults never touches
+    -- it; an untouched nextBarID identifies a fresh profile for saved data predating
+    -- the flag.
     if not d.seededDefaultBar then
         d.seededDefaultBar = true
         if not next(d.bars) and (d.nextBarID or 0) == 0 then

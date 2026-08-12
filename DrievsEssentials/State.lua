@@ -1,20 +1,12 @@
 local addonName, addon = ...
 
--- ─────────────────────────────────────────────────────────────────────────────
---  Driev's Essentials — State manager
+-- State manager.
 --
---  Problem: WoW's instance/group API returns garbage for ~0.5–1 s after every
---  zone transition, reload, or login.  Any code that calls IsInInstance() /
---  GetInstanceInfo() during that window gets false data.
---
---  Solution: a settle gate.
---    • On each zone event we mark ready=false and arm a timer.
---    • The timer fires after SETTLE_DELAY seconds.  We snapshot the API *then*,
---      store the values, set ready=true, and notify all registered modules.
---    • Public accessors return nil / false when not ready.
---    • A debug logger writes timestamped entries into SavedVariables so you can
---      see exactly what the API returned after every transition — across sessions.
--- ─────────────────────────────────────────────────────────────────────────────
+-- WoW's instance/group API returns garbage for ~0.5-1s after every zone
+-- transition, reload or login. So: on each zone event, mark not-ready and arm a
+-- timer; when it fires, snapshot the API, mark ready and notify modules.
+-- Accessors return nil/false while not ready. The debug logger writes
+-- timestamped entries to SavedVariables so a transition can be traced later.
 
 local State = {}
 addon.State = State
@@ -22,13 +14,12 @@ addon.State = State
 -- ── tunables ──────────────────────────────────────────────────────────────────
 local SETTLE_DELAY = 0.8   -- seconds to wait after a zone event before trusting the API
 local MAX_LOG      = 300   -- rolling cap on persisted log entries
--- Slack above MAX_LOG before trimming. Removing entry 1 on every write shifts
--- the whole array down each time; letting it overshoot and then dropping the
--- excess in one pass amortises that to a single shift per SLACK writes.
+-- Slack above MAX_LOG before trimming: dropping the excess in one pass costs one
+-- array shift per SLACK writes instead of one per write.
 local LOG_SLACK    = 100
 
 -- ── debug log ─────────────────────────────────────────────────────────────────
--- Stored under DrievSettingsDB.debug so it survives /reload and relog.
+-- Under DrievSettingsDB.debug, so it survives /reload and relog.
 
 local function debugDB()
     if not DrievSettingsDB then return nil end
@@ -48,11 +39,6 @@ local function dbg(msg)
         for i = 1, MAX_LOG do d.log[i] = d.log[i + drop] end
         for i = MAX_LOG + 1, n do d.log[i] = nil end
     end
-end
-
-function State.isDebugEnabled()
-    local d = debugDB()
-    return d and d.enabled or false
 end
 
 function State.setDebug(v)
@@ -83,8 +69,8 @@ function State.printLog()
         print("|cfffb2c36Driev's Essentials|r debug log is empty.")
         return
     end
-    -- Plain count, not "n / MAX_LOG": the buffer is allowed to overshoot the cap
-    -- by up to LOG_SLACK between compactions, and "350 / 300" reads like a bug.
+    -- Plain count, not "n / MAX_LOG": the buffer may overshoot the cap, and
+    -- "350 / 300" reads like a bug.
     print(format("|cfffb2c36Driev's Essentials|r — debug log (%d entries):", #d.log))
     for _, line in ipairs(d.log) do
         print(line)
@@ -95,17 +81,11 @@ end
 local ready        = false
 local instanceType = nil   -- "none" | "party" | "raid" | "arena" | "pvp" | nil-if-not-ready
 local instanceName = nil
-local inCombat     = false
 
 -- ── settle timer (frame OnUpdate — no C_Timer dependency) ─────────────────────
 -- Pushing validateAt forward on repeated events means the last event in a burst
--- wins: we always wait SETTLE_DELAY from the *most recent* trigger.
---
--- The handler is attached only while a validation is genuinely pending and
--- detached again the instant it fires. It used to stay installed for the whole
--- session, which meant running a script on every frame forever just to read a
--- timestamp and return — the window it actually cares about is the sub-second
--- settle after a zone change, which happens a handful of times per session.
+-- wins. The OnUpdate is attached only while a validation is pending, not for the
+-- whole session — it only cares about the sub-second window after a zone change.
 local validateAt = 0
 local timerFrame = CreateFrame("Frame")
 
@@ -165,22 +145,20 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 
     elseif event == "GROUP_ROSTER_UPDATE" then
         if ready then
-            -- Group composition changed while we were stable.
-            -- The instance type hasn't changed, but raid membership might have.
-            -- Re-settle briefly so instanceType / membership are re-snapshotted.
+            -- Instance type is unchanged, but raid membership may not be — re-snapshot.
             dbg("GROUP_ROSTER_UPDATE (was ready) -> re-settling")
             scheduleValidate("GROUP_ROSTER_UPDATE")
         else
             dbg("GROUP_ROSTER_UPDATE (not ready) -> ignored")
         end
 
+    -- Not part of the settled state (modules read InCombatLockdown themselves);
+    -- registered so the debug log shows combat transitions alongside zone ones.
     elseif event == "PLAYER_REGEN_DISABLED" then
-        inCombat = true
-        dbg("PLAYER_REGEN_DISABLED -> inCombat=true")
+        dbg("PLAYER_REGEN_DISABLED -> combat")
 
     elseif event == "PLAYER_REGEN_ENABLED" then
-        inCombat = false
-        dbg("PLAYER_REGEN_ENABLED -> inCombat=false")
+        dbg("PLAYER_REGEN_ENABLED -> out of combat")
     end
 end)
 
@@ -192,16 +170,5 @@ function State.isReady()          return ready end
 --- True only when ready AND the instance type is "raid".
 function State.isInRaidInstance() return ready and instanceType == "raid" end
 
---- True when inside any instanced content (party, raid, arena, pvp).
-function State.isInInstance()
-    return ready and instanceType ~= nil and instanceType ~= "none"
-end
-
 --- The validated instance type string, or nil when not ready.
 function State.getInstanceType()  return ready and instanceType or nil end
-
---- The validated instance name string, or nil when not ready.
-function State.getInstanceName()  return ready and instanceName or nil end
-
---- Combat state is tracked independently — no settle gate needed here.
-function State.isInCombat()       return inCombat end
