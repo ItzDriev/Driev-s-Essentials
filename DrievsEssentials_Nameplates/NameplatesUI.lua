@@ -1716,7 +1716,60 @@ local function buildAuraLookColumn(parent, unitKey, which, label)
     borderSwatch:SetPoint("LEFT", swatchLbl, "RIGHT", 2, 0)
     refresh[#refresh + 1] = borderSwatch.Refresh
 
-    local growLine = newLine(borderLine)
+    -- ── Magic border ─────────────────────────────────────────────────────────
+    -- Buffs only. A buff that is Magic is the one thing on a hostile plate that
+    -- is a decision — it means purgeable — and repainting its border is how you
+    -- pick it out of a queue of identical squares without adding a second row.
+    -- A debuff's own school is somebody else's problem, on somebody else's frame,
+    -- so the debuffs column doesn't carry this at all.
+    local lastLine = borderLine
+    if which == "buffs" then
+        local magicLine = newLine(borderLine)
+        local magicCB = createCheckbox(magicLine, "Magic border", 120)
+        magicCB:SetPoint("LEFT", 0, 0)
+        magicCB.OnChange = function(_, checked) o().magicBorder = checked; apply() end
+        refresh[#refresh + 1] = function()
+            magicCB:SetChecked(o().magicBorder and true or false)
+        end
+        attachTooltip(magicCB, "Magic border", {
+            "Marks a purgeable buff: its border is drawn in the color beside this, at the thickness under it, instead of the row's usual one. Everything else about the icon is unchanged — it is a mark on something you were already watching, not a second kind of icon.",
+            "It stands on its own, so a row drawn with no border at all still marks the ones you can dispel.",
+            "The client only reports an aura's school for a unit it will answer about at all: your target, your mouseover, and your own group. Everywhere else — which on an enemy player is every buff they have, since Classic Era will not list those at all — the school comes from the addon's own table of 1.12 spells instead.",
+            "So a spell that table has never heard of, and that the client will not answer about either, draws with the plain border.",
+        })
+
+        local magicLbl = addLabel(magicLine, STEP_COL2, "Color")
+        local magicSwatch = colorSwatch(magicLine,
+            function()
+                local c = o().magicBorderColor or {}
+                return c[1] or 0.25, c[2] or 0.45, c[3] or 1
+            end,
+            function(r, g, b)
+                local t = o()
+                t.magicBorderColor = t.magicBorderColor or {}
+                t.magicBorderColor[1], t.magicBorderColor[2], t.magicBorderColor[3] = r, g, b
+            end,
+            apply, 18)
+        magicSwatch:SetPoint("LEFT", magicLbl, "RIGHT", 2, 0)
+        refresh[#refresh + 1] = magicSwatch.Refresh
+
+        -- A line of its own rather than squeezed in beside the swatch: a labelled
+        -- stepper runs to STEP_COL2 on its own, which is exactly where the color
+        -- above it starts.
+        --
+        -- Thicker than the row's border by default, and separate from it, because
+        -- this is a mark meant to be caught in peripheral vision mid-fight and the
+        -- same weight in another color is not one. 0 is allowed and means no mark,
+        -- which is why the floor is not 1.
+        local magicSizeLine = newLine(magicLine)
+        addStepper(magicSizeLine, 0, "Thick", 0, 6,
+            function() return o().magicBorderSize or 2 end,
+            function(v) o().magicBorderSize = v end)
+
+        lastLine = magicSizeLine
+    end
+
+    local growLine = newLine(lastLine)
     addLabel(growLine, 0, "Grow")
     local growDD = createDropdown(growLine, 150, AURA_GROWTH_OPTIONS,
         function() return Data.AuraGrowth(o().growth) end,
@@ -2277,7 +2330,8 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
     groupBtn:SetPoint("RIGHT", 0, 0)
     attachTooltip(groupBtn, "New group", {
         "A heading inside this list, to drag auras under: \"Stuns\", \"CC\", \"Dispel these\".",
-        "Organisation only — nothing about a group reaches the nameplates. What is drawn, and how, is exactly the same whether a whitelist has headings or none.",
+        "Organisation, mostly — what is drawn and how is the same whether a whitelist has headings or none.",
+        "The exception is the box on the heading itself, which keeps only one aura for the whole group: the longest remaining of them, or the shortest.",
         "Drag an aura by its row onto a heading to put it there, and onto Ungrouped to take it back out.",
     })
 
@@ -2561,17 +2615,69 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         head.remove = flatButton(head, "X", AURA_REMOVE_W, 14, "GameFontNormalSmall")
         head.remove:SetPoint("RIGHT", -3, 0)
         UI.tint(head.remove.label, C.red)
+        -- Asked about, unlike deleting one aura: a heading is minutes of sorting
+        -- rather than one row, and there is no undo. The entries under it are NOT
+        -- deleted with it — they go back to Ungrouped — and saying so is most of
+        -- what the question is for.
         head.remove:SetScript("OnClick", function()
-            if not head.groupID then return end
+            local id = head.groupID
+            if not id then return end
             head.nameBox.box:ClearFocus()
-            Data.RemoveAuraGroup(unitKey, which, head.groupID)
-            rebuild()
+            local name = head.nameBox.box:GetText() or ""
+            UI.showConfirmPopup({
+                title       = "Delete group",
+                message     = "Delete the heading " .. (name ~= "" and ("\"" .. name .. "\"") or "this group")
+                    .. "?\n\nThe auras under it are kept — they go back to Ungrouped.",
+                confirmText = "Delete",
+                onConfirm   = function()
+                    Data.RemoveAuraGroup(unitKey, which, id)
+                    rebuild()
+                    -- A limited group deleted is icons appearing on the plates
+                    -- again, so this reaches further than the list in front of it.
+                    apply()
+                end,
+            })
         end)
 
-        -- Both the box and the label stop short of the count, so a long group
-        -- name truncates rather than running under it.
+        -- ── One icon for the whole group ─────────────────────────────────────
+        -- The only thing on this band that reaches a nameplate. Two controls
+        -- rather than one because it is two questions: whether the group is
+        -- limited at all, and which end of the durations it keeps — and the
+        -- second is meaningless until the first is answered, so it only appears
+        -- once the box is ticked.
+        head.limitMode = flatButton(head, "Longest", 58, 14, "GameFontNormalSmall")
+        head.limitMode:SetScript("OnClick", function()
+            if not head.groupID then return end
+            local now = Data.AuraGroupLimit(head.limitValue)
+            Data.SetAuraGroupLimit(unitKey, which, head.groupID,
+                now == "shortest" and "longest" or "shortest")
+            rebuild()
+            apply()
+        end)
+
+        head.limitCB = createCheckbox(head, "", 16)
+        head.limitCB.OnChange = function(_, checked)
+            if not head.groupID then return end
+            -- "Longest" on the way on: a group of CC is watched to know when the
+            -- target is free again, and the one ending last is what answers that.
+            Data.SetAuraGroupLimit(unitKey, which, head.groupID, checked and "longest" or nil)
+            rebuild()
+            apply()
+        end
+        attachTooltip(head.limitCB, "Only one from this group", {
+            "Draws a single icon for the whole heading instead of one per aura: whichever of them has the longest remaining, or the shortest.",
+            "What it is for is a group that is really one question asked several ways — twelve hard CCs whitelisted so that whichever lands is shown, of which one is usually all that is on the unit anyway, and a row of duplicates the moment two are.",
+            "An aura with no countdown the client will give up (a permanent buff, an unknown duration) only wins where nothing timed is competing.",
+            "Whichever survives is drawn wherever that group's auras were going — the row above the health bar, or a special buff frame.",
+        })
+
+        -- Right to left across the band, so a long group name is what gives way:
+        -- the name is the user's and can be truncated back to something readable,
+        -- and every control to its right has a fixed size it needs.
         head.count:SetPoint("RIGHT", head.remove, "LEFT", -6, 0)
-        head.nameBox:SetPoint("RIGHT", head.count, "LEFT", -6, 0)
+        head.limitMode:SetPoint("RIGHT", head.count, "LEFT", -8, 0)
+        head.limitCB:SetPoint("RIGHT", head.limitMode, "LEFT", -4, 0)
+        head.nameBox:SetPoint("RIGHT", head.limitCB, "LEFT", -6, 0)
         head.label:SetPoint("RIGHT", head.count, "LEFT", -6, 0)
 
         -- The whole band toggles, not just the twisty: it is a heading, and
@@ -2588,7 +2694,7 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
             GameTooltip:AddLine(self.groupID and "Group" or "Ungrouped", 1, 1, 1)
             GameTooltip:AddLine("Drag an aura's row onto this band to put it here.",
                 0.75, 0.75, 0.75, true)
-            GameTooltip:AddLine("Click the band to fold it away. Nothing here changes what is drawn on a nameplate — groups are for finding things in a long list.",
+            GameTooltip:AddLine("Click the band to fold it away. A heading changes nothing about what is drawn — groups are for finding things in a long list — unless you tick the box on it, which keeps only one of them.",
                 0.75, 0.75, 0.75, true)
             if not self.groupID then
                 GameTooltip:AddLine("This is everything that isn't in a group, and where a drag out of one lands.",
@@ -2610,11 +2716,21 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
 
         head.groupID   = item.id
         head.editingID = item.id
+        head.limitValue = item.limit
 
         local real = item.id ~= nil
         head.nameBox:SetShown(real)
         head.remove:SetShown(real)
         head.label:SetShown(not real)
+        -- Ungrouped is not a group: it is what is left over, it cannot be
+        -- deleted, and there is nothing to limit to one of.
+        head.limitCB:SetShown(real)
+        head.limitCB:SetChecked(item.limit and true or false)
+        -- The mode only exists while the limit does, so an unticked group shows
+        -- one control rather than one control and a dead word beside it.
+        head.limitMode:SetShown(real and item.limit and true or false)
+        head.limitMode.label:SetText(item.limit == "shortest" and "Shortest" or "Longest")
+
         if real then
             head.nameBox.box:SetText(item.name or "")
         else
@@ -3209,10 +3325,19 @@ local function buildLibraryPanel(parent)
         row.playerBtn:SetPoint("LEFT", cols.player, 0)
     end
 
-    local function refreshAddButton(btn, unitKey, key)
-        local which = Data.LibraryWhichFor(kind, key)
+    -- The name normally; the id when something else answers to the same name.
+    -- The Library has this collision the other way round from the Seen page: it
+    -- lists only the spell the 1.12 tables know, so adding "Shadow Protection"
+    -- by name from here would quietly also catch the potion's.
+    local function addTokenFor(item)
+        local token, byID = Data.AuraAddToken(item.name, nil, item.id)
+        return token, (Data.AuraKeyFor(token)), byID
+    end
+
+    local function refreshAddButton(btn, unitKey, item, addKey)
+        local which = Data.LibraryWhichFor(kind, item.key)
         local l  = Data.AuraList(unitKey, which)
-        local on = l and l[key] ~= nil
+        local on = l and l[addKey] ~= nil
         btn.label:SetText(on and "On list" or btn.addLabel)
         btn.label:SetTextColor(unpack(on and C.textDim or C.textWhite))
         if on then btn:Disable() else btn:Enable() end
@@ -3263,8 +3388,13 @@ local function buildLibraryPanel(parent)
 
             local which = Data.LibraryWhichFor(kind, item.key)
             GameTooltip:AddLine(" ")
-            GameTooltip:AddLine(("Adds to the %s list, by NAME — so it catches every rank."):format(
-                which == "buffs" and "buff" or "debuff"), 0.75, 0.75, 0.75, true)
+            if row.addByID then
+                GameTooltip:AddLine(("Adds to the %s list as ID %d, not by name — something else in the game answers to this name too, and a name-matched entry would catch both."):format(
+                    which == "buffs" and "buff" or "debuff", item.id), 1, 0.82, 0, true)
+            else
+                GameTooltip:AddLine(("Adds to the %s list, by NAME — so it catches every rank."):format(
+                    which == "buffs" and "buff" or "debuff"), 0.75, 0.75, 0.75, true)
+            end
             GameTooltip:Show()
         end)
         row.iconHit:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -3298,8 +3428,9 @@ local function buildLibraryPanel(parent)
             btn:SetScript("OnClick", function(self)
                 local item = row.item
                 if not item then return end
-                Data.AddAura(unitKey, Data.LibraryWhichFor(kind, item.key), item.name)
-                refreshAddButton(self, unitKey, item.key)
+                Data.AddAura(unitKey, Data.LibraryWhichFor(kind, item.key),
+                    row.addToken or item.name)
+                refreshAddButton(self, unitKey, item, row.addKey)
                 apply()
             end)
             return btn
@@ -3323,8 +3454,9 @@ local function buildLibraryPanel(parent)
         row.idText:SetText(tostring(item.id))
         row.durText:SetText(item.durText or "—")
 
-        refreshAddButton(row.npcBtn,    "enemyNPC",    item.key)
-        refreshAddButton(row.playerBtn, "enemyPlayer", item.key)
+        row.addToken, row.addKey, row.addByID = addTokenFor(item)
+        refreshAddButton(row.npcBtn,    "enemyNPC",    item, row.addKey)
+        refreshAddButton(row.playerBtn, "enemyPlayer", item, row.addKey)
     end
 
     syncRows = function()
@@ -3579,6 +3711,16 @@ local function buildLearnedPanel(parent)
         return l and l[key] ~= nil
     end
 
+    -- What this row would add, and under what key. Normally the name, so the
+    -- entry catches every rank; the id instead when the name turns out to be
+    -- shared by two different spells — see Data.AuraAddToken.
+    local function addTokenFor(rec, fallbackKey)
+        if not rec then return fallbackKey, fallbackKey, false end
+        local ids = Data.LearnedIDs(rec)
+        local token, byID = Data.AuraAddToken(rec.name or fallbackKey, rec.ids, ids[1])
+        return token, (Data.AuraKeyFor(token)), byID
+    end
+
     local function refreshAddButton(btn, unitKey, key)
         local on = alreadyOn(unitKey, key)
         btn.label:SetText(on and "On list" or btn.addLabel)
@@ -3632,8 +3774,13 @@ local function buildLearnedPanel(parent)
                 end
             end
             GameTooltip:AddLine(" ")
-            GameTooltip:AddLine("Adding puts it on the list by NAME, so it catches every rank above. Type one of these IDs into that list by hand instead if you want only that one.",
-                0.75, 0.75, 0.75, true)
+            if row.addByID then
+                GameTooltip:AddLine(("More than one spell answers to this name, so adding it puts ID %s on the list rather than the name — otherwise the entry would catch the other one too, and resolve to whichever the client looks the name up to."):format(tostring(row.addToken)),
+                    1, 0.82, 0, true)
+            else
+                GameTooltip:AddLine("Adding puts it on the list by NAME, so it catches every rank above. Type one of these IDs into that list by hand instead if you want only that one.",
+                    0.75, 0.75, 0.75, true)
+            end
             GameTooltip:Show()
         end)
         row.iconHit:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -3657,11 +3804,12 @@ local function buildLearnedPanel(parent)
             btn.addLabel = label
             btn:SetScript("OnClick", function(self)
                 if not row.key then return end
-                -- By name, not by the ID this row happens to have been first
-                -- seen as: the row IS a name, and every rank under it is what
-                -- the user picked when they picked this row.
-                Data.AddAura(unitKey, which, row.rec and row.rec.name or row.key)
-                refreshAddButton(self, unitKey, row.key)
+                -- By name, so the entry catches every rank under it — which is
+                -- what picking this row means. The exception is a name two
+                -- different spells answer to, where the name cannot say which
+                -- you meant and the id goes on instead.
+                Data.AddAura(unitKey, which, row.addToken or row.key)
+                refreshAddButton(self, unitKey, row.addKey or row.key)
                 apply()
             end)
             return btn
@@ -3703,8 +3851,9 @@ local function buildLearnedPanel(parent)
             row.fromText:SetText(from[1] .. "  +" .. (#from - 1))
         end
 
-        refreshAddButton(row.npcBtn,    "enemyNPC",    item.key)
-        refreshAddButton(row.playerBtn, "enemyPlayer", item.key)
+        row.addToken, row.addKey, row.addByID = addTokenFor(item.rec, item.key)
+        refreshAddButton(row.npcBtn,    "enemyNPC",    row.addKey)
+        refreshAddButton(row.playerBtn, "enemyPlayer", row.addKey)
     end
 
     syncRows = function()
@@ -3879,6 +4028,85 @@ local function buildAuraTrackingPage(parent, def)
     attachTooltip(eventsCB, AURA_EVENTS_TITLE, help.tip)
 
     local left, right = splitAuraColumns(shell, def, buildAuraTrackColumn, eventsCB)
+
+    -- ── Clear ────────────────────────────────────────────────────────────────
+    -- Right-aligned on the events row, as far from the Add buttons under them as
+    -- the page allows. Both lists ship filled — see NameplateSeed.lua — so the
+    -- one thing somebody who wants to build their own from nothing needs is a way
+    -- out of sixty entries that isn't sixty clicks on X.
+    --
+    -- Each button is over the column it empties: Buffs on the right, Debuffs on
+    -- its left, matching the columns underneath.
+    local function clearButton(label, which, column)
+        local btn = flatButton(shell, label, 112, 20, "GameFontNormalSmall")
+        btn:SetScript("OnClick", function()
+            local total = 0
+            for _ in pairs(Data.AuraList(def.key, which) or {}) do total = total + 1 end
+            UI.showConfirmPopup({
+                title       = label,
+                message     = "Remove all " .. total .. " tracked "
+                    .. which .. " for " .. (def.label or "this unit type")
+                    .. ", and the groups they are sorted into?"
+                    .. "\n\nThe special buff frames themselves are kept."
+                    .. "\n\nThis cannot be undone.",
+                confirmText = "Clear",
+                onConfirm   = function()
+                    Data.ClearAuraList(def.key, which)
+                    column.Refresh()
+                    apply()
+                end,
+            })
+        end)
+        return btn
+    end
+
+    local clearBuffs   = clearButton("Clear All Buffs",   "buffs",   right)
+    local clearDebuffs = clearButton("Clear All Debuffs", "debuffs", left)
+
+    -- ── Restore ──────────────────────────────────────────────────────────────
+    -- The way back from the two beside it, and from any amount of drift. One
+    -- button for both lists rather than one each: the shipped headings and frame
+    -- assignments span the pair — the CC frame takes debuffs and Stance takes
+    -- buffs — so half a restore would be a setup that never shipped. It also
+    -- keeps the row to three buttons, which is what fits at the minimum width.
+    local restoreBtn = flatButton(shell, "Restore Defaults", 112, 20, "GameFontNormalSmall")
+    restoreBtn:SetScript("OnClick", function()
+        UI.showConfirmPopup({
+            title       = "Restore default auras",
+            message     = "Put the buff and debuff lists for "
+                .. (def.label or "this unit type")
+                .. " back to the ones the addon ships with?"
+                .. "\n\nThis REPLACES both lists and their groups — anything you added"
+                .. " or moved is lost. Special buff frames are left where they are,"
+                .. " and any the defaults need but you have deleted come back."
+                .. "\n\nThis cannot be undone.",
+            confirmText = "Restore",
+            onConfirm   = function()
+                Data.RestoreAuraDefaults(def.key)
+                left.Refresh()
+                right.Refresh()
+                apply()
+            end,
+        })
+    end)
+
+    -- Left of the pair, not among them: the two Clears read as a set and this is
+    -- the opposite of what they do.
+    --
+    -- All three off the shell rather than off the checkbox beside them: the label
+    -- below is anchored to these, and anchoring these back to it would be a
+    -- circle for the layout engine to complain about.
+    clearBuffs:SetPoint("TOPRIGHT", shell, "TOPRIGHT", -10, -8)
+    clearDebuffs:SetPoint("RIGHT", clearBuffs, "LEFT", -6, 0)
+    restoreBtn:SetPoint("RIGHT", clearDebuffs, "LEFT", -6, 0)
+
+    -- The label stops where the buttons start rather than running under them at
+    -- the minimum window width: it is a whole sentence and these three take 350px
+    -- off the row. Truncated rather than wrapped, since a second line would push
+    -- into the lists below.
+    eventsCB.text:SetPoint("RIGHT", restoreBtn, "LEFT", -10, 0)
+    eventsCB.text:SetJustifyH("LEFT")
+    eventsCB.text:SetWordWrap(false)
 
     shell:HookScript("OnShow", function()
         eventsCB:SetChecked(u().fromEvents and true or false)

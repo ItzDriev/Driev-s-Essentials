@@ -41,6 +41,11 @@ addon.RegisterDefaults("alerts", {
     throttle       = 3,
 })
 
+-- Part of the one "Chat" section in the Profiles tab (see Chat.lua).
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "chat", settings = { "alerts" } })
+end
+
 local function isReady()
     return addon.db ~= nil and addon.db.settings ~= nil
 end

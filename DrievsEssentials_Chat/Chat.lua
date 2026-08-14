@@ -67,6 +67,14 @@ addon.RegisterDefaults("chat", {
     font = addon.Font.New({ font = "Expressway", size = 0, outline = "NONE" }),
 })
 
+-- The Profiles tab treats all of Chat as one pickable module, and this addon
+-- spreads its settings over seven files — each claims the block it declares, and
+-- core merges them into the one section.
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "chat", label = "Chat", order = 70,
+        settings = { "chat" } })
+end
+
 -- The face used to be stored on its own as an LSM name, or as `false` for "leave
 -- Blizzard's". Folded into the block before the defaults are merged, since the
 -- merge starts a fresh table wherever a saved value isn't one — and an empty

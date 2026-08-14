@@ -1371,16 +1371,21 @@ local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 -- One reader for both aura APIs: C_UnitAuras on current builds, UnitAura on
 -- Classic Era. Same flat tuple either way, plus the caster where the client
 -- names one — a DoT two people are running needs it to tell the timers apart.
+--
+-- The last field is the dispel school ("Magic", "Curse", "Disease", "Poison", or
+-- "" / nil for none). Only ever asked about for a BUFF, where "Magic" is the one
+-- thing on a hostile plate that is a decision: it means purgeable.
 local function clientAura(unit, index, filter)
     if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
         local a = C_UnitAuras.GetAuraDataByIndex(unit, index, filter)
         if not a then return nil end
-        return a.name, a.icon, a.applications, a.duration, a.expirationTime, a.spellId, a.sourceUnit
+        return a.name, a.icon, a.applications, a.duration, a.expirationTime, a.spellId,
+               a.sourceUnit, a.dispelName
     end
     if not UnitAura then return nil end
-    local name, icon, count, _, duration, expires, caster, _, _, spellID = UnitAura(unit, index, filter)
+    local name, icon, count, dispel, duration, expires, caster, _, _, spellID = UnitAura(unit, index, filter)
     if not name then return nil end
-    return name, icon, count, duration, expires, spellID, caster
+    return name, icon, count, duration, expires, spellID, caster, dispel
 end
 
 -- Classic Era fills duration and expirationTime in only for auras the PLAYER
@@ -1392,7 +1397,8 @@ end
 -- ones the client left blank and never for the ones it answered: a real
 -- duration from the API is the truth and this is a reconstruction.
 local function readAura(unit, index, filter)
-    local name, icon, count, duration, expires, spellID, caster = clientAura(unit, index, filter)
+    local name, icon, count, duration, expires, spellID, caster, dispel =
+        clientAura(unit, index, filter)
     if not name then return nil end
 
     if Durations and spellID and ((tonumber(duration) or 0) <= 0 or (tonumber(expires) or 0) <= 0) then
@@ -1400,7 +1406,7 @@ local function readAura(unit, index, filter)
         if d then duration, expires = d, e end
     end
 
-    return name, icon, count, duration, expires, spellID
+    return name, icon, count, duration, expires, spellID, Data.IsMagicAura(spellID, dispel)
 end
 
 -- Coarse at the top, precise at the bottom: "1.4" where "23m" would do is
@@ -1462,6 +1468,22 @@ local function readAuraStyle(o, g, pin, special)
     st.borderSize = math.max(0, math.floor((tonumber(o.borderSize) or 1) + 0.5))
     st.br, st.bg, st.bb = rgb(o.borderColor, 0, 0, 0)
 
+    -- The Magic border, off the BUFFS row of the unit type — `o` is that row for
+    -- the strip above the health bar, and for a special frame it is the frame,
+    -- which has no such setting of its own, so Special.updateRow passes the row's
+    -- in. nil here means the icons draw with the plain border, as they always did.
+    --
+    -- Its own thickness, and it stands on its own: a purgeable buff gets this
+    -- border even where the row's plain one is switched off, which is what makes
+    -- "no borders, except mark the ones I can dispel" expressible.
+    if o.magicBorder then
+        st.magicR, st.magicG, st.magicB = rgb(o.magicBorderColor, 0.25, 0.45, 1)
+        st.magicSize = math.max(0, math.floor((tonumber(o.magicBorderSize) or 2) + 0.5))
+    else
+        st.magicR, st.magicG, st.magicB = nil, nil, nil
+        st.magicSize = 0
+    end
+
     st.x = tonumber(o.x) or 0
     st.y = tonumber(o.y) or 0
     return st
@@ -1470,7 +1492,10 @@ end
 -- One icon, from a real aura or a made-up preview one. Shared deliberately: the
 -- preview is only worth anything drawn by the same code as the real thing, since
 -- a second copy would drift and start lying.
-local function drawAuraIcon(row, index, st, icon, count, duration, expires, now)
+-- `magic` marks a purgeable buff, and is the one thing that can override the
+-- border colour. Nothing else about the icon changes: it is a hint on something
+-- you were already watching, not a second kind of icon.
+local function drawAuraIcon(row, index, st, icon, count, duration, expires, now, magic)
     local b = auraIcon(row, index)
 
     b:SetSize(st.size, st.size)
@@ -1493,9 +1518,18 @@ local function drawAuraIcon(row, index, st, icon, count, duration, expires, now)
 
     b.icon:SetTexture(icon or QUESTION_MARK)
 
-    if st.borderSize > 0 then
-        layoutBorder(b.border, b, st.borderSize, 0)
-        paintBorder(b.border, st.br, st.bg, st.bb, 1)
+    -- A marked buff takes the Magic border's own weight and colour; everything
+    -- else takes the row's. Checked before the row's own size rather than inside
+    -- it, so the mark still lands on a row drawn with no border at all.
+    local marked = magic and st.magicR and st.magicSize > 0
+    local edge   = marked and st.magicSize or st.borderSize
+    if edge > 0 then
+        layoutBorder(b.border, b, edge, 0)
+        if marked then
+            paintBorder(b.border, st.magicR, st.magicG, st.magicB, 1)
+        else
+            paintBorder(b.border, st.br, st.bg, st.bb, 1)
+        end
         setBorderShown(b.border, true)
     else
         setBorderShown(b.border, false)
@@ -1958,15 +1992,125 @@ local function drawAuraPreview(f, row, unitKey, which, st, now)
         -- tab is open instead of freezing at zero a few seconds in.
         local left     = duration - ((now + i * 7) % duration)
         local count    = (i % 3 == 0) and (i + 1) or 1
-        drawAuraIcon(row, i, st, icon, count, duration, now + left, now)
+        -- Every third icon stands in as a purgeable buff, so the Magic border can
+        -- be seen and its color picked from the page it is set on. Without this it
+        -- would be invisible exactly while you were choosing it: the preview owns
+        -- the plates for as long as an aura tab is open, so nothing real is drawn
+        -- to carry the mark.
+        drawAuraIcon(row, i, st, icon, count, duration, now + left, now, i % 3 == 1)
     end
     finishAuraRow(f, row, st.max, st)
 end
 
--- Which whitelist names have already made it onto the row this pass, so the
--- inferred pass can't draw a second copy of something the unit really is
--- wearing. Reused rather than rebuilt: this runs per plate per tick.
-local auraSeen = {}
+-- ── Per-pass scan scratch ────────────────────────────────────────────────────
+-- Everything one sweep of one row needs to hold on to while it works, on ONE
+-- file-scope local — like Boss and Special below, and for the same hard reason:
+-- Lua 5.1 caps a chunk at 200 locals and this file is at that ceiling, so a
+-- feature spending two of them on itself is a feature that stops the file
+-- loading. Every field is reused between passes rather than rebuilt, since this
+-- runs per plate per tick and a fresh table each time is garbage times forty.
+--
+-- `seen` is which whitelist names have already made it onto the row this pass, so
+-- the inferred pass can't draw a second copy of something the unit really is
+-- wearing.
+--
+-- The rest is group limits. A whitelist group set to "longest" or "shortest"
+-- draws ONE icon for everything under it, and that can't be decided as the scan
+-- walks the unit because the aura that wins may be the last one read. So where a
+-- row has any limited group at all, the scan queues into `queue` instead of
+-- drawing, and Scan.draw puts the survivors on the row.
+--
+-- Only where it has one. With no limits — every profile that never touches the
+-- setting — the scan draws straight down the unit's aura list exactly as it
+-- always has and none of the queueing runs.
+local Scan = {
+    seen  = {},
+    -- Ordered records awaiting Scan.draw.
+    queue = {},
+    n     = 0,
+    -- [groupID] = index into queue of the entry currently winning it. A winner is
+    -- replaced IN PLACE, so the row keeps the position the group's first-seen
+    -- member took and icons don't hop about as the leader changes.
+    best  = {},
+}
+
+-- The queue only. `seen` is wiped by its own callers, which clear it once per
+-- aura KIND rather than once per row — a special frame draws from both lists and
+-- a name seen as a buff says nothing about the debuff pass.
+function Scan.reset()
+    Scan.n = 0
+    wipe(Scan.best)
+end
+
+-- Remaining seconds, or nil for an aura with no usable countdown. Permanent auras
+-- and anything the client wouldn't give a duration for are NOT zero: zero would
+-- win "shortest" every time and lose "longest" every time, and both would be a
+-- lie about an icon that simply has no clock on it. They stand only while nothing
+-- timed is competing.
+function Scan.remaining(duration, expires, now)
+    if (tonumber(duration) or 0) <= 0 then return nil end
+    expires = tonumber(expires) or 0
+    if expires <= 0 then return nil end
+    return expires - now
+end
+
+function Scan.wins(mode, remaining, bestRemaining)
+    -- A timed aura always beats an untimed one, whichever end is being asked for.
+    if bestRemaining == nil then return remaining ~= nil end
+    if remaining == nil then return false end
+    if mode == "shortest" then return remaining < bestRemaining end
+    return remaining > bestRemaining
+end
+
+-- The limited group an inferred record's whitelist entry sits in, or nil.
+-- Resolved from the record the same way collectInferred resolves the entry rather
+-- than carried on it: the store outlives the whitelist it was filtered by, and a
+-- group id kept on a record would be the id the entry had when it was applied.
+function Scan.inferredGroup(rec, lookup)
+    local entry = (rec.spellID and lookup.byID[rec.spellID])
+        or (rec.name and lookup.byName[rec.name:lower()])
+    return entry and lookup.groupFor[entry] or nil
+end
+
+-- `group` is the limited group this aura is in, or nil for one competing with
+-- nothing — which queues unconditionally and is the common case even on a row
+-- that has a limited group somewhere in it.
+function Scan.push(group, mode, icon, count, duration, expires, magic, now)
+    local remaining = Scan.remaining(duration, expires, now)
+
+    local at = group and Scan.best[group]
+    if at then
+        local rec = Scan.queue[at]
+        if not Scan.wins(mode, remaining, rec.remaining) then return end
+        rec.icon, rec.count, rec.duration, rec.expires = icon, count, duration, expires
+        rec.magic, rec.remaining = magic, remaining
+        return
+    end
+
+    local n = Scan.n + 1
+    Scan.n = n
+    local rec = Scan.queue[n]
+    if not rec then
+        rec = {}
+        Scan.queue[n] = rec
+    end
+    rec.icon, rec.count, rec.duration, rec.expires = icon, count, duration, expires
+    rec.magic, rec.remaining = magic, remaining
+    if group then Scan.best[group] = n end
+end
+
+-- Draws what survived, in the order it was queued, and returns how many went on.
+function Scan.draw(row, st, now)
+    local shown = 0
+    for i = 1, Scan.n do
+        if shown >= st.max then break end
+        local rec = Scan.queue[i]
+        shown = shown + 1
+        drawAuraIcon(row, shown, st, rec.icon, rec.count, rec.duration, rec.expires,
+                     now, rec.magic)
+    end
+    return shown
+end
 
 local function updateAuraRow(f, which)
     local row = f.auraRows and f.auraRows[which]
@@ -2015,10 +2159,15 @@ local function updateAuraRow(f, which)
     local filter = AURA_FILTER[which]
     if o.onlyMine then filter = filter .. "|PLAYER" end
 
+    -- Nil on all but the rows somebody has actually set a group limit on, and
+    -- that nil is what keeps the loop below the loop it has always been.
+    local limits = lookup.limits
+    if limits then Scan.reset() end
+
     local shown = 0
-    wipe(auraSeen)
+    wipe(Scan.seen)
     for i = 1, MAX_AURA_SCAN do
-        local name, icon, count, duration, expires, spellID = readAura(f.unit, i, filter)
+        local name, icon, count, duration, expires, spellID, magic = readAura(f.unit, i, filter)
         if not name then break end
 
         local key = name:lower()
@@ -2031,12 +2180,20 @@ local function updateAuraRow(f, which)
             -- has no better claim on teaching it.
             learnAura(hit, spellID, icon)
             if lookup.barFor[hit] == nil then
-                shown = shown + 1
                 -- Marked seen only where it was drawn, so the inferred pass for
                 -- the frame it went to can still fill it in over there.
-                auraSeen[key] = true
-                drawAuraIcon(row, shown, st, icon, count, duration, expires, now)
-                if shown >= st.max then break end
+                Scan.seen[key] = true
+                if limits then
+                    -- No early break: the aura that wins a limited group can be
+                    -- the last one on the unit, so the whole list has to be read.
+                    local group = lookup.groupFor[hit]
+                    Scan.push(group, group and limits[group], icon, count,
+                              duration, expires, magic, now)
+                else
+                    shown = shown + 1
+                    drawAuraIcon(row, shown, st, icon, count, duration, expires, now, magic)
+                    if shown >= st.max then break end
+                end
             end
         end
     end
@@ -2048,15 +2205,29 @@ local function updateAuraRow(f, which)
     -- Skipped entirely under "only ones I applied" — the events say who cast what,
     -- but the store doesn't keep it, and quietly showing someone else's aura under a
     -- filter that promises otherwise is worse than showing none.
-    if shown < st.max and u.fromEvents and not o.onlyMine then
-        for _, rec in ipairs(collectInferred(f, which, auraSeen, now, lookup, nil)) do
-            shown = shown + 1
-            drawAuraIcon(row, shown, st, rec.icon, rec.count,
-                rec.timed and rec.duration or 0,
-                rec.timed and rec.expires  or 0, now)
-            if shown >= st.max then break end
+    if (limits or shown < st.max) and u.fromEvents and not o.onlyMine then
+        for _, rec in ipairs(collectInferred(f, which, Scan.seen, now, lookup, nil)) do
+            local duration = rec.timed and rec.duration or 0
+            local expires  = rec.timed and rec.expires  or 0
+            -- The combat log carries no dispel school, so this is the duration
+            -- library's table answering on its own. That is the whole reason the
+            -- fallback exists: an enemy player's buffs ALL arrive down this path,
+            -- so without it the Magic border would never light up on the plates
+            -- it is most use on.
+            local magic = Data.IsMagicAura(rec.spellID)
+            if limits then
+                local group = Scan.inferredGroup(rec, lookup)
+                Scan.push(group, group and limits[group], rec.icon, rec.count,
+                          duration, expires, magic, now)
+            else
+                shown = shown + 1
+                drawAuraIcon(row, shown, st, rec.icon, rec.count, duration, expires, now, magic)
+                if shown >= st.max then break end
+            end
         end
     end
+
+    if limits then shown = Scan.draw(row, st, now) end
 
     finishAuraRow(f, row, shown, st)
 end
@@ -2131,8 +2302,10 @@ function Special.drawPreview(f, row, unitKey, bar, st, now)
         local icon     = art[((i - 1) % #art) + 1]
         local duration = PREVIEW_DURATIONS[((i - 1) % #PREVIEW_DURATIONS) + 1]
         local left     = duration - ((now + i * 5) % duration)
+        -- Same stand-in as the rows above the bar: a frame takes the unit type's
+        -- Magic border too, so it has to be able to show it.
         drawAuraIcon(row, i, st, icon, (i % 3 == 0) and (i + 1) or 1,
-            duration, now + left, now)
+            duration, now + left, now, i % 3 == 1)
     end
     finishAuraRow(f, row, st.max, st)
 end
@@ -2141,34 +2314,63 @@ function Special.updateRow(f, bar, uKey, u, d, now)
     local row = Special.row(f, bar.id)
 
     local st = readAuraStyle(bar, d.general, Data.SpecialAnchor(bar.anchor), true)
+    -- A frame has no Magic border setting of its own — it draws from both
+    -- whitelists, and the setting is about buffs. So it follows the unit type's
+    -- BUFFS row, which is the page it was set on, and only the buffs half of this
+    -- frame's contents can ever be marked by it.
+    local buffs = u and u.buffs
+    if buffs and buffs.magicBorder then
+        st.magicR, st.magicG, st.magicB = rgb(buffs.magicBorderColor, 0.25, 0.45, 1)
+        st.magicSize = math.max(0, math.floor((tonumber(buffs.magicBorderSize) or 2) + 0.5))
+    end
 
     if auraPreviewUnit == uKey then
         Special.drawPreview(f, row, uKey, bar, st, now)
         return row
     end
 
+    -- Queued rather than drawn where either whitelist has a limited group, for
+    -- the reason updateAuraRow queues: the winner can be the last aura read. The
+    -- queue spans both kinds, so a frame fed by a limited buff group and an
+    -- unlimited debuff list still comes out in one order.
+    local limited = Data.AuraLookup(uKey, "buffs").limits
+        or Data.AuraLookup(uKey, "debuffs").limits
+    if limited then Scan.reset() end
+
     local shown = 0
     for _, which in ipairs(AURA_KINDS) do
         local lookup = Data.AuraLookup(uKey, which)
+        local limits = lookup.limits
+        -- The Magic mark is a buff's, whichever list this half of the frame is
+        -- reading. A debuff has a school too, and it is not what the setting on
+        -- the buffs page was ticked about.
+        local marks  = (which == "buffs")
         -- Nothing of this kind bound to this frame is the common case for at
         -- least one of the two, and it costs one lookup to skip a forty-slot scan.
-        if (lookup.bars[bar.id] or 0) > 0 and shown < st.max then
+        if (lookup.bars[bar.id] or 0) > 0 and (limited or shown < st.max) then
             local filter = AURA_FILTER[which]
             if bar.onlyMine then filter = filter .. "|PLAYER" end
 
-            wipe(auraSeen)
+            wipe(Scan.seen)
             for i = 1, MAX_AURA_SCAN do
-                local name, icon, count, duration, expires, spellID = readAura(f.unit, i, filter)
+                local name, icon, count, duration, expires, spellID, magic = readAura(f.unit, i, filter)
                 if not name then break end
+                magic = magic and marks
 
                 local key = name:lower()
                 local hit = (spellID and lookup.byID[spellID]) or lookup.byName[key]
                 if hit and lookup.barFor[hit] == bar.id then
-                    shown = shown + 1
-                    auraSeen[key] = true
+                    Scan.seen[key] = true
                     learnAura(hit, spellID, icon)
-                    drawAuraIcon(row, shown, st, icon, count, duration, expires, now)
-                    if shown >= st.max then break end
+                    if limited then
+                        local group = limits and lookup.groupFor[hit]
+                        Scan.push(group, group and limits[group], icon, count,
+                                  duration, expires, magic, now)
+                    else
+                        shown = shown + 1
+                        drawAuraIcon(row, shown, st, icon, count, duration, expires, now, magic)
+                        if shown >= st.max then break end
+                    end
                 end
             end
 
@@ -2181,17 +2383,26 @@ function Special.updateRow(f, bar, uKey, u, d, now)
             -- row the entry came from. Whether events are consulted is the one
             -- exception, and it isn't a preference — it's whether this unit type
             -- has anything worked out from events to offer.
-            if shown < st.max and u.fromEvents and not bar.onlyMine then
-                for _, rec in ipairs(collectInferred(f, which, auraSeen, now, lookup, bar.id)) do
-                    shown = shown + 1
-                    drawAuraIcon(row, shown, st, rec.icon, rec.count,
-                        rec.timed and rec.duration or 0,
-                        rec.timed and rec.expires  or 0, now)
-                    if shown >= st.max then break end
+            if (limited or shown < st.max) and u.fromEvents and not bar.onlyMine then
+                for _, rec in ipairs(collectInferred(f, which, Scan.seen, now, lookup, bar.id)) do
+                    local duration = rec.timed and rec.duration or 0
+                    local expires  = rec.timed and rec.expires  or 0
+                    local magic    = marks and Data.IsMagicAura(rec.spellID)
+                    if limited then
+                        local group = limits and Scan.inferredGroup(rec, lookup)
+                        Scan.push(group, group and limits[group], rec.icon, rec.count,
+                                  duration, expires, magic, now)
+                    else
+                        shown = shown + 1
+                        drawAuraIcon(row, shown, st, rec.icon, rec.count, duration, expires, now, magic)
+                        if shown >= st.max then break end
+                    end
                 end
             end
         end
     end
+
+    if limited then shown = Scan.draw(row, st, now) end
 
     finishAuraRow(f, row, shown, st)
     return row
@@ -3687,9 +3898,14 @@ function NP.refresh()
     -- Before anything reads the aura settings: a profile saved under the old
     -- single-pair shape still has its whitelists at auras.buffs/auras.debuffs.
     Data.MigrateAuras()
-    -- After it, since it works on the per-unit-type blocks that migration
-    -- creates. Like the NPC seed, it fires here as well as at login so a profile
-    -- switched to later gets its starting frame on the switch.
+    -- After it, since both work on the per-unit-type blocks that migration
+    -- creates. Like the NPC seed, they fire here as well as at login so a profile
+    -- switched to later gets its starting setup on the switch.
+    --
+    -- The full seed goes first and claims the special-frame seed as it goes, so
+    -- the older single "Special Buffs" frame is only added to a profile the full
+    -- one declined to touch.
+    Data.EnsureAuraSeed()
     Data.EnsureSpecialBars()
     -- The whitelists flatten into match maps nothing else diffs, so every path that
     -- can change them drops the cache here. The preview's list derives from them too.

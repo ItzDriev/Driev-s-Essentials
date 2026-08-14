@@ -72,11 +72,17 @@ local defaults = {
     },
 }
 
+-- Settings keys registered by a module rather than declared in `defaults` above.
+-- Only used to decide what the General section's catch-all may swallow — see
+-- sectionSettingsKeys().
+local moduleSettingsKeys = {}
+
 -- Module addons register their own settings block here at load time, so core
 -- doesn't need to know they exist. Everything loads before PLAYER_LOGIN, which
 -- is when defaults are merged. A disabled module's settings stay untouched.
 function addon.RegisterDefaults(key, tbl)
     defaults.settings[key] = tbl
+    moduleSettingsKeys[key] = true
 end
 
 -- Shared opacity for every edit-mode box, so one slider controls them all.
@@ -427,6 +433,157 @@ local function normalizeProfile(prof)
     return applyDefaults(defaults, prof)
 end
 
+-- ── Profile sections ─────────────────────────────────────────────────────────
+-- A section is one module's slice of a profile: the settings keys it owns. It's
+-- the unit export, import and copy work in when the user wants less than the
+-- whole profile ("give me your nameplates, keep my chat"). Modules register
+-- theirs next to their defaults, so core still doesn't need to know they exist.
+--
+--   def = {
+--     key      -- stable id; travels inside export strings, so don't rename one
+--     label    -- shown in the module picker
+--     order    -- picker order, mirrors the settings window's tab order
+--     settings -- list of addon.db.settings keys the section owns
+--     roots    -- optional list of PROFILE-level keys (only "minimap" today)
+--     catchAll -- see sectionSettingsKeys(); core's General section only
+--   }
+--
+-- Registering an existing key MERGES into it, because a module can spread its
+-- settings over several files (Chat has seven) and each should be able to claim
+-- its own block where it declares it.
+local profileSections = {}
+
+local function appendUnique(list, values)
+    if type(values) ~= "table" then return end
+    for _, v in ipairs(values) do
+        local dupe = false
+        for _, existing in ipairs(list) do
+            if existing == v then dupe = true break end
+        end
+        if not dupe then list[#list + 1] = v end
+    end
+end
+
+function addon.RegisterProfileSection(def)
+    if type(def) ~= "table" or not def.key then return end
+    local sec = profileSections[def.key]
+    if not sec then
+        sec = { key = def.key, label = def.key, order = 500, settings = {}, roots = {} }
+        profileSections[def.key] = sec
+    end
+    if def.label then sec.label = def.label end
+    if def.order then sec.order = def.order end
+    if def.catchAll then sec.catchAll = true end
+    appendUnique(sec.settings, def.settings)
+    appendUnique(sec.roots, def.roots)
+    return sec
+end
+
+-- "swingTimer" -> "Swing Timer", for a module that registered defaults but no
+-- section of its own.
+local function humanizeKey(key)
+    local words = key:gsub("(%l)(%u)", "%1 %2")
+    return (words:gsub("^%l", string.upper))
+end
+
+-- Ordered list of every section, plus a stand-in for any module settings block
+-- nobody claimed — without it a new module's settings would quietly ride along
+-- inside General's catch-all instead of being pickable on their own.
+function addon.GetProfileSections()
+    local list, claimed = {}, {}
+    for _, sec in pairs(profileSections) do
+        list[#list + 1] = sec
+        for _, key in ipairs(sec.settings) do claimed[key] = true end
+    end
+    for key in pairs(moduleSettingsKeys) do
+        if not claimed[key] then
+            list[#list + 1] = {
+                key = key, label = humanizeKey(key), order = 500,
+                settings = { key }, roots = {},
+            }
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.order ~= b.order then return a.order < b.order end
+        return a.label < b.label
+    end)
+    return list
+end
+
+-- Section defs behind a list of section keys, in display order. Unknown keys are
+-- dropped rather than erroring: a string can name a module this install doesn't
+-- have loaded.
+local function resolveSections(keys)
+    if not keys then return nil end
+    local wanted = {}
+    for _, k in ipairs(keys) do wanted[k] = true end
+    local out = {}
+    for _, sec in ipairs(addon.GetProfileSections()) do
+        if wanted[sec.key] then out[#out + 1] = sec end
+    end
+    return out
+end
+
+-- The settings keys a section covers right now. Fixed for a normal section; the
+-- catch-all (General) is instead everything no other section claims — core's
+-- loose top-level settings (edit mode, UI colours, window size) today, and
+-- whatever an unrecognised string carries tomorrow, so a whole-profile export
+-- can't silently drop a key.
+--
+-- `extras` are further settings tables to sweep for keys beyond the defaults —
+-- the profile being exported, the payload being imported.
+local function sectionSettingsKeys(sec, extras)
+    if not sec.catchAll then return sec.settings end
+
+    local claimed = {}
+    for _, other in ipairs(addon.GetProfileSections()) do
+        if other.key ~= sec.key then
+            for _, key in ipairs(other.settings) do claimed[key] = true end
+        end
+    end
+
+    local out, seen = {}, {}
+    local function sweep(tbl)
+        if type(tbl) ~= "table" then return end
+        for key in pairs(tbl) do
+            if not claimed[key] and not seen[key] then
+                seen[key] = true
+                out[#out + 1] = key
+            end
+        end
+    end
+    sweep(defaults.settings)
+    for _, tbl in ipairs(extras or {}) do sweep(tbl) end
+    table.sort(out)
+    return out
+end
+
+-- Overwrites `dst`'s copy of each selected section with `incoming`'s. `incoming`
+-- must already be a normalised profile (migrations run, defaults merged), so a
+-- section the payload said nothing about lands as defaults rather than as a
+-- half-shaped block — "make my nameplates look like yours", not "merge them".
+local function mergeSections(dst, incoming, secs)
+    dst.settings = dst.settings or {}
+    incoming.settings = incoming.settings or {}
+    for _, sec in ipairs(secs) do
+        for _, key in ipairs(sectionSettingsKeys(sec, { dst.settings, incoming.settings })) do
+            dst.settings[key] = incoming.settings[key]
+        end
+        for _, root in ipairs(sec.roots) do
+            dst[root] = incoming[root]
+        end
+    end
+end
+
+-- Core's own sections, ordered to match the settings window's tabs. General is
+-- the catch-all: the minimap button plus every loose settings field (edit mode,
+-- UI colours, saved window size) that isn't a module's block.
+addon.RegisterProfileSection({ key = "general", label = "General", order = 10,
+    roots = { "minimap" }, catchAll = true })
+addon.RegisterProfileSection({ key = "ttk",     label = "Time to Kill", order = 12, settings = { "ttk" } })
+addon.RegisterProfileSection({ key = "tooltip", label = "Tooltip",      order = 14, settings = { "tooltip" } })
+addon.RegisterProfileSection({ key = "raid",    label = "Raid",         order = 30, settings = { "raid", "raidFrames" } })
+
 -- ── Profiles ───────────────────────────────────────────────────────────────
 -- DrievSettingsDB is one ACCOUNT-WIDE SavedVariable, so per-character profiles
 -- aren't automatic — we keep our own character-key -> profile-name map inside it.
@@ -632,18 +789,34 @@ end
 -- Overwrites `toName` with a deep copy of `fromName` (fresh tables, so the two
 -- don't share afterwards). If `toName` is in use on THIS character, addon.db is
 -- re-pointed and modules re-applied, mirroring SetActiveProfile.
-function addon.CopyProfile(fromName, toName)
+--
+-- `only` — a list of section keys — copies just those modules and leaves the
+-- rest of `toName` alone. The destination table is then edited in place rather
+-- than replaced, so addon.db keeps pointing at it.
+function addon.CopyProfile(fromName, toName, only)
     if not (fromName and toName) then return false, "Pick both profiles." end
     if fromName == toName then return false, "Pick two different profiles." end
     local src = DrievSettingsDB.profiles[fromName]
     if not src then return false, "Source profile not found." end
-    if not DrievSettingsDB.profiles[toName] then return false, "Destination profile not found." end
+    local dst = DrievSettingsDB.profiles[toName]
+    if not dst then return false, "Destination profile not found." end
 
-    local copy = normalizeProfile(deepCopy(src))
-    DrievSettingsDB.profiles[toName] = copy
-    if addon.GetActiveProfileName() == toName then
-        addon.db = copy
+    local isActive    = (addon.GetActiveProfileName() == toName)
+    local oldSettings = isActive and deepCopy(dst.settings) or nil
+    local copy        = normalizeProfile(deepCopy(src))
+
+    if only then
+        local secs = resolveSections(only)
+        if #secs == 0 then return false, "Pick at least one module to copy." end
+        mergeSections(dst, copy, secs)
+    else
+        DrievSettingsDB.profiles[toName] = copy
+    end
+
+    if isActive then
+        addon.db = DrievSettingsDB.profiles[toName]
         addon.RefreshAllModules()
+        promptReloadIfNeeded(oldSettings, addon.db.settings)
     end
     return true
 end
@@ -861,15 +1034,41 @@ local function diffDefaults(src, def)
     return out
 end
 
+-- A partial export names the sections it carries, so the import picker can
+-- offer exactly those instead of resetting modules the string says nothing
+-- about. Stripped before the payload becomes a profile — it's an envelope, not
+-- a setting. Absent on whole-profile strings, including every one written
+-- before sections existed.
+local META_KEY = "__meta"
+
 -- Returns an opaque, copy-pasteable string encoding the named profile, or
--- nil + an error message. Older full-fat strings still import fine — the reader
--- merges defaults either way, so a pruned payload and a complete one land in
--- the same place.
-function addon.ExportProfile(name)
+-- nil + an error message. `only` — a list of section keys — limits it to those
+-- modules; nil exports the whole profile.
+--
+-- Older full-fat strings still import fine — the reader merges defaults either
+-- way, so a pruned payload and a complete one land in the same place.
+function addon.ExportProfile(name, only)
     local prof = DrievSettingsDB.profiles[name]
     if not prof then return nil, "Profile not found." end
 
-    local slim = deepCopy(prof)
+    local slim, secs
+    if only then
+        secs = resolveSections(only)
+        if #secs == 0 then return nil, "Pick at least one module to export." end
+        slim = { settings = {} }
+        for _, sec in ipairs(secs) do
+            for _, key in ipairs(sectionSettingsKeys(sec, { prof.settings })) do
+                local block = prof.settings and prof.settings[key]
+                if block ~= nil then slim.settings[key] = deepCopy(block) end
+            end
+            for _, root in ipairs(sec.roots) do
+                if prof[root] ~= nil then slim[root] = deepCopy(prof[root]) end
+            end
+        end
+    else
+        slim = deepCopy(prof)
+    end
+
     for key, prune in pairs(exportPruners) do
         local block = slim.settings and slim.settings[key]
         if type(block) == "table" then prune(block) end
@@ -877,13 +1076,61 @@ function addon.ExportProfile(name)
 
     -- `or {}` for the profile that matches the defaults exactly: nothing to
     -- diff still has to encode as an empty table, not as nothing at all.
-    local str = addon.EncodeTable(EXPORT_PREFIX, diffDefaults(slim, defaults) or {})
+    local payload = diffDefaults(slim, defaults) or {}
+    if secs then
+        local keys = {}
+        for _, sec in ipairs(secs) do keys[#keys + 1] = sec.key end
+        payload[META_KEY] = { sections = keys }
+    end
+
+    local str = addon.EncodeTable(EXPORT_PREFIX, payload)
     if not str then return nil, "Could not export this profile." end
     return str
 end
 
+-- Decodes a string without applying any of it, and reports which sections it
+-- carries so the caller can offer them. Returns data, sectionKeys — or
+-- nil, nil, error message.
+--
+-- A string with no section list is a whole profile, so every section is on
+-- offer: the payload is diffed against the defaults, and a module it doesn't
+-- mention genuinely means "defaults", not "unknown".
+function addon.ReadProfileString(str)
+    local data, err = addon.DecodeTable(EXPORT_PREFIX, str)
+    if not data then
+        return nil, nil, err or "That doesn't look like a valid profile string."
+    end
+
+    local keys = {}
+    local meta = data[META_KEY]
+    if type(meta) == "table" and type(meta.sections) == "table" then
+        -- Filtered through the registry so a section this install doesn't have
+        -- loaded never reaches the picker as an unusable row.
+        for _, sec in ipairs(resolveSections(meta.sections)) do keys[#keys + 1] = sec.key end
+    else
+        for _, sec in ipairs(addon.GetProfileSections()) do keys[#keys + 1] = sec.key end
+    end
+    return data, keys
+end
+
+-- Turns decoded data into a complete, current-shape profile: envelope dropped,
+-- migrations run, defaults merged, then the import fillers — after the merge,
+-- so a filler is handed a complete block rather than whatever subset the string
+-- happened to carry.
+local function profileFromData(data)
+    local prof = deepCopy(data)
+    prof[META_KEY] = nil
+    prof = normalizeProfile(prof)
+    for key, fill in pairs(importFillers) do
+        local block = prof.settings and prof.settings[key]
+        if type(block) == "table" then fill(block) end
+    end
+    return prof
+end
+
 -- Creates a new profile called `name` from a string produced by ExportProfile.
--- Returns the profile name on success, or nil + an error message.
+-- Returns the profile name on success, or nil + an error message. A partial
+-- string is fine here: the modules it doesn't carry arrive as defaults.
 function addon.ImportProfile(name, str)
     name = name and name:match("^%s*(.-)%s*$") or ""
     if name == "" then return nil, "Enter a profile name." end
@@ -894,16 +1141,40 @@ function addon.ImportProfile(name, str)
         return nil, err or "That doesn't look like a valid profile string."
     end
 
-    local prof = normalizeProfile(data)
-    -- After the merge, so a filler is handed a complete block rather than
-    -- whatever subset the string happened to carry.
-    for key, fill in pairs(importFillers) do
-        local block = prof.settings and prof.settings[key]
-        if type(block) == "table" then fill(block) end
-    end
-
-    DrievSettingsDB.profiles[name] = prof
+    DrievSettingsDB.profiles[name] = profileFromData(data)
     return name
+end
+
+-- Imports only `only` (a list of section keys) from `source` — a string, or the
+-- data ReadProfileString already decoded — into the EXISTING profile
+-- `targetName`, leaving every other module in it untouched.
+function addon.ImportProfileSections(targetName, source, only)
+    local target = DrievSettingsDB.profiles[targetName]
+    if not target then return false, "Profile not found." end
+
+    local data = source
+    if type(data) == "string" then
+        local decoded, err = addon.DecodeTable(EXPORT_PREFIX, data)
+        if not decoded then
+            return false, err or "That doesn't look like a valid profile string."
+        end
+        data = decoded
+    end
+    if type(data) ~= "table" then return false, "Nothing to import." end
+
+    local secs = resolveSections(only)
+    if not secs or #secs == 0 then return false, "Pick at least one module to import." end
+
+    local isActive    = (addon.GetActiveProfileName() == targetName)
+    local oldSettings = isActive and deepCopy(target.settings) or nil
+
+    mergeSections(target, profileFromData(data), secs)
+
+    if isActive then
+        addon.RefreshAllModules()
+        promptReloadIfNeeded(oldSettings, target.settings)
+    end
+    return true
 end
 
 -- Single bootstrap frame: registers events, then unregisters/releases itself.

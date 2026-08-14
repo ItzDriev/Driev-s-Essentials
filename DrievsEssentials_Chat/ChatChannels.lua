@@ -27,6 +27,11 @@ addon.RegisterDefaults("chatChannels", {
     ignored = {},
 })
 
+-- Part of the one "Chat" section in the Profiles tab (see Chat.lua).
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "chat", settings = { "chatChannels" } })
+end
+
 -- The most channels the client will hold, and therefore the highest number a
 -- channel can be pinned to.
 local MAX_CHANNELS = 10

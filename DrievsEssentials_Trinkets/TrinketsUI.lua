@@ -74,6 +74,13 @@ addon.RegisterDefaults("trinkets", {
     encQueueDelaySeconds = 5.0,  -- required continuous encounter+combat duration before queuing
 })
 
+-- Makes the block above pickable on its own in the Profiles tab's export,
+-- import and copy dialogs.
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "trinkets", label = "Trinkets", order = 40,
+        settings = { "trinkets" } })
+end
+
 -- Keybind text, as core's shared font block. Matches the engine's defaults
 -- (Trinkets.lua) so the panel shows what a button actually draws.
 local BIND_FONT_DEFAULT = addon.Font.New({

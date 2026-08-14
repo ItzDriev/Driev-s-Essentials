@@ -56,6 +56,11 @@ addon.RegisterDefaults("chatPanels", {
     [2] = PANEL_2,
 })
 
+-- Part of the one "Chat" section in the Profiles tab (see Chat.lua).
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "chat", settings = { "chatPanels" } })
+end
+
 -- addon.db only exists once Core has applied the active profile at
 -- PLAYER_LOGIN; Edit Mode providers and refreshes can be reached before that.
 local function isReady()

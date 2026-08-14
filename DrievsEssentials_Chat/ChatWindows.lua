@@ -21,6 +21,11 @@ addon.RegisterDefaults("chatWindows", {
     windows = {},
 })
 
+-- Part of the one "Chat" section in the Profiles tab (see Chat.lua).
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "chat", settings = { "chatWindows" } })
+end
+
 local MAX_WINDOWS = 10   -- NUM_CHAT_WINDOWS, but that global isn't up at file scope
 
 local function isReady()

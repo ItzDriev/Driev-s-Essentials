@@ -176,6 +176,13 @@ do
     addon.RegisterDefaults("actionBars", defaults)
 end
 
+-- Makes the block above pickable on its own in the Profiles tab's export,
+-- import and copy dialogs.
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "actionBars", label = "Action Bars", order = 60,
+        settings = { "actionBars" } })
+end
+
 -- The face used to be a bare LSM name (or `false` for the game's own font)
 -- beside flat size/offset keys. Folded into the block before the defaults are
 -- merged, since the merge would otherwise replace the saved name outright.

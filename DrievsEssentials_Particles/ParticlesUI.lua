@@ -25,6 +25,13 @@ local flatButton      = W.flatButton
 -- simply leaves the (harmless) saved values untouched.
 addon.RegisterDefaults("particles", { enabled = false, classes = { WARRIOR = true } })
 
+-- Makes the block above pickable on its own in the Profiles tab's export,
+-- import and copy dialogs.
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "particles", label = "Particles", order = 20,
+        settings = { "particles" } })
+end
+
 -- Seconds a boss with no built-in linger starts at once the user ticks its
 -- linger box. Bosses that DO have one (boss.linger in core's Raids.lua) seed
 -- from that instead, so the old hardcoded timers survive untouched.

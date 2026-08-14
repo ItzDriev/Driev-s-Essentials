@@ -2901,33 +2901,6 @@ local function showTextPopup(opts)
 end
 UI.showTextPopup = showTextPopup
 
-local function showExportPopup(profileName)
-    local exportStr, err = addon.ExportProfile(profileName)
-    showTextPopup({
-        title      = "Export Profile: " .. profileName,
-        hint       = "Copy this string (Ctrl+A, Ctrl+C) and share it with someone else.",
-        text       = exportStr or "",
-        error      = exportStr and "" or (err or "Could not export this profile."),
-        actionText = "Close",
-        selectAll  = true,
-    })
-end
-
-local function showImportPopup(onImported)
-    showTextPopup({
-        title      = "Import Profile",
-        hint       = "Enter a name for the new profile, paste a string exported from Driev's Essentials below, then click Import.",
-        showName   = true,
-        actionText = "Import",
-        onAction   = function(name, text)
-            local profName, err = addon.ImportProfile(name, text)
-            if not profName then return nil, err or "Import failed." end
-            if onImported then onImported(profName) end
-            return true
-        end,
-    })
-end
-
 -- ── Themed confirmation popup ────────────────────────────────────────────────
 -- Same floating-panel look as getTextPopup (draggable TOOLTIP-strata
 -- BackdropTemplate frame), but for a yes/no prompt instead of text entry.
@@ -3328,6 +3301,116 @@ local function showCheckListPopup(opts)
 end
 UI.showCheckListPopup = showCheckListPopup
 
+-- ── Profile export / import flows ────────────────────────────────────────────
+-- Every one of them is "pick some modules, then do the thing", so they all open
+-- the same check-list popup over core's section registry. Defined here rather
+-- than beside getTextPopup() because they need showCheckListPopup above.
+
+-- Rows for the module picker, everything ticked. `filter` (a list of section
+-- keys) narrows it to what an import string actually carries — offering a
+-- module the string says nothing about would reset it to defaults.
+local function profileSectionItems(filter)
+    local allow
+    if filter then
+        allow = {}
+        for _, key in ipairs(filter) do allow[key] = true end
+    end
+    local items = {}
+    for _, sec in ipairs(addon.GetProfileSections()) do
+        if not allow or allow[sec.key] then
+            items[#items + 1] = { key = sec.key, label = sec.label, checked = true }
+        end
+    end
+    return items
+end
+
+-- nil when every module is ticked: the core calls all take "nil = the whole
+-- profile", which keeps a full export byte-identical to what earlier versions
+-- produced and a full copy a straight profile replacement.
+local function selectionOrAll(keys, items)
+    if #keys >= #items then return nil end
+    return keys
+end
+
+local function showExportString(profileName, only)
+    local exportStr, err = addon.ExportProfile(profileName, only)
+    showTextPopup({
+        title      = "Export Profile: " .. profileName,
+        hint       = "Copy this string (Ctrl+A, Ctrl+C) and share it with someone else.",
+        text       = exportStr or "",
+        error      = exportStr and "" or (err or "Could not export this profile."),
+        actionText = "Close",
+        selectAll  = true,
+    })
+end
+
+local function showExportPopup(profileName)
+    local items = profileSectionItems()
+    showCheckListPopup({
+        title      = "Export Profile: " .. profileName,
+        hint       = "Choose what to include. Leave everything ticked to export the whole profile.",
+        items      = items,
+        emptyText  = "No modules are loaded.",
+        actionText = "Export",
+        onAction   = function(keys)
+            if #keys == 0 then return nil, "Tick at least one module to export." end
+            showExportString(profileName, selectionOrAll(keys, items))
+            return true
+        end,
+    })
+end
+
+-- Import as a NEW profile: whatever the string doesn't carry arrives as
+-- defaults, so there's nothing to pick.
+local function showImportPopup(onImported)
+    showTextPopup({
+        title      = "Import Profile",
+        hint       = "Enter a name for the new profile, paste a string exported from Driev's Essentials below, then click Import.",
+        showName   = true,
+        actionText = "Import",
+        onAction   = function(name, text)
+            local profName, err = addon.ImportProfile(name, text)
+            if not profName then return nil, err or "Import failed." end
+            if onImported then onImported(profName) end
+            return true
+        end,
+    })
+end
+
+-- Import into an EXISTING profile: the string is decoded first so the picker can
+-- list what it actually holds, and only ticked modules are replaced.
+local function showImportIntoPopup(profileName, onImported)
+    showTextPopup({
+        title      = "Import Into: " .. profileName,
+        hint       = "Paste a string exported from Driev's Essentials below, then choose which modules to bring in.",
+        actionText = "Continue",
+        onAction   = function(_, text)
+            local data, sections, err = addon.ReadProfileString(text)
+            if not data then return nil, err or "Import failed." end
+
+            local items = profileSectionItems(sections)
+            if #items == 0 then
+                return nil, "That string doesn't carry any module this install knows about."
+            end
+
+            showCheckListPopup({
+                title      = "Import Into: " .. profileName,
+                hint       = string.format('Ticked modules replace what "%s" has now. Everything else in it is left alone.', profileName),
+                items      = items,
+                actionText = "Import",
+                onAction   = function(keys)
+                    if #keys == 0 then return nil, "Tick at least one module to import." end
+                    local ok, impErr = addon.ImportProfileSections(profileName, data, keys)
+                    if not ok then return nil, impErr or "Import failed." end
+                    if onImported then onImported(profileName) end
+                    return true
+                end,
+            })
+            return true
+        end,
+    })
+end
+
 -- ── Profiles tab ─────────────────────────────────────────────────────────────
 
 local function buildProfilesPanel(parent)
@@ -3402,7 +3485,7 @@ local function buildProfilesPanel(parent)
     local copyDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     copyDesc:SetPoint("TOPLEFT", copyHeader, "BOTTOMLEFT", 0, -4)
     copyDesc:SetWidth(560); copyDesc:SetJustifyH("LEFT")
-    copyDesc:SetText("Overwrite one profile's settings with a copy of another's.")
+    copyDesc:SetText("Overwrite one profile's settings with a copy of another's — either all of it, or just the modules you pick.")
     UI.tint(copyDesc, C.textGrey)
 
     local copyFrom, copyTo
@@ -3444,14 +3527,22 @@ local function buildProfilesPanel(parent)
             copyErr:SetText("Pick two different profiles.")
             return
         end
-        showConfirmPopup({
-            title       = "Copy Profile",
-            message     = string.format('Overwrite "%s" with a copy of "%s"? This replaces all of "%s"\'s settings.', copyTo, copyFrom, copyTo),
-            confirmText = "Copy",
-            onConfirm   = function()
-                local ok, err = addon.CopyProfile(copyFrom, copyTo)
-                if not ok then copyErr:SetText(err or "Could not copy profile.") end
+        -- The picker doubles as the confirmation: it names both profiles and
+        -- lists exactly what is about to be overwritten, which a yes/no prompt
+        -- can't. Leaving everything ticked is the old whole-profile copy.
+        local items = profileSectionItems()
+        showCheckListPopup({
+            title      = "Copy Profile",
+            hint       = string.format('Copy from "%s" into "%s". Ticked modules overwrite "%s"\'s settings.', copyFrom, copyTo, copyTo),
+            items      = items,
+            emptyText  = "No modules are loaded.",
+            actionText = "Copy",
+            onAction   = function(keys)
+                if #keys == 0 then return nil, "Tick at least one module to copy." end
+                local ok, err = addon.CopyProfile(copyFrom, copyTo, selectionOrAll(keys, items))
+                if not ok then return nil, err or "Could not copy profile." end
                 refreshProfiles()
+                return true
             end,
         })
     end)
@@ -3462,6 +3553,12 @@ local function buildProfilesPanel(parent)
     listHeader:SetText("Existing Profiles")
     UI.tint(listHeader, C.red)
 
+    local listDesc = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    listDesc:SetPoint("TOPLEFT", listHeader, "BOTTOMLEFT", 0, -4)
+    listDesc:SetWidth(560); listDesc:SetJustifyH("LEFT")
+    listDesc:SetText("The one marked active is what this character uses. Export writes a string for the whole profile or just the modules you pick; Import brings modules out of a string into that profile, leaving the rest of it untouched.")
+    UI.tint(listDesc, C.textGrey)
+
     local rows = {}
     local ROW_W, ROW_H = 540, 26
 
@@ -3470,14 +3567,20 @@ local function buildProfilesPanel(parent)
         row:SetSize(ROW_W, ROW_H)
         applyBackdrop(row, 1, C.panelDeep, C.tabBorder)
 
+        -- Bounded and left-aligned rather than sized to its text: four buttons
+        -- share this row now, and a 32-character profile name would otherwise
+        -- push the "(active)" tag straight under them.
         local nameFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         nameFS:SetPoint("LEFT", 8, 0)
+        nameFS:SetWidth(140)
+        nameFS:SetJustifyH("LEFT")
+        if nameFS.SetWordWrap then nameFS:SetWordWrap(false) end
         UI.tint(nameFS, C.textWhite)
         row.nameFS = nameFS
 
         local activeFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         activeFS:SetPoint("LEFT", nameFS, "RIGHT", 8, 0)
-        activeFS:SetText("(active on this character)")
+        activeFS:SetText("(active)")
         UI.tint(activeFS, C.red)
         row.activeFS = activeFS
 
@@ -3511,6 +3614,18 @@ local function buildProfilesPanel(parent)
         exportBtn:SetScript("OnLeave", function() UI.tintBorder(exportBtn, C.tabBorder) end)
         row.exportBtn = exportBtn
 
+        -- Per row rather than one button at the top: this import merges INTO an
+        -- existing profile, so which one it lands in has to be unambiguous.
+        local importRowBtn = CreateFrame("Button", nil, row, "BackdropTemplate")
+        importRowBtn:SetSize(70, 20)
+        importRowBtn:SetPoint("RIGHT", exportBtn, "LEFT", -6, 0)
+        applyBackdrop(importRowBtn, 1, C.panelDark, C.tabBorder)
+        local importRowLbl = importRowBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        importRowLbl:SetPoint("CENTER"); importRowLbl:SetText("Import"); UI.tint(importRowLbl, C.textWhite)
+        importRowBtn:SetScript("OnEnter", function() UI.tintBorder(importRowBtn, C.red) end)
+        importRowBtn:SetScript("OnLeave", function() UI.tintBorder(importRowBtn, C.tabBorder) end)
+        row.importBtn = importRowBtn
+
         return row
     end
 
@@ -3541,7 +3656,7 @@ local function buildProfilesPanel(parent)
             if prevRow then
                 row:SetPoint("TOPLEFT", prevRow, "BOTTOMLEFT", 0, -6)
             else
-                row:SetPoint("TOPLEFT", listHeader, "BOTTOMLEFT", 0, -10)
+                row:SetPoint("TOPLEFT", listDesc, "BOTTOMLEFT", 0, -10)
             end
             row.nameFS:SetText(profName)
 
@@ -3550,6 +3665,9 @@ local function buildProfilesPanel(parent)
             row.switchBtn:SetShown(not isActive)
             row.switchBtn:SetScript("OnClick", function() addon.SetActiveProfile(profName) end)
             row.exportBtn:SetScript("OnClick", function() showExportPopup(profName) end)
+            row.importBtn:SetScript("OnClick", function()
+                showImportIntoPopup(profName, refreshProfiles)
+            end)
 
             row.canDelete = (profName ~= "Default") and not isActive
             row.deleteBtn:SetEnabled(row.canDelete)

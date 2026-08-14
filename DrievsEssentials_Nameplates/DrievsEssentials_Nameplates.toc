@@ -1,7 +1,7 @@
 ## Interface: 11509
 ## Title: |cfffb2c36Driev's|r |cffffffffEssentials|r - Nameplates
 ## Notes: Takes over nameplate handling (health/cast bars, threat coloring, per-NPC colors and renames) the way Plater does. Requires Driev's Essentials.
-## Version: 1.1.0
+## Version: 1.2.0
 ## Author: Driev
 ## Dependencies: DrievsEssentials
 ## IconTexture: Interface\Icons\INV_Misc_Gear_01
@@ -9,5 +9,8 @@
 # LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 are provided by the core
 # addon, which is guaranteed loaded first via ## Dependencies above.
 NameplateData.lua
+# After the data file, which defines the Data table it hangs EnsureAuraSeed off,
+# and before the engine, which calls that on the first refresh.
+NameplateSeed.lua
 Nameplates.lua
 NameplatesUI.lua

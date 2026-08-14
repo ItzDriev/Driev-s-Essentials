@@ -81,6 +81,11 @@ addon.RegisterDefaults("dataTexts", {
     valueColor = { 1.00, 0.15, 0.15 },
 })
 
+-- Part of the one "Chat" section in the Profiles tab (see Chat.lua).
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "chat", settings = { "dataTexts" } })
+end
+
 -- addon.db only exists once Core has applied the active profile. The poll/event
 -- driver is installed at file scope and starts ticking before that.
 local function isReady()

@@ -34,6 +34,11 @@ addon.RegisterDefaults("chatDock", {
     autoDocked = {},
 })
 
+-- Part of the one "Chat" section in the Profiles tab (see Chat.lua).
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "chat", settings = { "chatDock" } })
+end
+
 local function isReady()
     return addon.db ~= nil and addon.db.settings ~= nil
 end

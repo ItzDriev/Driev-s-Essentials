@@ -59,15 +59,29 @@ end
 -- A function rather than a table shared by all four rows: core's applyDefaults
 -- copies scalars but recurses into tables, so a shared borderColor (or list)
 -- would be the SAME table on every row and recolouring one would recolour all.
-local function auraRowDefaults(y, size)
-    return {
+--
+-- Takes a table rather than a run of positional arguments: four rows differing in
+-- four ways each reads as `auraRowDefaults({ y = 5, size = 32, gap = 4 })` and not
+-- as `auraRowDefaults(5, 32, nil, 4)`.
+--
+--   y      up from the top edge of the health bar
+--   size   icon edge, in pixels
+--   gap    between icons; 2 unless the row says otherwise
+--   magic  see below
+--
+-- `magic` marks the buffs row of the pair. Only that row carries the Magic border
+-- settings, since only a BUFF being Magic is worth a colour: it is the one that
+-- says "this can be purged", which is a thing you can act on. A debuff's own
+-- dispel type is somebody else's problem, on somebody else's frame.
+local function auraRowDefaults(opts)
+    local row = {
         enabled     = true,
-        size        = size,
-        spacing     = 2,
+        size        = opts.size,
+        spacing     = opts.gap or 2,
         max         = 8,
         growth      = "center",  -- a value from Data.AURA_GROWTHS below
         x           = 0,
-        y           = y,         -- up from the top edge of the health bar
+        y           = opts.y,
         onlyMine    = false,
         -- Off: at this icon size the swipe alone says how long is left, and a
         -- number on top of it is one more thing in the middle of a pull.
@@ -80,11 +94,30 @@ local function auraRowDefaults(y, size)
         --           bar = <special frame id|nil>, group = <group id|nil> }
         list        = {},
         -- Headings inside this list, in the order they are drawn, and the last id
-        -- handed out. Organisation only: nothing here reaches a nameplate, and an
-        -- entry's `group` is never read by the engine.
+        -- handed out. Organisation, plus the one thing a group does reach a plate
+        -- with: `limit`, which keeps only the longest or shortest of what the
+        -- heading holds. See Data.AURA_GROUP_LIMITS.
         groups      = {},
         nextGroupID = 0,
     }
+
+    -- Written outside the constructor rather than with an `and`/`or` pair: the
+    -- values wanted here include `false`, and `magic and false or nil` is `nil`
+    -- for every input — the classic Lua ternary trap.
+    --
+    -- `magic` is three-valued on purpose. nil means the row has no Magic border
+    -- settings at all, which is every debuff row. true and false both mean it
+    -- carries them, switched on or off.
+    if opts.magic ~= nil then
+        row.magicBorder      = opts.magic and true or false
+        row.magicBorderColor = { 0.25, 0.45, 1.00 }
+        -- Thicker than the plain border rather than the same weight in another
+        -- colour. It is a mark meant to be caught in peripheral vision during a
+        -- fight, and at 28px a one-pixel outline recolouring is not one. Its own
+        -- setting, so turning it up doesn't fatten every other icon in the row.
+        row.magicBorderSize  = 2
+    end
+    return row
 end
 
 local DEFAULTS = {
@@ -387,13 +420,19 @@ local DEFAULTS = {
     -- wanted at different sizes and places. Friendly units borrow the matching enemy
     -- block, as they borrow its styling group.
     --
-    -- Every list starts EMPTY, so nothing draws until something is added. Within a
-    -- unit type the rows stack, so turning both on doesn't pile one on the other.
+    -- Every list starts EMPTY *here* and is filled once per profile by the seed in
+    -- NameplateSeed.lua — see that file for why a starting whitelist cannot be a
+    -- default. Within a unit type the rows stack, so turning both on doesn't pile
+    -- one on the other.
     --
     -- `fromEvents` is off for NPCs and on for players: debuffs on an NPC come back
     -- off the unit fine, a hostile player's buffs never do.
     auras = {
         enabled = true,
+
+        -- Which starting setup this profile has had, in the same shape (and for
+        -- the same reason) as npcSeed and special.seed.
+        seed = 0,
 
         -- Every aura seen on a nameplate, so whitelists can be filled from things
         -- actually met. On by default, like the auto-detected NPC list: a catalogue you
@@ -420,16 +459,25 @@ local DEFAULTS = {
             --   bars   = ordered list of Data.NewSpecialBar tables
             --   nextID = the last id handed out, never reused
             --   seed   = which starting frame this profile has had
+            -- The Magic border ships ON for enemy players and off for NPCs. It
+            -- answers "can I purge that", and that is a question you ask about
+            -- the enemy healer running with a shield up, not about a raid boss
+            -- nobody is dispelling. NPCs keep the setting, switched off.
+            --
+            -- The player rows also run a wider gap than the NPC ones. Their icons
+            -- are bigger and there are never forty players on screen at once, so
+            -- the room is there — and at a glance a gap is what separates two
+            -- icons from one wide one.
             enemyPlayer = {
                 fromEvents = true,
-                buffs      = auraRowDefaults(40, 32),
-                debuffs    = auraRowDefaults(4,  32),
+                buffs      = auraRowDefaults({ y = 40, size = 32, gap = 4, magic = true }),
+                debuffs    = auraRowDefaults({ y =  5, size = 32, gap = 4 }),
                 special    = { bars = {}, nextID = 0, seed = 0 },
             },
             enemyNPC = {
                 fromEvents = false,
-                buffs      = auraRowDefaults(36, 28),
-                debuffs    = auraRowDefaults(4,  28),
+                buffs      = auraRowDefaults({ y = 36, size = 28, magic = false }),
+                debuffs    = auraRowDefaults({ y =  4, size = 28 }),
                 special    = { bars = {}, nextID = 0, seed = 0 },
             },
         },
@@ -480,6 +528,13 @@ local DEFAULTS = {
 
 addon.RegisterDefaults("nameplates", DEFAULTS)
 
+-- Makes the block above pickable on its own in the Profiles tab's export,
+-- import and copy dialogs.
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "nameplates", label = "Nameplates", order = 65,
+        settings = { "nameplates" } })
+end
+
 -- Every font on a plate was a bare LibSharedMedia name, with the general one's
 -- size and outline (and target of target's size, outline and nudges) as flat
 -- keys beside it. Folding those into their blocks has to run before the defaults
@@ -529,6 +584,16 @@ if addon.RegisterExportPruner and addon.RegisterImportFiller then
     -- travelled are in it already, and an import can only add to it.
     addon.RegisterImportFiller("nameplates", function(np)
         Data.AddListsToLearned(np)
+
+        -- An imported profile is a setup somebody chose, INCLUDING one they chose
+        -- to leave empty. Marking it seeded stops EnsureAuraSeed from filling that
+        -- emptiness back in with sixty entries on the next refresh.
+        --
+        -- Read at import time rather than at load, so the fact that the version
+        -- lives in NameplateSeed.lua — which loads after this file — doesn't come
+        -- into it.
+        np.auras = np.auras or {}
+        np.auras.seed = Data.AURA_SEED_VERSION
     end)
 end
 
@@ -854,6 +919,37 @@ function Data.SpellInfo(key)
     return nil
 end
 
+-- Is this aura Magic — i.e. purgeable? What the Magic border on the buffs rows
+-- is painted from.
+--
+-- Two sources, in this order:
+--
+--   `dispel` is what the client just said, straight off the aura. Authoritative
+--   where it is there at all, which is only for a unit the client will answer
+--   about: your target, your mouseover and your own group.
+--
+--   The duration library's own table answers everywhere else, and everywhere
+--   else is most of the time. Classic Era will not list a hostile player's buffs
+--   AT ALL, so a Free Action Potion on an enemy is worked out from the combat
+--   log — and an aura nobody read off a unit has no school attached to read.
+--   Durations/Spells.lua declares `buffType` on 84 spells and "Magic" is the only
+--   value it ever holds, since the school of a buff is all it ever needed.
+--
+-- The table can only turn the mark ON where the client said nothing, never off
+-- something the client called plain — a curated 1.12 list is a good answer in
+-- the client's silence and a worse one over its objection.
+-- `dispel` is "absent" as nil AND as "": C_UnitAuras leaves dispelName nil where
+-- there is no school and UnitAura returns an empty string, and an empty string is
+-- truthy in Lua — so testing it for truth alone would take the client's silence
+-- for a "not Magic" and never reach the table below.
+function Data.IsMagicAura(spellID, dispel)
+    if dispel and dispel ~= "" then return dispel == "Magic" end
+    if not spellID then return false end
+    local D = addon.Durations
+    local opts = D and D.spells and D.spells[spellID]
+    return (opts and opts.buffType == "Magic") and true or false
+end
+
 -- The unit-type block ("enemyPlayer" / "enemyNPC"), created on demand so a
 -- profile that predates this feature doesn't need a login to grow one.
 function Data.AuraUnit(unitKey)
@@ -991,6 +1087,33 @@ function Data.RemoveAura(unitKey, which, key)
         list[key] = nil
         Data.InvalidateAuras()
     end
+end
+
+-- Empties one whitelist: every entry and every heading over it. The headings go
+-- too because "clear this list" means the list, and leaving four empty bands
+-- behind would be a tidy-up that still needed tidying up.
+--
+-- The special buff FRAMES are left alone — they are placements on the plate
+-- rather than list content, and an entry ticked onto one has just been deleted
+-- along with everything else anyway. Returns how many entries went, so the caller
+-- can say.
+function Data.ClearAuraList(unitKey, which)
+    local o = Data.AuraOpts(unitKey, which)
+    if not o then return 0 end
+
+    local removed = 0
+    for key in pairs(o.list or {}) do
+        o.list[key] = nil
+        removed = removed + 1
+    end
+    -- Wiped in place rather than replaced: the settings list holds this table
+    -- across a rebuild, and swapping it would leave that pointing at the old one.
+    -- nextGroupID is deliberately NOT reset — ids are never reused.
+    for i = #(o.groups or {}), 1, -1 do o.groups[i] = nil end
+    o.looseCollapsed = nil
+
+    Data.InvalidateAuras()
+    return removed
 end
 
 -- The override duration: what this entry's countdown is, in seconds, when the
@@ -1195,10 +1318,17 @@ function Data.SetAuraBar(unitKey, which, key, barID)
 end
 
 -- ── Groups ───────────────────────────────────────────────────────────────────
--- Headings inside one whitelist, and nothing more: "Stuns", "CC", "Things I have
--- to dispel". A group changes NOTHING about what is drawn or how — the engine
--- never reads one — which is exactly why they're worth having, because it means
--- a list you can find things in costs nothing to keep.
+-- Headings inside one whitelist: "Stuns", "CC", "Things I have to dispel".
+-- Organisation first and foremost — a list you can find things in costs nothing
+-- to keep — and by default that is all a group is: nothing about a plain heading
+-- reaches a nameplate.
+--
+-- `limit` is the exception, and the only thing here the engine reads. A group set
+-- to one shows a single icon for the whole heading: the entry with the longest
+-- remaining, or the shortest. That is the answer for a group of things that are
+-- all the same question — twelve hard CCs whitelisted so that whichever one lands
+-- is shown, of which at most one is ever on the unit anyway, and eight stacked
+-- icons the moment two are.
 --
 -- Per list rather than per unit type: the groups a debuff list wants and the ones
 -- a buff list wants have nothing to say to each other.
@@ -1207,6 +1337,28 @@ end
 -- `id`, so a group can be renamed as often as you like.
 Data.AURA_GROUP_CAP      = 12
 Data.AURA_GROUP_NAME_MAX = 22
+
+-- What a limited group keeps. Ordered, because it drives a dropdown.
+--
+-- "longest" is first and is what the checkbox turns on: a CC group is watched to
+-- know when you are free again, and the one that ends last is the one that
+-- answers. "shortest" is for the opposite question — the next thing to fall off,
+-- which is when you have to act.
+Data.AURA_GROUP_LIMITS = {
+    { value = "longest",  label = "Longest remaining"  },
+    { value = "shortest", label = "Shortest remaining" },
+}
+
+Data.AURA_GROUP_LIMIT_BY_VALUE = {}
+for _, e in ipairs(Data.AURA_GROUP_LIMITS) do Data.AURA_GROUP_LIMIT_BY_VALUE[e.value] = e end
+
+-- nil for a group that isn't limited at all — the caller's test for "is this on"
+-- is this returning something, so an unrecognised saved value reads as off rather
+-- than silently becoming "longest".
+function Data.AuraGroupLimit(value)
+    if value and Data.AURA_GROUP_LIMIT_BY_VALUE[value] then return value end
+    return nil
+end
 
 function Data.AuraGroups(unitKey, which)
     local o = Data.AuraOpts(unitKey, which)
@@ -1257,7 +1409,25 @@ function Data.RemoveAuraGroup(unitKey, which, id)
     for _, entry in pairs(Data.AuraList(unitKey, which) or {}) do
         if entry.group == id then entry.group = nil end
     end
+    -- The match maps carry which limited group each entry is in, so deleting one
+    -- that was limited changes what the plates draw, not just what the list looks
+    -- like. Same reason SetAuraGroup below invalidates.
+    Data.InvalidateAuras()
     return true
+end
+
+-- Turns the "one icon for the whole group" rule on, off, or over to the other
+-- end. `mode` is a value from Data.AURA_GROUP_LIMITS, or nil/false for off.
+--
+-- Invalidates, unlike the rest of the group functions: this is the one field of a
+-- group the match maps carry, since the engine has to know per aura which limited
+-- group it is competing in.
+function Data.SetAuraGroupLimit(unitKey, which, id, mode)
+    local group = Data.AuraGroup(unitKey, which, id)
+    if not group then return nil end
+    group.limit = Data.AuraGroupLimit(mode)
+    Data.InvalidateAuras()
+    return group.limit
 end
 
 function Data.RenameAuraGroup(unitKey, which, id, text)
@@ -1283,6 +1453,10 @@ function Data.SetAuraGroup(unitKey, which, key, groupID)
     else
         entry.group = nil
     end
+    -- Dragging into or out of a LIMITED group changes what is drawn, so the match
+    -- maps have to be rebuilt. Unconditional rather than only for limited groups:
+    -- the check would cost more to get right than the rebuild costs to do.
+    Data.InvalidateAuras()
     return entry.group
 end
 
@@ -1426,7 +1600,7 @@ function Data.GroupedAuras(unitKey, which, filter)
     end
 
     local out = {}
-    local function section(id, name, held, collapsed)
+    local function section(id, name, held, collapsed, limit)
         -- A group with nothing in it still gets its heading: it is the thing you
         -- drag onto, and one you cannot see is one you cannot fill. Under a
         -- search it goes, since a search is asking to be shown less.
@@ -1439,13 +1613,17 @@ function Data.GroupedAuras(unitKey, which, filter)
         out[#out + 1] = {
             kind = "group", id = id, name = name,
             count = #held, collapsed = shut and true or false,
+            -- The heading's own copy of the one setting that reaches a plate, so
+            -- the settings list can draw its state without going back to the
+            -- group table it just walked.
+            limit = limit,
         }
         if shut then return end
         for _, item in ipairs(held) do out[#out + 1] = item end
     end
 
     for _, g in ipairs(groups) do
-        section(g.id, g.name or "", bucket[g.id], g.collapsed)
+        section(g.id, g.name or "", bucket[g.id], g.collapsed, Data.AuraGroupLimit(g.limit))
     end
 
     -- Last, and always present while there are groups at all: it is where a drag
@@ -1842,6 +2020,70 @@ school("Poison", {
 })
 school("Disease", { 2944, 19276, 19277, 19278, 19279, 19280 })  -- Devouring Plague
 
+-- ── Shared names ─────────────────────────────────────────────────────────────
+-- A whitelist entry keys on the lowercased spell NAME, and that is the point:
+-- one row for "Corruption" catches all seven ranks without listing them.
+--
+-- It breaks when two UNRELATED spells wear the same name. The priest's Shadow
+-- Protection (976 / 10957 / 10958) and the one off a Shadow Protection Potion
+-- (7233) are both "Shadow Protection", so whichever you add, the single key
+-- answers for both — and the row resolves to the priest spell, because that is
+-- what the name looks up to.
+--
+-- Ranks of one spell share a rules table in the duration library, so identity is
+-- that table where the library has one and the id itself where it does not.
+-- More than one identity behind a name means the name cannot pick a spell and
+-- the id has to.
+function Data.AuraNameIdentities(name, ids)
+    local D = durations()
+    local byIdentity, n = {}, 0
+
+    local function note(id)
+        if not id then return end
+        local identity = (D and D.spells and D.spells[id]) or id
+        if byIdentity[identity] == nil then
+            byIdentity[identity] = id
+            n = n + 1
+        end
+    end
+
+    if ids then for id in pairs(ids) do note(id) end end
+
+    -- The catalogue is the only place that knows about a spell the 1.12 tables
+    -- never had, which is exactly the half of a collision the Library cannot
+    -- see: its "Shadow Protection" row is the priest's, and nothing in the
+    -- library says a potion answers to the name too. Both buckets, because a
+    -- name can have been met as either.
+    if type(name) == "string" then
+        local key = name:lower()
+        for _, which in ipairs({ "buffs", "debuffs" }) do
+            local b = Data.LearnedBucket(which)
+            local rec = b and b.list[key]
+            if rec and rec.ids then
+                for id in pairs(rec.ids) do note(id) end
+            end
+        end
+    end
+
+    -- And the library counts as a sighting of its own, for the other direction:
+    -- a name we have only ever met as a potion is still shared if a player
+    -- spell answers to it.
+    if D and D.LastRankIDForName and type(name) == "string" then
+        note(D.LastRankIDForName(name))
+    end
+
+    return n, byIdentity
+end
+
+-- What to hand Data.AddAura for a row: the name normally, and the specific id
+-- when the name is shared. `preferredID` is the id the row itself stands for,
+-- so adding the potion's row adds the potion and not the priest buff.
+function Data.AuraAddToken(name, ids, preferredID)
+    local n = Data.AuraNameIdentities(name, ids)
+    if n <= 1 then return name, false end
+    return (preferredID or name), preferredID ~= nil
+end
+
 -- Every tag on one spell, generic first. Returns the list and one lowercased
 -- blob for the search box to match against.
 function Data.LibraryLabels(id, opts)
@@ -2061,7 +2303,21 @@ function Data.AuraLookup(unitKey, which)
     -- `main` and `bars` count what each destination would draw, so a row with
     -- nothing bound for it can bail before walking forty aura slots — the same
     -- early-out `count` has always given the pair above the bar.
-    local out = { byID = {}, byName = {}, count = 0, main = 0, bars = {}, barFor = {} }
+    -- Only the groups that are LIMITED, so `limits` being empty is the engine's
+    -- one-lookup answer to "can I draw straight down the scan the way I always
+    -- have". A plain heading never appears here at all.
+    local limits = {}
+    local anyLimit = false
+    for _, g in ipairs(Data.AuraGroups(unitKey, which)) do
+        local mode = Data.AuraGroupLimit(g.limit)
+        if mode then
+            limits[g.id] = mode
+            anyLimit = true
+        end
+    end
+
+    local out = { byID = {}, byName = {}, count = 0, main = 0, bars = {}, barFor = {},
+                  limits = anyLimit and limits or nil, groupFor = {} }
     for key, entry in pairs(Data.AuraList(unitKey, which) or {}) do
         if entry.enabled ~= false then
             if entry.id then
@@ -2070,6 +2326,13 @@ function Data.AuraLookup(unitKey, which)
                 out.byName[key] = entry   -- the key IS the lowercased name
             end
             out.count = out.count + 1
+
+            -- The entry's group, but only where that group limits — the engine
+            -- has no use for the rest, and leaving them out means one lookup per
+            -- drawn aura decides whether it is competing with anything.
+            if anyLimit and entry.group and limits[entry.group] then
+                out.groupFor[entry] = entry.group
+            end
 
             local bar = entry.bar
             if bar and known[bar] then

@@ -145,6 +145,13 @@ local DEFAULTS = {
 
 addon.RegisterDefaults("swingTimer", DEFAULTS)
 
+-- Makes the block above pickable on its own in the Profiles tab's export,
+-- import and copy dialogs.
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "swingTimer", label = "Swingtimer", order = 15,
+        settings = { "swingTimer" } })
+end
+
 -- Both blocks stored the face under `name` before core's Font.lua existed. The
 -- rename has to happen before the defaults are merged in, or the merge fills
 -- `font` with the shipped default and the user's choice is left orphaned under

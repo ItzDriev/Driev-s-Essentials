@@ -99,6 +99,13 @@ addon.RegisterDefaults("itemRack", {
     disableAltClick     = false,  -- let Alt+click fall through (self-cast) on buttons
 })
 
+-- Makes the block above pickable on its own in the Profiles tab's export,
+-- import and copy dialogs.
+if addon.RegisterProfileSection then
+    addon.RegisterProfileSection({ key = "itemRack", label = "Item Rack", order = 50,
+        settings = { "itemRack" } })
+end
+
 -- The keybind text stored its face as a bare LSM name (or `false` for the
 -- game's own font) beside flat size/offset/colour keys. Folding those into the
 -- font block has to happen before the defaults are merged, since the merge would
