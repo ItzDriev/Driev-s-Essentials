@@ -208,9 +208,159 @@ local function resolveInterchangeable(equip)
 end
 IR.ResolveInterchangeable = resolveInterchangeable
 
+-- ── Set conditionals ─────────────────────────────────────────────────────────
+-- A conditional is a named test against the world; a set pins its own items into
+-- chosen slots for when that test holds, so one set equips differently depending
+-- on the situation. The tests themselves are code, not saved data — the list
+-- below is both what the editor offers and what the equip pass evaluates. Only
+-- the per-slot overrides live in the DB, under set.conditionals[key].
+
+local WEAPON_SLOTS = { 16, 17 }
+
+-- What a temporary enchant calls itself on the weapon is neither the item that
+-- applied it nor the spell behind it: a Dense Sharpening Stone is the spell
+-- "Sharpen Blade V" (16138) and the item "Dense Sharpening Stone", and the
+-- tooltip says "Sharpened +8 (46 min)". Only that last string is readable at
+-- runtime, so a conditional matches against it directly — which is also enough to
+-- tell the stones apart, since the number is the stone's own damage bonus and a
+-- weightstone reads "Weighted" instead.
+
+-- The temporary enchant on a weapon, or nil for none. It's the tooltip line
+-- carrying a duration — "Sharpened +8 (46 min)" — which is what separates it from
+-- a permanent enchant, the other green line on the same tooltip.
+-- GetWeaponEnchantInfo is no use here: it answers "is there one" and hands back
+-- an id it won't translate.
+function IR.WeaponEnchantName(slot)
+    local tip = IR.scanTooltip
+    if not (tip and GetInventoryItemLink("player", slot)) then return nil end
+    -- Re-owned rather than trusted to still be owned: SetOwner clears the
+    -- tooltip, and a stale one would answer with the last item scanned.
+    tip:SetOwner(WorldFrame, "ANCHOR_NONE")
+    tip:SetInventoryItem("player", slot)
+    -- From 2: line 1 is the item's own name, which never carries a duration
+    -- anyway, but there's nothing below it worth reading either.
+    for line = 2, tip:NumLines() do
+        local region = _G["DrievItemRackScanTooltipTextLeft" .. line]
+        local text   = region and region:GetText()
+        -- "(48 min)" — a number and a unit. An item set's "(2/8)" has no unit and
+        -- a proc's "for 10 sec" has no brackets, so neither is mistaken for one.
+        local name   = text and string.match(text, "^(.-)%s*%(%s*%d+%s*%a+%.?%s*%)%s*$")
+        if name and name ~= "" then return name end
+    end
+end
+
+-- Any one of `matches` is enough, compared case-blind and as a substring: the
+-- tooltip wording is the one thing here nobody can look up, so a conditional
+-- lists every spelling it might reasonably arrive as rather than betting on one.
+local function weaponEnchantedWith(def)
+    for _, slot in ipairs(WEAPON_SLOTS) do
+        local found = IR.WeaponEnchantName(slot)
+        if found then
+            found = string.lower(found)
+            for _, want in ipairs(def.matches) do
+                if string.find(found, string.lower(want), 1, true) then return true end
+            end
+        end
+    end
+    return false
+end
+
+-- Order matters twice over: it's the order the editor's dropdown lists them, and
+-- the order they're applied in, so a slot two live conditionals both claim ends
+-- up with the later one's item.
+IR.Conditionals = {
+    {
+        key     = "denseSharpening",
+        label   = "Test with Dense Sharpen",
+        -- "+8" is what makes this the DENSE stone: the lesser sharpening stones
+        -- read the same with a smaller number.
+        matches = { "Sharpened +8", "Sharpen Blade V" },
+        desc    = "Holds while either weapon shows |cffffffffSharpened +8|r — what a Dense "
+               .. "Sharpening Stone applies.",
+        check   = function(self) return weaponEnchantedWith(self) end,
+    },
+    {
+        key     = "consecratedSharpening",
+        label   = "Consecrated Sharpening Stones",
+        -- This one states its effect outright — "+100 Attack Power vs Undead" —
+        -- and the number is left out of the match so it stands whatever the
+        -- amount turns out to be.
+        matches = { "Attack Power vs Undead" },
+        desc    = "Holds while either weapon shows |cffffffff+100 Attack Power vs Undead|r "
+               .. "— what a Consecrated Sharpening Stone applies.",
+        check   = function(self) return weaponEnchantedWith(self) end,
+    },
+    {
+        key     = "elementalSharpening",
+        label   = "Elemental Sharpening Stones",
+        matches = { "Critical +2%" },
+        desc    = "Holds while either weapon shows |cffffffffCritical +2%|r — what an "
+               .. "Elemental Sharpening Stone applies.",
+        check   = function(self) return weaponEnchantedWith(self) end,
+    },
+}
+
+function IR.GetConditional(key)
+    for _, def in ipairs(IR.Conditionals) do
+        if def.key == key then return def end
+    end
+end
+
+-- A check reads tooltips, and the set buttons ask "is this set equipped" of every
+-- set on every inventory event — so answers are memoised for a fraction of a
+-- second. Long enough to collapse one redraw's worth of calls into a single
+-- scan, short enough that a stone going on still shows up as it happens.
+local CHECK_TTL = 0.25
+local checkCache, checkCacheAt = {}, 0
+
+local function conditionalHolds(def)
+    local now = GetTime()
+    if now - checkCacheAt > CHECK_TTL then
+        wipe(checkCache)
+        checkCacheAt = now
+    end
+    local held = checkCache[def.key]
+    if held == nil then
+        held = def.check(def) and true or false
+        checkCache[def.key] = held
+    end
+    return held
+end
+
+-- Whether a conditional holds right now. By key rather than definition, so an
+-- unknown one (a set imported against a conditional this build doesn't have) is
+-- simply false instead of an error.
+function IR.ConditionalHolds(key)
+    local def = IR.GetConditional(key)
+    return (def and conditionalHolds(def)) or false
+end
+
+-- The set's equip list with the overrides of every conditional that currently
+-- holds merged over it. The set's own table is returned untouched when nothing
+-- applies, so the ordinary case allocates nothing — callers must treat the
+-- result as read-only either way.
+function IR.ResolveConditionals(set)
+    local equip = set and set.equip
+    if not equip or not set.conditionals then return equip end
+
+    local merged
+    for _, def in ipairs(IR.Conditionals) do
+        local overrides = set.conditionals[def.key]
+        if overrides and next(overrides) and conditionalHolds(def) then
+            if not merged then
+                merged = {}
+                for slot, id in pairs(equip) do merged[slot] = id end
+            end
+            for slot, id in pairs(overrides) do merged[slot] = id end
+        end
+    end
+    return merged or equip
+end
+
 -- exact = require the identical enchanted copy, not merely the same base item.
 function IR.IsSetEquipped(setname, exact)
-    local set = setname and DB().sets[setname] and DB().sets[setname].equip
+    local set = setname and DB().sets[setname]
+    set = set and IR.ResolveConditionals(set)
     if not set then return end
     -- Same resolution the equip pass uses, or a set worn with its rings swapped
     -- over would equip to a no-op and still read as "not equipped".
@@ -230,7 +380,9 @@ function IR.MissingItems(setname)
     local set = setname and DB().sets[setname]
     if not set then return end
     local missing
-    for _, id in pairs(set.equip) do
+    -- The conditional's items are what would actually be equipped right now, so
+    -- they're what "can this set be worn" has to be asked about.
+    for _, id in pairs(IR.ResolveConditionals(set) or set.equip) do
         if id ~= 0 and IR.GetCountByID(id) == 0 then
             missing = 0
             if IR.FindInBank(id) then return 1 end
@@ -481,7 +633,7 @@ function IR.EquipSet(setname, fromEvent)
     end
 
     local couldntFind
-    for slot, wanted in pairs(resolveInterchangeable(set.equip)) do
+    for slot, wanted in pairs(resolveInterchangeable(IR.ResolveConditionals(set))) do
         if GetID(slot) ~= wanted then
             local inv, bag = FindItem(wanted)
             if not inv and not bag then
@@ -642,11 +794,11 @@ function IR.AddToCombatQueue(slot, id)
 end
 
 -- Drops whatever is queued for the slots `set` covers, leaving the rest of the
--- queue alone. Slot keys are the same either way round, so the raw equip table
--- is enough — resolveInterchangeable only ever trades ids between two slots the
--- set already names.
+-- queue alone. resolveInterchangeable isn't needed — it only ever trades ids
+-- between two slots the set already names — but the conditionals are, since a
+-- live one can claim slots the set itself says nothing about.
 function IR.ClearCombatQueueForSet(set)
-    for slot in pairs(set.equip or {}) do
+    for slot in pairs(IR.ResolveConditionals(set) or {}) do
         IR.CombatQueue[slot] = nil
     end
     if not next(IR.CombatQueue) then IR.combatSet = nil end

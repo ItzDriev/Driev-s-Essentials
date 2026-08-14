@@ -12,6 +12,7 @@ local WHITE = UI.WHITE
 local W     = UI.widgets
 
 local applyBackdrop        = W.applyBackdrop
+local buildFontOptions     = W.buildFontOptions
 local createCheckbox       = W.createCheckbox
 local createDropdown       = W.createDropdown
 local createTab            = W.createTab
@@ -44,6 +45,11 @@ addon.RegisterDefaults("trinkets", {
     menuScale        = 1.0,
     showBindings     = true,
     truncateBindings = true,
+    -- Keybind text, as core's shared font block (Font.lua): face, size, outline,
+    -- offset from the button's top-right corner, and drop shadow. The defaults
+    -- are what this drew when it was hardcoded, and match the Action Bars and
+    -- Item Rack keybind text so the three read as one UI.
+    bindingFont      = addon.Font.New({ font = "Friz Quadrata TT", size = 10, x = -2, y = -2 }),
     swapDelay        = 1.0,
     menuOrder        = {},
     hidden           = {},
@@ -66,6 +72,12 @@ addon.RegisterDefaults("trinkets", {
     debugEncounters  = false, -- gate for the Stockades (debug raid) test encounters
     encQueueDelayEnabled = true, -- Specific Auto Queue safeguard delay toggle
     encQueueDelaySeconds = 5.0,  -- required continuous encounter+combat duration before queuing
+})
+
+-- Keybind text, as core's shared font block. Matches the engine's defaults
+-- (Trinkets.lua) so the panel shows what a button actually draws.
+local BIND_FONT_DEFAULT = addon.Font.New({
+    font = "Friz Quadrata TT", size = 10, x = -2, y = -2,
 })
 
 -- ── Trinkets tab ──────────────────────────────────────────────────────────────
@@ -2187,6 +2199,17 @@ local function buildTrinketsPanel(parent)
         if addon.Trinkets then addon.Trinkets.updateHotkeys() end
     end
 
+    -- The shared font block for that keybind text — the same eight controls, in
+    -- the same order, as every other configurable text in the addon. Its offsets
+    -- are from the button's top-right corner, so both normally read negative.
+    local bindFontBox = buildFontOptions(displayPanel, {
+        defaults   = BIND_FONT_DEFAULT,
+        get        = function() return addon.Font.Block(getTData() or {}, "bindingFont") end,
+        onChange   = function() if addon.Trinkets then addon.Trinkets.updateHotkeys() end end,
+        labelWidth = 110,
+        sizeMax    = 30,
+    })
+
     -- ── Redesigned layout ──────────────────────────────────────────────────────
     -- Header row: "Trinket Menu" block top-left, Keybinds top-right. Below, a
     -- "Settings" heading over a left sub-sidebar (Display Menu / Bag Menu / Behavior
@@ -2349,7 +2372,9 @@ local function buildTrinketsPanel(parent)
     end
 
     stackIn(dmGen, {
-        { cdCB }, { showBindCB }, { truncBindCB, indent = 20 }, { notifyCB },
+        { cdCB }, { showBindCB }, { truncBindCB, indent = 20 },
+        { bindFontBox, indent = 20, gap = 12, h = bindFontBox:GetHeight() },
+        { notifyCB, gap = 12 },
     })
     stackIn(dmLay, {
         { dispScaleHeader, h = 18 }, { dispScaleRow, gap = 4 },
@@ -2406,6 +2431,7 @@ local function buildTrinketsPanel(parent)
         kbModCB:SetChecked(d.modKeybindActions or false)
         showBindCB:SetChecked(d.showBindings ~= false)
         truncBindCB:SetChecked(d.truncateBindings ~= false)
+        bindFontBox:Refresh()
         ctrlCB:SetChecked(d.blockModCtrl or false)
         altCB:SetChecked(d.blockModAlt or false)
         shiftCB:SetChecked(d.blockModShift or false)

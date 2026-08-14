@@ -9,6 +9,7 @@ local C  = UI.colors
 local W  = UI.widgets
 
 local applyBackdrop       = W.applyBackdrop
+local buildFontOptions    = W.buildFontOptions
 local createCheckbox      = W.createCheckbox
 local createDropdown      = W.createDropdown
 local createScrollDropdown= W.createScrollDropdown
@@ -21,6 +22,16 @@ local makeScrollPanel     = W.makeScrollPanel
 local attachTooltip       = W.attachTooltip
 
 local AB = function() return addon.ActionBars end
+
+-- Keybind text, as core's shared font block. The defaults match the engine's
+-- (ActionBars.lua) so the panel shows what a bar actually draws.
+local KEYBIND_FONT_DEFAULT = addon.Font.New({
+    font = "Arial Narrow", size = 13, x = -2, y = -4,
+    color = { 0.75, 0.75, 0.75 },
+})
+-- The block's own height, needed up front by F.customRow — nine rows of 22 with
+-- a 6px gap between them.
+local FONT_BLOCK_H = 9 * 22 + 8 * 6
 
 -- Set by buildActionBarsTab; the per-bar "Enabled" checkboxes call it so the
 -- green/gray status dot on each sidebar tab updates the moment a bar is toggled.
@@ -537,11 +548,6 @@ local function buildBarPanel(parent, def)
     return frame
 end
 
--- LSM font list with a leading "Default" (= game default hotkey font).
-local function getFontList()
-    return addon.MediaList("font", { lead = "Default" })
-end
-
 -- ── Top-level "General" tab: addon-wide keybind-text settings ────────────────
 -- These apply to any action bar whose per-bar "Use General settings" box is on.
 local function buildGlobalPanel(parent)
@@ -564,44 +570,30 @@ local function buildGlobalPanel(parent)
     F.text("Keybind (hotkey) text styling. Turn it on per bar with each bar's " ..
            "\"Use General settings\" checkbox (in that bar's General tab).")
 
-    -- Font — scrolling dropdown, since the LibSharedMedia list can be long.
-    local fontDD
-    F.customRow(24, function(r)
-        local lbl = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        lbl:SetPoint("LEFT", 0, 0); lbl:SetWidth(90); lbl:SetJustifyH("LEFT")
-        lbl:SetText("Font"); UI.tint(lbl, C.textWhite)
-        fontDD = createScrollDropdown(r, 150, getFontList, function(name)
-            setg("keybindFont", name ~= "Default" and name or nil)
-        end, { preview = "font" })
-        fontDD:SetPoint("LEFT", lbl, "RIGHT", 6, 0)
+    -- The shared font block: face, size, outline, colour, offsets from the
+    -- button's top-right corner, and drop shadow — the same nine controls, in the
+    -- same order, as every other configurable text in the addon.
+    local fontBox
+    F.customRow(FONT_BLOCK_H, function(r)
+        fontBox = buildFontOptions(r, {
+            defaults   = KEYBIND_FONT_DEFAULT,
+            get        = function() return AB() and AB().getKeybindFont() or {} end,
+            onChange   = function() if AB() then AB().applyKeybindFont() end end,
+            labelWidth = 110,
+            sizeMax    = 30,
+        })
+        fontBox:SetPoint("TOPLEFT", 0, 0)
     end)
 
-    F.editStepper("Font size", {
-        min = 6, max = 30, step = 1,
-        get = function() return g("keybindFontSize") or 13 end,
-        set = function(v) setg("keybindFontSize", v) end,
-    })
-    -- X/Y are offsets from the button's top-right corner and can be negative, so
-    -- they use the click stepper (the edit box is numeric-only / no minus sign).
-    F.stepper("Text X offset", {
-        min = -40, max = 40,
-        get = function() return g("keybindOffsetX") or -2 end,
-        set = function(v) setg("keybindOffsetX", v) end,
-    })
-    F.stepper("Text Y offset", {
-        min = -40, max = 40,
-        get = function() return g("keybindOffsetY") or -4 end,
-        set = function(v) setg("keybindOffsetY", v) end,
-    })
     F.check("Out of range: tint keybind text only",
         function() return g("outOfRangeHotkey") and true or false end,
         function(c) setg("outOfRangeHotkey", c) end)
 
     shell:SetScript("OnShow", function()
         F.refresh()
-        if fontDD then fontDD:setValue(g("keybindFont") or "Default") end
+        if fontBox then fontBox:Refresh() end
     end)
-    if fontDD then fontDD:setValue(g("keybindFont") or "Default") end
+    if fontBox then fontBox:Refresh() end
     return shell
 end
 

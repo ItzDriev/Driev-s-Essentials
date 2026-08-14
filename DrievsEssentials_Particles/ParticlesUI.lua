@@ -92,8 +92,24 @@ local function buildRaidPanel(parent, raid, onEnableChanged)
         if onEnableChanged then onEnableChanged(checked) end
     end
 
+    -- The Stockades debug raid doubles as the module's diagnostics surface, so
+    -- the encounter chat spam toggle lives here with the encounters it reports
+    -- on. It writes `chat`, not `enabled` — `enabled` is this raid's own switch,
+    -- read by Particles.lua to treat a 5-man as raid-like.
+    local chatCB
+    local anchor = enable
+    if raid.key == "debug" then
+        chatCB = createCheckbox(panel, "Show encounter messages in chat", 280,
+            "Prints each ENCOUNTER_START/END and the particle density changes that follow to the chat frame.")
+        chatCB:SetPoint("TOPLEFT", enable, "BOTTOMLEFT", 0, -6)
+        chatCB.OnChange = function(_, checked)
+            particlesData(raid).chat = checked or nil
+        end
+        anchor = chatCB
+    end
+
     local headline = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    headline:SetPoint("TOPLEFT", enable, "BOTTOMLEFT", 0, -18)
+    headline:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -18)
     headline:SetText("Select Bosses")
     UI.tint(headline, C.red)
 
@@ -172,6 +188,7 @@ local function buildRaidPanel(parent, raid, onEnableChanged)
     local function refreshPanel()
         local d = particlesData(raid)
         enable:SetChecked(d.enabled)
+        if chatCB then chatCB:SetChecked(d.chat == true) end
         for name, cb in pairs(bossCBs) do
             cb:SetChecked(d.bosses[name] == true)
         end

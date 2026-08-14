@@ -518,12 +518,30 @@ local function formatKeybind(key, truncate)
     return (mods .. k):sub(1, MAX_BIND_CHARS)
 end
 
+-- Keybind text styling, from core's shared font block. The defaults reproduce
+-- what this drew when the font was hardcoded into the button.
+local BIND_FONT_DEFAULT = addon.Font.New({
+    font = "Friz Quadrata TT", size = 10, x = -2, y = -2,
+})
+
+local function applyHotkeyStyle(btn)
+    local cfg = getData().bindingFont
+    addon.Font.ApplyAt(btn.hotKey, cfg, BIND_FONT_DEFAULT, {
+        point = "TOPRIGHT", relativeTo = btn, relativePoint = "TOPRIGHT",
+        justifyH = "RIGHT",
+    })
+    -- White unless the block's custom colour is ticked, which is what this text
+    -- has always been.
+    addon.Font.ApplyColor(btn.hotKey, cfg, BIND_FONT_DEFAULT, 1, 1, 1)
+end
+
 local function updateHotkeys()
     if not displayFrame then return end
     local d = getData()
     for which = 0, 1 do
         local btn = displayFrame["t"..which]
         if btn and btn.hotKey then
+            applyHotkeyStyle(btn)
             if d.showBindings ~= false then
                 local key  = GetBindingKey("CLICK DrievTrinketBtn"..which..":LeftButton")
                 btn.hotKey:SetText(formatKeybind(key, d.truncateBindings ~= false))
@@ -1947,13 +1965,11 @@ local function getOrCreateDisplay()
         SecureHandlerWrapScript(btn, "PreClick",  btn, SECURE_ARM_MODS)
         SecureHandlerWrapScript(btn, "PostClick", btn, SECURE_DISARM_MODS)
 
-        -- Keybind text anchored to top-right of the icon
-        local hk = btn:CreateFontString(nil, "OVERLAY")
-        hk:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
-        hk:SetPoint("TOPRIGHT", btn, "TOPRIGHT", -2, -2)
-        hk:SetJustifyH("RIGHT")
-        hk:SetTextColor(1, 1, 1, 1)
-        btn.hotKey = hk
+        -- Keybind text. Created bare and styled by applyHotkeyStyle, which is
+        -- the one place the font block is read — so the button and a later
+        -- settings change take the same path.
+        btn.hotKey = btn:CreateFontString(nil, "OVERLAY")
+        applyHotkeyStyle(btn)
 
         btn:SetScript("OnEnter", function()
             cancelMenuClose()

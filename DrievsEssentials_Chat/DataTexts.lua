@@ -667,19 +667,23 @@ local function applyBarStyle(id)
     bf.frame:SetBackdropBorderColor(bd[1], bd[2], bd[3], (cfg.borderOpacity or 100) / 100)
 end
 
--- DataText segments share the Chat feature's one font setting (see Chat.lua).
--- Only the face is swapped; each segment keeps GameFontNormalSmall's size/flags.
+-- DataText segments share the Chat feature's one font block (see Chat.lua), so
+-- the styling is the Chat module's to apply — asking it keeps the bars in step
+-- with the chat text and the tab names without a second copy of the rules. A
+-- segment falls back to GameFontNormalSmall's own face and size, which is what
+-- the block's "Default" face and "Auto" size mean here.
 local SEG_DEFAULT_FACE
 local function applySegFont(text)
     if not (text and text.GetFont) then return end
-    local _, size, flags = text:GetFont()
+    local _, size = text:GetFont()
     if not size then return end
     if not SEG_DEFAULT_FACE then
         SEG_DEFAULT_FACE = (GameFontNormalSmall and select(1, GameFontNormalSmall:GetFont()))
                             or STANDARD_TEXT_FONT
     end
-    local override = addon.Chat and addon.Chat.getFontPath and addon.Chat.getFontPath()
-    text:SetFont(override or SEG_DEFAULT_FACE, size, flags)
+    if addon.Chat and addon.Chat.styleText then
+        addon.Chat.styleText(text, SEG_DEFAULT_FACE)
+    end
 end
 
 local function ensureSegment(id, key)

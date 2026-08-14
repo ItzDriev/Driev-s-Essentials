@@ -59,8 +59,15 @@ local function isDebugOn()
     return s and s.debug and s.debug.enabled or false
 end
 
+-- Chat spam is its own toggle (Particles → Debug), separate from whether the
+-- debug raid itself is enabled.
+local function isDebugChatOn()
+    local s = settings()
+    return s and s.debug and s.debug.chat or false
+end
+
 local function dprint(msg)
-    if isDebugOn() then
+    if isDebugChatOn() then
         DEFAULT_CHAT_FRAME:AddMessage("|cfffb2c36[DE]|r " .. msg)
     end
 end

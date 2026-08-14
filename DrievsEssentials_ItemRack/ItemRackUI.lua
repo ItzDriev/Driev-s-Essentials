@@ -12,6 +12,7 @@ local C  = UI.colors
 local W  = UI.widgets
 
 local applyBackdrop        = W.applyBackdrop
+local buildFontOptions     = W.buildFontOptions
 local createCheckbox       = W.createCheckbox
 local selectSubTab         = W.selectSubTab
 local buildStepper         = W.buildStepper
@@ -168,8 +169,21 @@ local function buildGeneralPanel(parent)
     end)
     unstickBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- Sits with the buttons rather than down in Swapping with its left-click
+    -- twin: this is the third way into the set editor, alongside Open Set Editor
+    -- above it and /sets, and that's what someone looking here is after.
+    local editorOnRight = optionCheck(panel, checks, "Right click the set button to open the set editor", "setEditorOnRight",
+        "Right clicking the set button — the one you hover to swap sets — opens the set editor.\n\n"
+        .. "Has no effect while \"Menus on right click\" is on: that claims the right click for the set menu.")
+    editorOnRight:SetPoint("TOPLEFT", unstickBtn, "BOTTOMLEFT", 0, -10)
+    -- Sized to its own label rather than the standard column width: this one is
+    -- longer than the labels that share a row with a second column, and the row
+    -- is what carries the click and the tooltip — at COL_W the tail of the text
+    -- would be neither clickable nor hoverable. Nothing sits beside it here.
+    editorOnRight:SetWidth(20 + editorOnRight.text:GetStringWidth())
+
     -- ── Sets ─────────────────────────────────────────────────────────────────
-    local setsHdr = sectionHeader(panel, "Sets", unstickBtn, 18)
+    local setsHdr = sectionHeader(panel, "Sets", editorOnRight, 18)
 
     local setsNote = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     setsNote:SetPoint("TOPLEFT", setsHdr, "BOTTOMLEFT", 0, -14)
@@ -243,15 +257,11 @@ local function buildGeneralPanel(parent)
         function() IR.ReflectAltClick() end)
     disableAlt:SetPoint("TOPLEFT", equipOnPick, "BOTTOMLEFT", 0, -6)
 
+    -- Its right-click twin lives up with the Open Set Editor button instead.
     local editorOnLeft = optionCheck(panel, checks, "Left click opens the set editor", "setEditorOnLeft",
         "Left clicking the set button opens the set editor when there's no set to equip. "
         .. "With a set equipped, left click still equips it.")
     editorOnLeft:SetPoint("TOPLEFT", equipToggle, "TOPLEFT", COL_X, 0)
-
-    local editorOnRight = optionCheck(panel, checks, "Right click opens the set editor", "setEditorOnRight",
-        "Right clicking the set button opens the set editor.\n\n"
-        .. "Has no effect while \"Menus on right click\" is on — that claims the right click for the set menu.")
-    editorOnRight:SetPoint("TOPLEFT", editorOnLeft, "BOTTOMLEFT", 0, -6)
 
     -- ── Notifications & tooltips ─────────────────────────────────────────────
     local notifyHdr = sectionHeader(panel, "Notifications & Tooltips", disableAlt, 18)
@@ -296,14 +306,15 @@ end
 
 -- ── Layout sub-tab ───────────────────────────────────────────────────────────
 
--- Keybind-text font picker. "Default" is the game's own number font, which is
--- stored as `false` rather than a name so it survives LibSharedMedia not being
--- around to resolve anything.
-local DEFAULT_FONT = "Default"
-
-local function hotkeyFontList()
-    return addon.MediaList("font", { lead = DEFAULT_FONT })
-end
+-- Keybind text, as core's shared font block. The defaults reproduce the game's
+-- own number font, which is what this drew before the block existed.
+local HOTKEY_FONT_DEFAULT = addon.Font.New({
+    font = "Arial Narrow", size = 13, x = -2, y = -2,
+})
+local HOTKEY_FONT_LEGACY = {
+    size  = "hotkeyFontSize", x = "hotkeyOffsetX", y = "hotkeyOffsetY",
+    color = "hotkeyColor",
+}
 
 -- Hover-highlighted variant of the shared swatch — the Layout panel puts these
 -- in dense rows, where a border that lights up is what tells you which one the
@@ -448,61 +459,26 @@ local function buildLayoutPanel(parent)
     keyHdr:ClearAllPoints()
     keyHdr:SetPoint("TOPLEFT", cd90, "BOTTOMLEFT", -COL_X, -18)
 
-    local fontLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    fontLbl:SetPoint("TOPLEFT", keyHdr, "BOTTOMLEFT", 0, -14)
-    fontLbl:SetText("Font")
-    UI.tint(fontLbl, C.textWhite)
-    fontLbl:SetHeight(STEPPER_ROW_H)
-
-    local fontDD = createScrollDropdown(panel, 170, hotkeyFontList, function(name)
-        getData().hotkeyFont = name ~= DEFAULT_FONT and name or false
-        IR.UpdateHotKeys()
-    end, { preview = "font" })
-    fontDD:SetPoint("LEFT", fontLbl, "RIGHT", 12, 0)
-
-    local colorLbl = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    colorLbl:SetPoint("TOPLEFT", fontLbl, "BOTTOMLEFT", 0, -10)
-    colorLbl:SetText("Text colour")
-    UI.tint(colorLbl, C.textWhite)
-    colorLbl:SetHeight(STEPPER_ROW_H)
-
-    local colorSw = colorSwatch(panel,
-        function()
-            local c = getData().hotkeyColor
-            return c and c[1] or 1, c and c[2] or 1, c and c[3] or 1
+    -- The shared font block — the same nine controls, in the same order, as every
+    -- other configurable text in the addon. Text colour is one of them, which is
+    -- where the old standalone "Text colour" swatch went. The offsets it writes
+    -- are from the button's top-right corner, so both normally read negative.
+    local fontBox = buildFontOptions(panel, {
+        defaults   = HOTKEY_FONT_DEFAULT,
+        get        = function()
+            return addon.Font.Adopt(getData(), "hotkeyFont", HOTKEY_FONT_LEGACY)
         end,
-        function(r, g, b) getData().hotkeyColor = { r, g, b } end,
-        function() IR.UpdateHotKeys() end)
-    colorSw:SetPoint("LEFT", colorLbl, "RIGHT", 12, 0)
-
-    local keySizeLbl = labelledStepper(panel, colorLbl, 10, "Text size", {
-        min = 6, max = 30, step = 1,
-        format = function(v) return string.format("%d", v) end,
-        get    = function() return getData().hotkeyFontSize or 12 end,
-        set    = function(v) getData().hotkeyFontSize = v; IR.UpdateHotKeys() end,
+        onChange   = function() IR.UpdateHotKeys() end,
+        labelWidth = 120,
+        sizeMax    = 30,
     })
-
-    -- Offsets from the button's top-right corner, so both normally read
-    -- negative — hence the wider value box.
-    local keyXLbl = labelledStepper(panel, keySizeLbl, 8, "Text X offset", {
-        min = -40, max = 40, step = 1, valueWidth = 32,
-        format = function(v) return string.format("%d", v) end,
-        get    = function() return getData().hotkeyOffsetX or -2 end,
-        set    = function(v) getData().hotkeyOffsetX = v; IR.UpdateHotKeys() end,
-    })
-
-    local keyYLbl = labelledStepper(panel, keyXLbl, 8, "Text Y offset", {
-        min = -40, max = 40, step = 1, valueWidth = 32,
-        format = function(v) return string.format("%d", v) end,
-        get    = function() return getData().hotkeyOffsetY or -2 end,
-        set    = function(v) getData().hotkeyOffsetY = v; IR.UpdateHotKeys() end,
-    })
+    fontBox:SetPoint("TOPLEFT", keyHdr, "BOTTOMLEFT", 0, -14)
 
     -- ── This Bar ─────────────────────────────────────────────────────────────
     -- A dropdown picks a bar; the steppers below edit whichever is picked.
     -- `selected` is this closure's own notion of which cluster that is, so
     -- switching sub-tabs or profiles can't leave it pointing at a deleted bar.
-    local barsHdr = sectionHeader(panel, "This Bar", keyYLbl, 18)
+    local barsHdr = sectionHeader(panel, "This Bar", fontBox, 18)
 
     local emptyNote = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     emptyNote:SetPoint("TOPLEFT", barsHdr, "BOTTOMLEFT", 0, -14)
@@ -619,11 +595,7 @@ local function buildLayoutPanel(parent)
         menuGapLbl.stepper.Refresh()
         iconGapLbl.stepper.Refresh()
         wrapLbl.stepper.Refresh()
-        keySizeLbl.stepper.Refresh()
-        keyXLbl.stepper.Refresh()
-        keyYLbl.stepper.Refresh()
-        fontDD:setValue(d.hotkeyFont or DEFAULT_FONT)
-        colorSw.Refresh()
+        fontBox:Refresh()
         refreshBlock()
     end)
 

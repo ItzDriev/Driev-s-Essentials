@@ -1484,7 +1484,227 @@ local function createScrollDropdown(parent, width, getItems, onChange, opts)
     return btn
 end
 
--- Input / Debug / Minimap — the odds and ends that don't belong to a module.
+-- ── The font block ───────────────────────────────────────────────────────────
+-- Every configurable font in the addon is edited through this one control set,
+-- in this one order: Font, Font size, Outline, Custom color, X offset, Y offset,
+-- Shadow colour, Shadow X, Shadow Y. Font.lua defines what it writes; this
+-- defines what
+-- it looks like. A module that grows a new piece of text gets the whole set by
+-- calling this, rather than shipping whichever three settings it thought of.
+--
+--   opts.get       — returns the live block to edit (created on demand by the
+--                    caller, usually addon.Font.Block(d, "someFont")). Called
+--                    per read, never captured, so a profile switch is picked up.
+--   opts.defaults  — this element's defaults, from addon.Font.New{...}
+--   opts.onChange  — re-apply hook, run after every edit
+--   opts.title     — optional section header above the rows
+--   opts.skip      — { x = true, y = true, color = true, ... } for the rare
+--                    target that physically can't honour a control. Chat is the
+--                    one that uses it: a chat frame lays out its own lines, so
+--                    there is nothing to nudge, and every line already carries
+--                    its channel's colour. Left out entirely rather than shown
+--                    doing nothing.
+--   opts.autoSize  — allows size 0, shown as "Auto", meaning "leave whatever
+--                    size the element already had" — for the same kind of
+--                    target, where a size exists but isn't ours to invent.
+--   opts.sizeMin / opts.sizeMax — narrower limits where a font drives layout.
+--   opts.labelWidth / opts.controlWidth / opts.width — layout, all optional.
+--
+-- Returns a container frame sized to its rows (anchor it like any widget) with
+-- :Refresh() to re-read every control.
+local FONT_ROW_H  = 22
+local FONT_ROW_GAP = 6
+
+local function buildFontOptions(parent, opts)
+    local Font = addon.Font
+    local def  = opts.defaults or Font.DEFAULTS
+    local skip = opts.skip or {}
+
+    local labelW   = opts.labelWidth   or 130
+    local controlW = opts.controlWidth or 170
+    local width    = opts.width        or (labelW + controlW + 20)
+
+    local box = CreateFrame("Frame", nil, parent)
+    box:SetWidth(width)
+
+    local refreshers = {}
+    local last, height = nil, 0
+
+    -- Rows stack inside the container, so the caller anchors one frame and the
+    -- block's own height is whatever its rows came to — a skipped control costs
+    -- no gap.
+    local function addRow(labelText)
+        local row = CreateFrame("Frame", nil, box)
+        row:SetSize(width, FONT_ROW_H)
+        if last then
+            row:SetPoint("TOPLEFT", last, "BOTTOMLEFT", 0, -FONT_ROW_GAP)
+            height = height + FONT_ROW_GAP + FONT_ROW_H
+        else
+            row:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
+            height = height + FONT_ROW_H
+        end
+        box:SetHeight(height)
+        last = row
+
+        local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        lbl:SetPoint("LEFT", 0, 0)
+        lbl:SetWidth(labelW)
+        lbl:SetJustifyH("LEFT")
+        lbl:SetText(labelText)
+        UI.tint(lbl, C.textWhite)
+        row.lbl = lbl
+        return row
+    end
+
+    -- get/set are written against the block, so each control stays one line and
+    -- none of them has to remember where the block came from.
+    local function field(key)
+        return function() return opts.get()[key] end,
+               function(v) opts.get()[key] = v end
+    end
+
+    local function stepperRow(labelText, key, min, max, fallback, desc)
+        if skip[key] then return end
+        local row = addRow(labelText)
+        local get, set = field(key)
+        local st = buildStepper(row, {
+            min = min, max = max, step = 1, valueWidth = 42,
+            get = function() return tonumber(get()) or fallback end,
+            set = set,
+            format = opts.autoSize and key == "size"
+                and function(v) return v == 0 and "Auto" or tostring(v) end
+                or nil,
+            onChange = opts.onChange,
+        })
+        st:SetPoint("LEFT", row.lbl, "RIGHT", 10, 0)
+        attachTooltip(st,      labelText, desc)
+        attachTooltip(st.plus, labelText, desc)
+        refreshers[#refreshers + 1] = st.Refresh
+        return row
+    end
+
+    if opts.title then
+        local hdr = box:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        hdr:SetPoint("BOTTOMLEFT", box, "TOPLEFT", 0, 6)
+        hdr:SetText(opts.title)
+        UI.tint(hdr, C.red)
+        box.header = hdr
+    end
+
+    -- 1. Font
+    if not skip.font then
+        local row = addRow("Font:")
+        local get, set = field("font")
+        local dd = createScrollDropdown(row, controlW,
+            -- opts.lead pins a non-LSM entry to the front of the list, for the
+            -- targets whose face isn't ours to invent — chat's "Default" means
+            -- "leave whatever the element already had".
+            function()
+                return addon.MediaList("font",
+                    { lead = opts.lead, fallback = def.font or Font.DEFAULT_NAME })
+            end,
+            function(name) set(name); if opts.onChange then opts.onChange() end end,
+            { preview = "font", tipTitle = "Font",
+              tipBody = opts.fontDesc
+                  or "Any font registered with LibSharedMedia by this or another addon." })
+        dd:SetPoint("LEFT", row.lbl, "RIGHT", 10, 0)
+        refreshers[#refreshers + 1] = function()
+            dd:setValue(get() or def.font or Font.DEFAULT_NAME)
+        end
+    end
+
+    -- 2. Font size
+    stepperRow("Font size:", "size",
+        opts.autoSize and 0 or (opts.sizeMin or Font.SIZE_MIN),
+        opts.sizeMax or Font.SIZE_MAX,
+        def.size or Font.DEFAULTS.size,
+        opts.autoSize
+            and "Height of the text. \"Auto\" (below the lowest size) leaves whatever size the element already had."
+            or  "Height of the text.")
+
+    -- 3. Outline
+    if not skip.outline then
+        local row = addRow("Outline:")
+        local get, set = field("outline")
+        local dd = createDropdown(row, controlW, Font.OUTLINES,
+            function() return get() or def.outline or "OUTLINE" end,
+            set, opts.onChange, "Outline",
+            "Border drawn around each letter, which is what keeps small text "
+                .. "readable over a bright texture or the game world.")
+        dd:SetPoint("LEFT", row.lbl, "RIGHT", 10, 0)
+        refreshers[#refreshers + 1] = dd.Refresh
+    end
+
+    -- 4. Colour — an override, so the row is a tick box and a swatch rather than
+    -- a swatch alone. Unticked, the text keeps whatever colour it would have had,
+    -- and the swatch still holds the colour you left it on for next time.
+    if not skip.color then
+        local desc = opts.colorDesc
+            or "Paints the text this colour. Left unticked it keeps whatever "
+                .. "colour it already had."
+        local row = addRow("")
+        row.lbl:Hide()   -- the tick box carries the label on this row
+
+        local cb = createCheckbox(row, "Custom color", labelW, desc)
+        cb:SetPoint("LEFT", 0, 0)
+
+        local sw = createColorSwatch(row,
+            function() return Font.Color(opts.get(), def) end,
+            function(r, g, b) opts.get().color = { r, g, b } end,
+            opts.onChange, { hover = true })
+        sw:SetPoint("LEFT", cb, "RIGHT", 10, 0)
+        attachTooltip(sw, "Custom color", desc)
+
+        cb.OnChange = function(_, checked)
+            opts.get().colorEnabled = checked
+            if opts.onChange then opts.onChange() end
+        end
+        refreshers[#refreshers + 1] = function()
+            cb:SetChecked(Font.ColorEnabled(opts.get(), def))
+            sw.Refresh()
+        end
+    end
+
+    -- 5/6. X and Y offset
+    local OFF = Font.OFFSET_RANGE
+    stepperRow("X offset:", "x", -OFF, OFF, def.x or 0,
+        "Nudges the text sideways from where it normally sits. Positive is right.")
+    stepperRow("Y offset:", "y", -OFF, OFF, def.y or 0,
+        "Nudges the text up or down from where it normally sits. Positive is up.")
+
+    -- 7. Shadow colour
+    if not skip.shadowColor then
+        local row = addRow("Shadow color:")
+        local sw = createColorSwatch(row,
+            function()
+                local c = opts.get().shadowColor or def.shadowColor or { 0, 0, 0 }
+                return c[1] or 0, c[2] or 0, c[3] or 0
+            end,
+            function(r, g, b) opts.get().shadowColor = { r, g, b } end,
+            opts.onChange, { hover = true })
+        sw:SetPoint("LEFT", row.lbl, "RIGHT", 10, 0)
+        attachTooltip(sw, "Shadow color",
+            "Only visible once one of the shadow offsets below is non-zero — at no "
+                .. "offset the shadow sits directly behind the text and is drawn as "
+                .. "nothing at all.")
+        refreshers[#refreshers + 1] = sw.Refresh
+    end
+
+    -- 8/9. Shadow X and Y
+    local SH = Font.SHADOW_RANGE
+    stepperRow("Shadow X:", "shadowX", -SH, SH, def.shadowX or 0,
+        "How far the drop shadow sits to the side of the text. Zero on both axes means no shadow.")
+    stepperRow("Shadow Y:", "shadowY", -SH, SH, def.shadowY or 0,
+        "How far the drop shadow sits above or below the text. Zero on both axes means no shadow.")
+
+    function box:Refresh()
+        for _, fn in ipairs(refreshers) do fn() end
+    end
+
+    return box
+end
+
+-- Input / Minimap — the odds and ends that don't belong to a module.
 local function buildGeneralSettingsPanel(parent)
     local shell, panel = makeScrollPanel(parent)
 
@@ -1512,27 +1732,9 @@ local function buildGeneralSettingsPanel(parent)
         SetCVar("ActionButtonUseKeyDown", checked and "1" or "0")
     end
 
-    -- ── Debug section ──────────────────────────────────────────────────────
-    local function getDebugData()
-        addon.db.settings.particles       = addon.db.settings.particles or {}
-        addon.db.settings.particles.debug = addon.db.settings.particles.debug or { enabled = false }
-        return addon.db.settings.particles.debug
-    end
-
-    local debugHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    debugHeader:SetPoint("TOPLEFT", keyDownCB, "BOTTOMLEFT", 0, -24)
-    debugHeader:SetText("Debug")
-    UI.tint(debugHeader, C.red)
-
-    local debugCB = createCheckbox(panel, "Show encounter messages in chat", 280)
-    debugCB:SetPoint("TOPLEFT", debugHeader, "BOTTOMLEFT", 0, -10)
-    debugCB.OnChange = function(_, checked)
-        getDebugData().enabled = checked
-    end
-
     -- ── Minimap section ───────────────────────────────────────────────────────
     local minimapHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    minimapHeader:SetPoint("TOPLEFT", debugCB, "BOTTOMLEFT", 0, -24)
+    minimapHeader:SetPoint("TOPLEFT", keyDownCB, "BOTTOMLEFT", 0, -24)
     minimapHeader:SetText("Minimap")
     UI.tint(minimapHeader, C.red)
 
@@ -1548,7 +1750,6 @@ local function buildGeneralSettingsPanel(parent)
 
     local function refreshPanel()
         keyDownCB:SetChecked(GetCVarBool("ActionButtonUseKeyDown"))
-        debugCB:SetChecked(getDebugData().enabled or false)
         minimapHideCB:SetChecked(addon.db.minimap.hide or false)
     end
 
@@ -1564,15 +1765,11 @@ local function buildTTKPanel(parent)
         addon.db.settings.ttk = addon.db.settings.ttk or {
             enabled  = false,
             bossOnly = false,
-            fontSize = 24,
-            fontName = "Friz Quadrata TT",
         }
         return addon.db.settings.ttk
     end
 
-    local function getFontList()
-        return addon.MediaList("font", { fallback = "Friz Quadrata TT" })
-    end
+    local TTK_FONT_DEFAULT = addon.Font.New({ size = 24 })
 
     local ttkHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     ttkHeader:SetPoint("TOPLEFT", 14, -14)
@@ -1599,38 +1796,24 @@ local function buildTTKPanel(parent)
         getTTKData().bossOnly = checked
     end
 
-    -- Font row
-    local fontLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    fontLabel:SetPoint("TOPLEFT", bossOnlyCB, "BOTTOMLEFT", 0, -18)
-    fontLabel:SetText("Font:")
-    UI.tint(fontLabel, C.textWhite)
-
-    local fontDropdown = createScrollDropdown(panel, 160, getFontList, function(name)
-        getTTKData().fontName = name
-        if addon.TTK then addon.TTK.applyFont() end
-    end, { preview = "font" })
-    fontDropdown:SetPoint("LEFT", fontLabel, "RIGHT", 10, 0)
-
-    -- Size row
-    local sizeLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sizeLabel:SetPoint("TOPLEFT", fontLabel, "BOTTOMLEFT", 0, -14)
-    sizeLabel:SetText("Size:")
-    UI.tint(sizeLabel, C.textWhite)
-
-    local sizeStepper = buildStepper(panel, {
-        min = 10, max = 60, valueFont = "GameFontNormalLarge", valueColor = C.red,
-        get = function() return (getTTKData().fontSize) or 24 end,
-        set = function(v) getTTKData().fontSize = v end,
+    -- The shared font block: same eight controls, same order, as every other
+    -- configurable text in the addon.
+    local fontBox = buildFontOptions(panel, {
+        title    = "Font",
+        defaults = TTK_FONT_DEFAULT,
+        get      = function()
+            return addon.Font.Adopt(getTTKData(), "font",
+                { font = "fontName", size = "fontSize" })
+        end,
         onChange = function() if addon.TTK then addon.TTK.applyFont() end end,
     })
-    sizeStepper:SetPoint("LEFT", sizeLabel, "RIGHT", 10, 0)
+    fontBox:SetPoint("TOPLEFT", bossOnlyCB, "BOTTOMLEFT", 0, -34)
 
     local function refreshPanel()
         local d  = getTTKData()
         enableCB:SetChecked(d.enabled or false)
         bossOnlyCB:SetChecked(d.bossOnly or false)
-        sizeStepper.Refresh()
-        fontDropdown:setValue(d.fontName or "Friz Quadrata TT")
+        fontBox:Refresh()
     end
 
     shell:SetScript("OnShow", refreshPanel)
@@ -4116,6 +4299,7 @@ UI.widgets = {
     buildStepper        = buildStepper,
     buildEditSlider     = buildEditSlider,
     buildSizeStepper    = buildSizeStepper,
+    buildFontOptions    = buildFontOptions,
     -- dialogs
     showConfirmPopup    = showConfirmPopup,
     showTextPopup       = showTextPopup,

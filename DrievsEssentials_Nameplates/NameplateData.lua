@@ -76,8 +76,14 @@ local function auraRowDefaults(y, size)
         timerSize   = 9,
         borderSize  = 1,
         borderColor = { 0.00, 0.00, 0.00 },
-        -- [key] = { id = <number|nil>, name = <string|nil>, enabled, duration }
+        -- [key] = { id = <number|nil>, name = <string|nil>, enabled, duration,
+        --           bar = <special frame id|nil>, group = <group id|nil> }
         list        = {},
+        -- Headings inside this list, in the order they are drawn, and the last id
+        -- handed out. Organisation only: nothing here reaches a nameplate, and an
+        -- entry's `group` is never read by the engine.
+        groups      = {},
+        nextGroupID = 0,
     }
 end
 
@@ -95,19 +101,23 @@ local DEFAULTS = {
         -- preference rather than a dependency.
         texture      = "Clean",
         castTexture  = "Clean",
-        font         = "Expressway",
-        fontSize     = 9,
-        fontOutline  = "OUTLINE",
+        -- Core's shared font block (Font.lua): face, size, outline, offset and
+        -- drop shadow. Every string on a plate is drawn from this unless it has
+        -- an override below.
+        font         = addon.Font.New({ font = "Expressway", size = 9 }),
 
-        -- Per-element overrides of `font`. Each keeps its own picked font alongside the
-        -- flag rather than using nil to mean "off", so unticking and re-ticking gets the
-        -- same font back instead of a reset.
+        -- Per-element overrides, each a font block of its own sitting IN FRONT of
+        -- the general one: whatever an override doesn't set still comes from
+        -- above, so a per-element typeface alone still follows the general size
+        -- and outline. Each keeps its picked font alongside the flag rather than
+        -- using nil to mean "off", so unticking and re-ticking gets the same font
+        -- back instead of a reset.
         nameFontEnabled   = false,
-        nameFont          = "Friz Quadrata TT",
+        nameFont          = { font = "Friz Quadrata TT" },
         healthFontEnabled = false,
-        healthFont        = "Friz Quadrata TT",
+        healthFont        = { font = "Friz Quadrata TT" },
         levelFontEnabled  = false,
-        levelFont         = "Friz Quadrata TT",
+        levelFont         = { font = "Friz Quadrata TT" },
         borderSize   = 1,
         borderColor  = { 0.00, 0.00, 0.00 },
         bgColor      = { 0.08, 0.08, 0.10 },
@@ -133,23 +143,19 @@ local DEFAULTS = {
         -- like and wants asking for. Everything below it is sized and placed for
         -- the moment it is asked for.
         totEnabled     = false,
+        -- The tick box governs the FACE alone: size, outline, offset and shadow
+        -- are this line's own either way, because it sits over the world rather
+        -- than on a bar and readability there is a different question. The
+        -- offsets are in screen directions (+X is right on both sides) and are
+        -- applied to the anchor point rather than the text, so moving it moves
+        -- the corner it grows from instead of flipping the direction.
         totFontEnabled = false,
-        totFont        = "Friz Quadrata TT",
-        totSize        = 15,
-        -- Its own outline and opacity, not the general ones: this line sits over the
-        -- world rather than on a bar, so readability is a different question. Starts
-        -- matching the general outline and fully opaque.
-        totOutline     = "OUTLINE",   -- a value from OUTLINE_OPTIONS in the UI
+        totFont        = addon.Font.New({ font = "Friz Quadrata TT", size = 15, y = 7 }),
         totAlpha       = 100,         -- %
         -- Which bottom corner the name (and its bar) hangs off. Either way the name is
         -- pinned by the end nearest that corner and grows inwards, so the corner holds
         -- still and a long name never drags the element off the plate.
         totAnchor      = "bottomRight",   -- "bottomRight" | "bottomLeft"
-        -- Nudges in screen directions rather than mirrored ones: +X is right on both
-        -- sides. Applied to the anchor point rather than the text, so moving it moves
-        -- the corner it grows from instead of flipping the direction.
-        totX           = 0,
-        totY           = 7,
         -- What decides the name's colour. One setting rather than a stack of switches,
         -- since the three are alternatives and only one can win.
         --
@@ -199,6 +205,20 @@ local DEFAULTS = {
         maxDistance  = 20,     -- Classic Era caps this at 41 yards
         stacking     = true,   -- nameplateMotion: stacked instead of overlapping
         overlapV     = 110,    -- % vertical spacing when stacking
+
+        -- Slack added around the widest bar to make the invisible click box, in
+        -- WorldFrame units (screen pixels) rather than bar units — so it stays the
+        -- same physical size whatever the interface scale, which is what click
+        -- slack should do.
+        --
+        -- Y is NOT only slack: it lands in the height handed to SetNamePlateSize,
+        -- and that rect is what the client stacks plates by. At these defaults a
+        -- 22px bar at 0.65 UI scale makes a 38-unit rect, so 24 of it is pad —
+        -- most of the gap between two stacked plates. 24/10 is what covers the
+        -- cast bar below and the name above at a typical scale; drop Y to tighten
+        -- stacking, at the cost of the name falling outside the clickable box.
+        clickPadX    = 10,
+        clickPadY    = 24,
 
         -- Pins the engine's own distance and target scaling to 1, so this module's
         -- settings are the only thing sizing a plate. On by default: the engine's
@@ -392,15 +412,25 @@ local DEFAULTS = {
             -- top of the health bar, so it has to clear the debuff row's own
             -- icons), and the player rows run slightly larger than the NPC ones
             -- because there are never forty players on screen at once.
+            --
+            -- `special` is the extra frames off the side of the plate, holding
+            -- whichever whitelist entries are ticked onto them. Empty here and
+            -- filled by Data.EnsureSpecialBars: a frame shipped as a default
+            -- would grow back every login once deleted.
+            --   bars   = ordered list of Data.NewSpecialBar tables
+            --   nextID = the last id handed out, never reused
+            --   seed   = which starting frame this profile has had
             enemyPlayer = {
                 fromEvents = true,
                 buffs      = auraRowDefaults(40, 32),
                 debuffs    = auraRowDefaults(4,  32),
+                special    = { bars = {}, nextID = 0, seed = 0 },
             },
             enemyNPC = {
                 fromEvents = false,
                 buffs      = auraRowDefaults(36, 28),
                 debuffs    = auraRowDefaults(4,  28),
+                special    = { bars = {}, nextID = 0, seed = 0 },
             },
         },
     },
@@ -449,6 +479,23 @@ local DEFAULTS = {
 }
 
 addon.RegisterDefaults("nameplates", DEFAULTS)
+
+-- Every font on a plate was a bare LibSharedMedia name, with the general one's
+-- size and outline (and target of target's size, outline and nudges) as flat
+-- keys beside it. Folding those into their blocks has to run before the defaults
+-- are merged, since the merge starts a fresh table wherever a saved value isn't
+-- one and the picked face would be gone before anything read it.
+local function nameplateGeneral(s)
+    return type(s.nameplates) == "table" and s.nameplates.general or nil
+end
+
+addon.Font.MigrateBlock(nameplateGeneral, "font",
+    { size = "fontSize", outline = "fontOutline" })
+addon.Font.MigrateBlock(nameplateGeneral, "nameFont")
+addon.Font.MigrateBlock(nameplateGeneral, "healthFont")
+addon.Font.MigrateBlock(nameplateGeneral, "levelFont")
+addon.Font.MigrateBlock(nameplateGeneral, "totFont",
+    { size = "totSize", outline = "totOutline", x = "totX", y = "totY" })
 
 -- This module is why profile exports got unwieldy: a raid night's worth of
 -- learned auras and auto-detected mobs is local discovery, and it outweighed
@@ -697,6 +744,101 @@ Data.AURA_UNIT_FOR_KIND = {
     friendlyNPC    = "enemyNPC",
 }
 
+-- ── Special buff frames ──────────────────────────────────────────────────────
+-- Extra strips of icons, off the side of the plate rather than stacked above it,
+-- each holding whichever entries of the two whitelists are ticked for it. The
+-- point is the one thing the pair of rows above the bar can't do: take the two
+-- or three auras a fight is actually about out of a queue of eight identical
+-- ones and put them somewhere the eye already is, at whatever size they deserve.
+--
+-- Per unit type, like the whitelists they draw from, and shared by that type's
+-- buffs and debuffs — an entry moves to a frame, and which list it came off
+-- stops mattering the moment it does.
+--
+-- Where the frame hangs off the health bar. Eight points rather than the four
+-- sides, since a corner is the placement that stays clear of both rows above the
+-- bar and the cast bar under it.
+Data.SPECIAL_ANCHORS = {
+    { value = "RIGHT",       label = "Right of the bar",   short = "Right"        },
+    { value = "LEFT",        label = "Left of the bar",    short = "Left"         },
+    { value = "TOP",         label = "Above the bar",      short = "Above"        },
+    { value = "BOTTOM",      label = "Below the bar",      short = "Below"        },
+    { value = "TOPRIGHT",    label = "Top right corner",   short = "Top right"    },
+    { value = "TOPLEFT",     label = "Top left corner",    short = "Top left"     },
+    { value = "BOTTOMRIGHT", label = "Bottom right corner", short = "Bottom right" },
+    { value = "BOTTOMLEFT",  label = "Bottom left corner",  short = "Bottom left"  },
+}
+
+Data.SPECIAL_ANCHOR_BY_VALUE = {}
+for _, e in ipairs(Data.SPECIAL_ANCHORS) do Data.SPECIAL_ANCHOR_BY_VALUE[e.value] = e end
+
+function Data.SpecialAnchor(value)
+    if value and Data.SPECIAL_ANCHOR_BY_VALUE[value] then return value end
+    return "RIGHT"
+end
+
+-- The three growths the rows above the bar have, plus their vertical mirrors: a
+-- frame off the SIDE of a plate has height to grow into and almost no width, so
+-- a column is what fits there.
+Data.SPECIAL_GROWTHS = {
+    { value = "right",   label = "Rightwards",         short = "Right"    },
+    { value = "left",    label = "Leftwards",          short = "Left"     },
+    { value = "center",  label = "Centred, in a row",  short = "Centred —" },
+    { value = "down",    label = "Downwards",          short = "Down"     },
+    { value = "up",      label = "Upwards",            short = "Up"       },
+    { value = "vcenter", label = "Centred, in a column", short = "Centred |" },
+}
+
+Data.SPECIAL_GROWTH_BY_VALUE = {}
+for _, e in ipairs(Data.SPECIAL_GROWTHS) do Data.SPECIAL_GROWTH_BY_VALUE[e.value] = e end
+
+-- Which of the six stack rather than queue. Read by the engine to decide whether
+-- an icon's offset from the last one is an x or a y.
+Data.SPECIAL_VERTICAL = { up = true, down = true, vcenter = true }
+
+function Data.SpecialGrowth(value)
+    if value and Data.SPECIAL_GROWTH_BY_VALUE[value] then return value end
+    return "right"
+end
+
+-- The horizontal and vertical halves of an anchor point, so the frame's own
+-- attach point can be worked out as the mirror of whichever half the icons do
+-- not run along. Pure sides have only one half, and get nil for the other.
+local ANCHOR_V = {
+    TOP = "TOP", TOPLEFT = "TOP", TOPRIGHT = "TOP",
+    BOTTOM = "BOTTOM", BOTTOMLEFT = "BOTTOM", BOTTOMRIGHT = "BOTTOM",
+}
+local ANCHOR_H = {
+    LEFT = "LEFT", TOPLEFT = "LEFT", BOTTOMLEFT = "LEFT",
+    RIGHT = "RIGHT", TOPRIGHT = "RIGHT", BOTTOMRIGHT = "RIGHT",
+}
+
+local MIRROR = { TOP = "BOTTOM", BOTTOM = "TOP", LEFT = "RIGHT", RIGHT = "LEFT" }
+
+-- Which point on the frame itself is pinned to that anchor. Two rules, and
+-- between them every combination lands outside the health bar rather than over
+-- it: the icons' own axis is pinned at the end they grow FROM, and the other
+-- axis takes the mirror of the anchor's — a frame hung off the top edge sits
+-- with its BOTTOM on it, so it goes up rather than down over the bar.
+--
+-- The frame is sized to exactly the icons on it (see finishAuraRow), so a
+-- "centred" growth is nothing more than pinning the middle instead of an end.
+function Data.SpecialRowPoint(anchor, growth)
+    anchor = Data.SpecialAnchor(anchor)
+    growth = Data.SpecialGrowth(growth)
+
+    local along, across
+    if Data.SPECIAL_VERTICAL[growth] then
+        along  = (growth == "down" and "TOP") or (growth == "up" and "BOTTOM") or ""
+        across = MIRROR[ANCHOR_H[anchor] or ""] or ""
+        return (along .. across) ~= "" and (along .. across) or "CENTER"
+    end
+
+    along  = (growth == "right" and "LEFT") or (growth == "left" and "RIGHT") or ""
+    across = MIRROR[ANCHOR_V[anchor] or ""] or ""
+    return (across .. along) ~= "" and (across .. along) or "CENTER"
+end
+
 -- Name and icon for a spell ID *or* name. Classic Era still has the global
 -- getters, but C_Spell is what newer builds expect, so prefer it and fall back.
 function Data.SpellInfo(key)
@@ -851,10 +993,21 @@ function Data.RemoveAura(unitKey, which, key)
     end
 end
 
--- Duration for the one case where the game won't say: an aura inferred from
--- events rather than read off the unit. Real auras carry their own and it always
--- wins. Blank means "no idea", drawing the icon with no swipe or countdown
--- rather than a made-up one.
+-- The override duration: what this entry's countdown is, in seconds, when the
+-- user wants to say rather than have it worked out.
+--
+-- Three sources feed a countdown, in order of authority. A real aura read off
+-- the unit carries its own and always wins. Failing that, addon.Durations
+-- reconstructs one from its table of 1.12 durations. This field beats that
+-- reconstruction, for a spell the table has wrong or has never heard of.
+--
+-- Blank — which is almost every entry — means "let the other two answer", and
+-- when neither can the icon draws with no swipe and no countdown rather than a
+-- made-up one.
+--
+-- Still stored as `duration`: the meaning of the number has not changed, only
+-- what it takes precedence over, and renaming the key would strand it in every
+-- saved profile and shared import string.
 Data.AURA_DURATION_MAX = 3600
 
 function Data.SetAuraDuration(unitKey, which, key, text)
@@ -870,6 +1023,281 @@ function Data.SetAuraDuration(unitKey, which, key, text)
     end
     Data.InvalidateAuras()
     return entry.duration
+end
+
+-- ── Special buff frames: the frames themselves ───────────────────────────────
+-- Stored per unit type as an ORDERED list, since the settings page lists them
+-- and a list that reshuffles between visits is unusable. Each carries a numeric
+-- `id` that never changes and a `name` the user can rewrite at will: whitelist
+-- entries point at the id, so renaming a frame cannot orphan what is on it.
+--
+-- Capped low on purpose. Every frame adds a checkbox to every row of both
+-- whitelists, and a plate has only so many sides.
+Data.SPECIAL_BAR_CAP  = 5
+Data.SPECIAL_NAME_MAX = 18
+
+-- What a brand new frame looks like. Bigger and fewer than the rows above the
+-- bar, because that is the whole reason to move something onto one: an aura you
+-- singled out is one you want to see, not one more 28px square in a queue.
+function Data.NewSpecialBar(id, name)
+    return {
+        id          = id,
+        name        = name,
+        enabled     = true,
+        anchor      = "RIGHT",   -- a value from Data.SPECIAL_ANCHORS
+        growth      = "right",   -- a value from Data.SPECIAL_GROWTHS
+        size        = 34,
+        spacing     = 2,
+        max         = 3,
+        -- Clear of the health bar's own border and the target ornament, rather
+        -- than flush against the edge.
+        x           = 8,
+        y           = 0,
+        onlyMine    = false,
+        -- On, unlike the rows above the bar: an aura worth its own frame is one
+        -- whose remaining seconds you are watching for.
+        showTimer   = true,
+        showStacks  = true,
+        timerSize   = 12,
+        borderSize  = 1,
+        borderColor = { 0.00, 0.00, 0.00 },
+    }
+end
+
+-- The per-unit-type block, created on demand like every other aura table.
+function Data.SpecialBlock(unitKey)
+    local u = Data.AuraUnit(unitKey)
+    if not u then return nil end
+    u.special = u.special or {}
+    u.special.bars = u.special.bars or {}
+    return u.special
+end
+
+-- Shared, so a caller with no profile yet still gets something it can ipairs
+-- over. Never written to — every writer goes through the block accessors.
+local EMPTY_LIST = {}
+
+function Data.SpecialBars(unitKey)
+    local s = Data.SpecialBlock(unitKey)
+    return s and s.bars or EMPTY_LIST
+end
+
+function Data.SpecialBar(unitKey, id)
+    if not id then return nil end
+    for _, bar in ipairs(Data.SpecialBars(unitKey)) do
+        if bar.id == id then return bar end
+    end
+    return nil
+end
+
+-- Cut at a character rather than at a byte: the edit box counts letters and Lua
+-- counts bytes, so clipping the raw string would leave half of an accented one
+-- behind. Walks lead bytes and stops on the boundary after the cap.
+local function clipChars(text, maxChars)
+    local i, n, chars = 1, #text, 0
+    while i <= n do
+        local c = text:byte(i)
+        local size = (c < 0x80 and 1) or (c < 0xE0 and 2) or (c < 0xF0 and 3) or 4
+        chars = chars + 1
+        if chars > maxChars then return text:sub(1, i - 1) end
+        i = i + size
+    end
+    return text
+end
+
+-- Trimmed and clipped rather than rejected: the box is 18 characters wide and
+-- what fits in it is what the checkbox rows have room for anyway.
+function Data.CleanSpecialName(text)
+    if type(text) ~= "string" then return "" end
+    text = text:match("^%s*(.-)%s*$") or ""
+    return clipChars(text, Data.SPECIAL_NAME_MAX)
+end
+
+-- Names are what the whitelist checkboxes are labelled with, so two frames
+-- sharing one would leave a row of checkboxes you cannot tell apart.
+local function nameTaken(unitKey, name, exceptID)
+    local lowered = name:lower()
+    for _, bar in ipairs(Data.SpecialBars(unitKey)) do
+        if bar.id ~= exceptID and (bar.name or ""):lower() == lowered then return true end
+    end
+    return false
+end
+
+function Data.AddSpecialBar(unitKey, text)
+    local s = Data.SpecialBlock(unitKey)
+    if not s then return nil, "Not ready yet." end
+    if #s.bars >= Data.SPECIAL_BAR_CAP then
+        return nil, "That is all " .. Data.SPECIAL_BAR_CAP .. " of them."
+    end
+
+    local name = Data.CleanSpecialName(text)
+    if name == "" then name = "Special " .. (#s.bars + 1) end
+    if nameTaken(unitKey, name) then return nil, "Already a frame called that." end
+
+    -- Counted up and never reused, so an id can't be handed to a new frame while
+    -- whitelist entries still point at the deleted one that had it.
+    s.nextID = (tonumber(s.nextID) or 0) + 1
+    local bar = Data.NewSpecialBar(s.nextID, name)
+    s.bars[#s.bars + 1] = bar
+    Data.InvalidateAuras()
+    return bar
+end
+
+-- Takes the entries on it back to the rows above the health bar rather than
+-- leaving them pointing at nothing: an aura you whitelisted is one you asked to
+-- see, and deleting a frame is a statement about the frame.
+function Data.RemoveSpecialBar(unitKey, id)
+    local s = Data.SpecialBlock(unitKey)
+    if not (s and id) then return false end
+
+    local found
+    for i, bar in ipairs(s.bars) do
+        if bar.id == id then found = i; break end
+    end
+    if not found then return false end
+
+    table.remove(s.bars, found)
+    for _, which in ipairs({ "buffs", "debuffs" }) do
+        for _, entry in pairs(Data.AuraList(unitKey, which) or {}) do
+            if entry.bar == id then entry.bar = nil end
+        end
+    end
+    Data.InvalidateAuras()
+    return true
+end
+
+-- Returns the name actually stored, so a caller can put the box back to it when
+-- what was typed was blank, too long, or already in use.
+function Data.RenameSpecialBar(unitKey, id, text)
+    local bar = Data.SpecialBar(unitKey, id)
+    if not bar then return nil end
+
+    local name = Data.CleanSpecialName(text)
+    if name ~= "" and not nameTaken(unitKey, name, id) then bar.name = name end
+    return bar.name
+end
+
+-- Which frame an entry is drawn on, or nil for the row above the health bar.
+-- One at a time by design: the checkbox row says "show this here INSTEAD", so
+-- ticking a second frame moves it rather than copying it.
+function Data.SetAuraBar(unitKey, which, key, barID)
+    local list = Data.AuraList(unitKey, which)
+    local entry = list and key and list[key]
+    if not entry then return nil end
+
+    if barID and Data.SpecialBar(unitKey, barID) then
+        entry.bar = barID
+    else
+        entry.bar = nil
+    end
+    Data.InvalidateAuras()
+    return entry.bar
+end
+
+-- ── Groups ───────────────────────────────────────────────────────────────────
+-- Headings inside one whitelist, and nothing more: "Stuns", "CC", "Things I have
+-- to dispel". A group changes NOTHING about what is drawn or how — the engine
+-- never reads one — which is exactly why they're worth having, because it means
+-- a list you can find things in costs nothing to keep.
+--
+-- Per list rather than per unit type: the groups a debuff list wants and the ones
+-- a buff list wants have nothing to say to each other.
+--
+-- Same id/name split as the special frames, for the same reason: entries point at
+-- `id`, so a group can be renamed as often as you like.
+Data.AURA_GROUP_CAP      = 12
+Data.AURA_GROUP_NAME_MAX = 22
+
+function Data.AuraGroups(unitKey, which)
+    local o = Data.AuraOpts(unitKey, which)
+    if not o then return EMPTY_LIST end
+    o.groups = o.groups or {}
+    return o.groups
+end
+
+function Data.AuraGroup(unitKey, which, id)
+    if not id then return nil end
+    for _, g in ipairs(Data.AuraGroups(unitKey, which)) do
+        if g.id == id then return g end
+    end
+    return nil
+end
+
+-- Names are free-form and need not be unique — they label a heading rather than
+-- identify one, and two groups both called "Adds" is the user's business.
+function Data.AddAuraGroup(unitKey, which, text)
+    local o = Data.AuraOpts(unitKey, which)
+    if not o then return nil, "Not ready yet." end
+    local groups = Data.AuraGroups(unitKey, which)
+    if #groups >= Data.AURA_GROUP_CAP then
+        return nil, "That is all " .. Data.AURA_GROUP_CAP .. " groups."
+    end
+
+    local name = clipChars((type(text) == "string" and text:match("^%s*(.-)%s*$")) or "",
+        Data.AURA_GROUP_NAME_MAX)
+    if name == "" then name = "Group " .. (#groups + 1) end
+
+    o.nextGroupID = (tonumber(o.nextGroupID) or 0) + 1
+    local group = { id = o.nextGroupID, name = name }
+    groups[#groups + 1] = group
+    return group
+end
+
+-- The entries in it are NOT deleted — they go back to being ungrouped. Deleting
+-- a heading is a statement about the heading.
+function Data.RemoveAuraGroup(unitKey, which, id)
+    local groups = Data.AuraGroups(unitKey, which)
+    local found
+    for i, g in ipairs(groups) do
+        if g.id == id then found = i; break end
+    end
+    if not found then return false end
+
+    table.remove(groups, found)
+    for _, entry in pairs(Data.AuraList(unitKey, which) or {}) do
+        if entry.group == id then entry.group = nil end
+    end
+    return true
+end
+
+function Data.RenameAuraGroup(unitKey, which, id, text)
+    local group = Data.AuraGroup(unitKey, which, id)
+    if not group then return nil end
+
+    local name = clipChars((type(text) == "string" and text:match("^%s*(.-)%s*$")) or "",
+        Data.AURA_GROUP_NAME_MAX)
+    if name ~= "" then group.name = name end
+    return group.name
+end
+
+-- Which group an entry sits under, or nil for none. An id this list doesn't have
+-- reads as none, so a dropped drag onto something that has just been deleted
+-- lands the entry in the ungrouped pile rather than nowhere.
+function Data.SetAuraGroup(unitKey, which, key, groupID)
+    local list = Data.AuraList(unitKey, which)
+    local entry = list and key and list[key]
+    if not entry then return nil end
+
+    if groupID and Data.AuraGroup(unitKey, which, groupID) then
+        entry.group = groupID
+    else
+        entry.group = nil
+    end
+    return entry.group
+end
+
+-- Collapsing is per group, and the ungrouped pile keeps its own flag on the list
+-- itself — it has no group table to hang one on.
+function Data.ToggleAuraGroup(unitKey, which, id)
+    if id then
+        local group = Data.AuraGroup(unitKey, which, id)
+        if not group then return end
+        group.collapsed = not group.collapsed
+        return
+    end
+
+    local o = Data.AuraOpts(unitKey, which)
+    if o then o.looseCollapsed = not o.looseCollapsed end
 end
 
 -- ── Learning what a name matches ─────────────────────────────────────────────
@@ -968,6 +1396,66 @@ function Data.SortedAuras(unitKey, which, filter)
     return out
 end
 
+-- The same list with its headings folded in: one flat array of `group` and `aura`
+-- items, in the order they are drawn. Flat rather than nested because the list is
+-- virtualised — the settings panel walks a window of it by index and never has to
+-- know what a group is.
+--
+-- A list with no groups comes back exactly as SortedAuras left it, no headings at
+-- all, so a whitelist nobody has organised looks and behaves as it always did.
+--
+-- `group.count` is what the heading shows, and it counts what the heading is
+-- ACTUALLY over — so under a search it is the number of matches, not a total that
+-- disagrees with the rows beneath it.
+function Data.GroupedAuras(unitKey, which, filter)
+    local sorted = Data.SortedAuras(unitKey, which, filter)
+    local groups = Data.AuraGroups(unitKey, which)
+    if #groups == 0 then return sorted end
+
+    local searching = filter ~= nil and filter ~= ""
+
+    -- One pass over the entries into per-group buckets, rather than a pass over
+    -- the entries per group.
+    local bucket, loose = {}, {}
+    for _, g in ipairs(groups) do bucket[g.id] = {} end
+    for _, item in ipairs(sorted) do
+        local into = item.entry.group and bucket[item.entry.group]
+        item.group = into and item.entry.group or nil
+        local dest = into or loose
+        dest[#dest + 1] = item
+    end
+
+    local out = {}
+    local function section(id, name, held, collapsed)
+        -- A group with nothing in it still gets its heading: it is the thing you
+        -- drag onto, and one you cannot see is one you cannot fill. Under a
+        -- search it goes, since a search is asking to be shown less.
+        if searching and #held == 0 then return end
+
+        -- A search overrides collapse rather than hiding matches under a heading
+        -- that says it found them — and the heading reports the state it is
+        -- actually in, so the twisty never points the wrong way.
+        local shut = collapsed and not searching
+        out[#out + 1] = {
+            kind = "group", id = id, name = name,
+            count = #held, collapsed = shut and true or false,
+        }
+        if shut then return end
+        for _, item in ipairs(held) do out[#out + 1] = item end
+    end
+
+    for _, g in ipairs(groups) do
+        section(g.id, g.name or "", bucket[g.id], g.collapsed)
+    end
+
+    -- Last, and always present while there are groups at all: it is where a drag
+    -- back OUT of a group has to land.
+    local o = Data.AuraOpts(unitKey, which)
+    section(nil, "Ungrouped", loose, o and o.looseCollapsed)
+
+    return out
+end
+
 -- ── Learned aura catalogue ───────────────────────────────────────────────────
 -- What the module has SEEN, as opposed to what it's been told to watch for. The
 -- whitelists answer "show me this"; this answers "what is there to ask for".
@@ -1051,6 +1539,11 @@ function Data.NoteLearnedAura(which, spellID, name, icon, isPlayer, unitName)
             learned = true
         end
     end
+
+    -- The library's buff/debuff split leans on this catalogue for everything the
+    -- 1.12 table declares no type for, so a new sighting can move a row from one
+    -- list to the other.
+    if learned and Data.InvalidateLibrary then Data.InvalidateLibrary() end
 
     return learned
 end
@@ -1208,6 +1701,326 @@ function Data.SortedLearned(which, filter)
     return out
 end
 
+-- ── Spell library ────────────────────────────────────────────────────────────
+-- The catalogue above answers "what have I met". This answers "what is there",
+-- off addon.Durations' table of 1.12 spells — so a whitelist can be filled in
+-- before ever meeting the spell, which is the whole reason that library exists.
+--
+-- Three lists. Buffs and debuffs are the ~430 player spells, ranks collapsed to
+-- one row each because the whitelist matches by name and every rank under it.
+-- Creature is the ~4000 abilities cast by mobs, which is where boss mechanics
+-- live and is far and away the longest of the three.
+Data.LIBRARY_KINDS = {
+    { key = "debuffs",  label = "Debuffs"  },
+    { key = "buffs",    label = "Buffs"    },
+    { key = "creature", label = "Creature" },
+}
+
+-- The library declares `type = "BUFF"` on 260 of its 432 player spells and says
+-- nothing at all about the other 172. Silence is not evidence — it only means
+-- the duration library never needed to know — so the undeclared ones are read
+-- as debuffs, which is what about 150 of them are.
+--
+-- These are the exceptions: undeclared entries that are plainly buffs. Every
+-- rank is listed because the row's representative id is whichever rank the name
+-- resolves to. Anything missed here corrects itself the first time the
+-- catalogue actually sees the aura land — see libraryKindFor.
+local LIBRARY_BUFFS = {}
+for _, id in ipairs({
+    132, 2970, 11743,                          -- Detect Invisibility
+    1539,                                      -- Feed Pet Effect
+    5217, 6793, 9845, 9846,                    -- Tiger's Fury
+    5697,                                      -- Unending Breath
+    6307, 7804, 7805, 11766, 11767,            -- Blood Pact
+    11327, 11329,                              -- Vanish
+    12042,                                     -- Arcane Power
+    12043,                                     -- Presence of Mind
+    12328,                                     -- Death Wish
+    17767, 17850, 17851, 17852, 17853, 17854,  -- Consume Shadows
+    19480,                                     -- Paranoia
+    23099, 23109, 23110,                       -- Pet Dash
+    23451, 23493, 23505,                       -- Battleground buffs
+    349981,                                    -- Chronoboon: world effect suspended
+    355363, 22888,                             -- Rallying Cry of the Dragonslayer
+    355365, 24425,                             -- Spirit of Zandalar
+    355366, 16609,                             -- Warchief's Blessing
+}) do LIBRARY_BUFFS[id] = true end
+
+local function durations()
+    return addon.Durations
+end
+
+-- ── Labels ───────────────────────────────────────────────────────────────────
+-- Searchable tags on a library row, so "cc", "stun" or "magic" finds the spells
+-- rather than needing their names. Three sources feed them.
+--
+-- The DR table is the first and covers 85 ids, but it answers a different
+-- question — what shares a diminishing returns bracket — and the two only
+-- mostly agree. Hibernate and Wyvern Sting sit in the INCAP bracket and are
+-- sleeps; Frost Shock has a bracket of its own and is a slow, not a root. So DR
+-- gives the default and the tables below override it.
+--
+-- The second source is everything 1.12 never diminished at all and which the DR
+-- table therefore says nothing about: silences, disarms, charms, banishes, and
+-- Blind and Frostbite (both left out on purpose — see DiminishingReturns.lua).
+--
+-- The third is dispel school. The library declares `buffType` on 84 spells and
+-- the only value it ever holds is "Magic", because it only ever needed the
+-- school of a BUFF. Curse, Poison and Disease are named below so a mage looking
+-- for what they can decurse can search for it.
+local LABEL_BY_DR = {
+    STUN = "Stun", RANDOM_STUN = "Stun", KIDNEY_SHOT = "Stun",
+    ROOT = "Root", RANDOM_ROOT = "Root",
+    INCAP = "Incap",
+    FEAR = "Fear",
+    -- FROST_SHOCK is deliberately absent: it is a bracket, not a school of CC,
+    -- and the spell in it is a slow. It picks its label up from SLOW below.
+}
+
+-- Hard crowd control — it stops the target acting or moving, and so earns the
+-- generic "CC" tag as well as its own. Silence, Disarm and Slow are searchable
+-- by name but are NOT under CC: they take away one option, not all of them.
+local HARD_CC = {
+    Stun = true, Root = true, Fear = true, Incap = true,
+    Sleep = true, Charm = true, Banish = true, Horror = true,
+}
+
+local SPELL_LABEL = {}
+local function label(text, ids)
+    for _, id in ipairs(ids) do SPELL_LABEL[id] = text end
+end
+
+label("Silence", { 15487, 18469, 18425, 24259, 18498 })
+label("Disarm",  { 676, 14251 })
+label("Charm",   { 605, 10911, 10912 })
+label("Banish",  { 710, 18647 })
+label("Horror",  { 6789, 17925, 17926 })
+label("Sleep",   { 2637, 18657, 18658, 19386, 24132, 24133 })
+label("Incap",   { 2094, 9484, 9485, 10955 })
+label("Fear",    { 1513, 14326, 14327, 2878, 5627, 20511 })
+label("Root",    { 12494, 19975, 19229, 23694, 19185 })
+
+local SLOW = {}
+for _, id in ipairs({
+    1715, 7372, 7373,                                        -- Hamstring
+    3409, 11201,                                             -- Crippling Poison
+    18223,                                                   -- Curse of Exhaustion
+    8056, 8058, 10472, 10473,                                -- Frost Shock
+    116, 205, 837, 7322, 8406, 8407, 8408,
+    10179, 10180, 10181, 25304,                              -- Frostbolt
+    120, 8492, 10159, 10160, 10161,                          -- Cone of Cold
+    6136, 7321,                                              -- Frost / Ice Armor chill
+    12484, 12485, 12486,                                     -- Improved Blizzard
+    8034, 8037, 10458, 16352, 16353,                         -- Frostbrand
+    3600,                                                    -- Earthbind Totem
+    2974, 14267, 14268,                                      -- Wing Clip
+    5116,                                                    -- Concussive Shot
+    12323,                                                   -- Piercing Howl
+    1604,                                                    -- Daze
+}) do SLOW[id] = true end
+
+-- Debuff dispel schools, which the duration library has no field for at all.
+local SCHOOL = {}
+local function school(text, ids)
+    for _, id in ipairs(ids) do SCHOOL[id] = text end
+end
+school("Curse", {
+    1714, 11719,                                             -- Tongues
+    702, 1108, 6205, 7646, 11707, 11708,                     -- Weakness
+    17862, 17937,                                            -- Shadows
+    1490, 11721, 11722,                                      -- Elements
+    704, 7658, 7659, 11717,                                  -- Recklessness
+    603,                                                     -- Doom
+    18223,                                                   -- Exhaustion
+    980, 1014, 6217, 11711, 11712, 11713,                    -- Agony
+})
+school("Poison", {
+    3409, 11201,                                             -- Crippling
+    13218, 13222, 13223, 13224,                              -- Wound
+    2818, 2819, 11353, 11354, 25349,                         -- Deadly
+    5760, 8692, 11398,                                       -- Mind-numbing
+})
+school("Disease", { 2944, 19276, 19277, 19278, 19279, 19280 })  -- Devouring Plague
+
+-- Every tag on one spell, generic first. Returns the list and one lowercased
+-- blob for the search box to match against.
+function Data.LibraryLabels(id, opts)
+    local D = durations()
+    local out = {}
+
+    local cc = SPELL_LABEL[id] or (D and D.drCategory and LABEL_BY_DR[D.drCategory[id]])
+    if cc then
+        if HARD_CC[cc] then out[#out + 1] = "CC" end
+        out[#out + 1] = cc
+    end
+    if SLOW[id] then out[#out + 1] = "Slow" end
+
+    local dispel = (opts and opts.buffType) or SCHOOL[id]
+    if dispel then out[#out + 1] = dispel end
+
+    return out, (#out > 0) and (" " .. table.concat(out, " "):lower()) or ""
+end
+
+-- Has the catalogue recorded this name under that kind? This is the runtime
+-- auraType straight off the combat log, so it outranks anything inferred from
+-- the table's silence — but not an explicit declaration.
+local function seenAs(key, which)
+    local b = Data.LearnedBucket(which)
+    return (b and b.list[key]) ~= nil
+end
+
+local function libraryKindFor(key, id, opts)
+    if opts and opts.type == "BUFF" then return "buffs" end
+    if LIBRARY_BUFFS[id] then return "buffs" end
+    -- Watched land as a buff and never as a debuff: believe what was seen.
+    if seenAs(key, "buffs") and not seenAs(key, "debuffs") then return "buffs" end
+    return "debuffs"
+end
+
+-- Which of a unit's two whitelists a row belongs on. Buffs and debuffs answer
+-- for themselves; a creature ability has no declared type at all, so it lands
+-- on the debuff list unless the catalogue has seen otherwise.
+function Data.LibraryWhichFor(kind, key)
+    if kind ~= "creature" then return kind end
+    if seenAs(key, "buffs") and not seenAs(key, "debuffs") then return "buffs" end
+    return "debuffs"
+end
+
+-- "18s", "10m", "~12s" for one that varies with rank or talent, "∞" for a
+-- permanent aura, "—" for one the library will not commit to.
+function Data.LibraryDurationText(id)
+    local D = durations()
+    if not D or not D.DescribeDuration then return "—" end
+
+    local seconds, varies, permanent = D.DescribeDuration(id)
+    if permanent then return "∞" end
+    if not seconds then return varies and "~?" or "—" end
+
+    local text
+    if seconds >= 3600 then
+        text = ("%gh"):format(seconds / 3600)
+    elseif seconds >= 60 then
+        text = ("%gm"):format(seconds / 60)
+    else
+        text = ("%gs"):format(seconds)
+    end
+    return varies and ("~" .. text) or text
+end
+
+-- Built once per kind and kept: the roster itself never changes at runtime, and
+-- the creature list costs ~4000 name lookups to assemble. The buff/debuff split
+-- CAN move as the catalogue learns, so those two are rebuilt when it does — see
+-- Data.InvalidateLibrary, which the learn path calls.
+local libraryCache = {}
+
+function Data.InvalidateLibrary()
+    libraryCache.buffs, libraryCache.debuffs = nil, nil
+end
+
+local function buildPlayerRoster()
+    local D = durations()
+    local buffs, debuffs = {}, {}
+    if not (D and D.spells) then
+        libraryCache.buffs, libraryCache.debuffs = buffs, debuffs
+        return
+    end
+
+    -- Collapsed by name, which is exactly the key a whitelist entry uses, so a
+    -- row added from here and the same name typed by hand are one entry.
+    local byName = {}
+    for id in pairs(D.spells) do
+        local name = Data.SpellInfo(id)
+        if name and name ~= "" then
+            local key = name:lower()
+            if not byName[key] then
+                local repID = (D.LastRankIDForName and D.LastRankIDForName(name)) or id
+                byName[key] = {
+                    key = key, id = repID, name = name,
+                    icon = select(2, Data.SpellInfo(repID)),
+                }
+            end
+        end
+    end
+
+    for key, row in pairs(byName) do
+        local opts = D.spells[row.id]
+        row.durText = Data.LibraryDurationText(row.id)
+        row.labels, row.labelBlob = Data.LibraryLabels(row.id, opts)
+        row.labelText = (#row.labels > 0) and table.concat(row.labels, ", ") or ""
+        row.search = key .. " " .. row.id .. row.labelBlob
+        table.insert(libraryKindFor(key, row.id, opts) == "buffs" and buffs or debuffs, row)
+    end
+
+    local byLabel = function(a, b) return a.name < b.name end
+    table.sort(buffs, byLabel)
+    table.sort(debuffs, byLabel)
+    libraryCache.buffs, libraryCache.debuffs = buffs, debuffs
+end
+
+local function buildCreatureRoster()
+    local D = durations()
+    local out = {}
+    if not (D and D.npcSpells) then
+        libraryCache.creature = out
+        return
+    end
+
+    local byName = {}
+    for id in pairs(D.npcSpells) do
+        local name, icon = Data.SpellInfo(id)
+        if name and name ~= "" then
+            local key = name:lower()
+            -- Lowest id wins the row: mob abilities are not ranked, so several
+            -- ids under one name are variants and any of them names the same
+            -- thing to a whitelist that matches on the name.
+            local prev = byName[key]
+            if not prev then
+                byName[key] = { key = key, id = id, name = name, icon = icon }
+            elseif id < prev.id then
+                prev.id, prev.icon = id, icon
+            end
+        end
+    end
+
+    for _, row in pairs(byName) do
+        row.durText = Data.LibraryDurationText(row.id)
+        -- No opts to read a dispel school off — a creature ability has rules
+        -- nowhere but the duration number — so these only ever pick up a label
+        -- from the DR table or the hand-written lists.
+        row.labels, row.labelBlob = Data.LibraryLabels(row.id, nil)
+        row.labelText = (#row.labels > 0) and table.concat(row.labels, ", ") or ""
+        row.search = row.key .. " " .. row.id .. row.labelBlob
+        out[#out + 1] = row
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    libraryCache.creature = out
+end
+
+-- The whole roster for a kind, unfiltered. Sorted at build so a keystroke only
+-- costs the filter pass.
+function Data.LibraryRoster(kind)
+    if not libraryCache[kind] then
+        if kind == "creature" then buildCreatureRoster() else buildPlayerRoster() end
+    end
+    return libraryCache[kind] or {}
+end
+
+function Data.LibraryRows(kind, filter)
+    local roster = Data.LibraryRoster(kind)
+    filter = filter and filter ~= "" and filter:lower() or nil
+    if not filter then return roster, #roster end
+
+    -- One blob per row holds name, ID and every label, so "cc", "stun", "magic"
+    -- and "curse" search alongside the spell's own name.
+    local out = {}
+    for _, row in ipairs(roster) do
+        if (row.search or row.key):find(filter, 1, true) then
+            out[#out + 1] = row
+        end
+    end
+    return out, #roster
+end
+
 -- ── Match lookup ─────────────────────────────────────────────────────────────
 -- The engine tests every aura on every tracked plate against these, so they are
 -- built once into flat maps rather than walked per aura. Rebuilt lazily after
@@ -1228,10 +2041,27 @@ function Data.AuraLookup(unitKey, which)
     local cached = byUnit[which]
     if cached then return cached end
 
+    -- Every special frame this unit type has, INCLUDING the switched-off ones: an
+    -- entry moved onto a frame that is currently hidden stays on it and draws
+    -- nowhere, which is what a hidden frame means. Only a frame that has been
+    -- deleted sends its entries back to the row above the bar, and RemoveSpecialBar
+    -- already clears those — this is the belt to its braces, for an entry that
+    -- arrives pointing at a frame the profile it came from had and this one hasn't.
+    local known = {}
+    for _, bar in ipairs(Data.SpecialBars(unitKey)) do known[bar.id] = true end
+
     -- The maps hold the ENTRY rather than `true`: a match still answers "is this
     -- tracked" by being non-nil, and event-inferred auras need the entry's
     -- duration, which a boolean threw away.
-    local out = { byID = {}, byName = {}, count = 0 }
+    --
+    -- `barFor` is the entry's frame after that check, so the engine's scan loop
+    -- asks one question of one table instead of re-testing the id per aura per
+    -- plate per tick. Absent means the row above the health bar.
+    --
+    -- `main` and `bars` count what each destination would draw, so a row with
+    -- nothing bound for it can bail before walking forty aura slots — the same
+    -- early-out `count` has always given the pair above the bar.
+    local out = { byID = {}, byName = {}, count = 0, main = 0, bars = {}, barFor = {} }
     for key, entry in pairs(Data.AuraList(unitKey, which) or {}) do
         if entry.enabled ~= false then
             if entry.id then
@@ -1240,6 +2070,14 @@ function Data.AuraLookup(unitKey, which)
                 out.byName[key] = entry   -- the key IS the lowercased name
             end
             out.count = out.count + 1
+
+            local bar = entry.bar
+            if bar and known[bar] then
+                out.barFor[entry] = bar
+                out.bars[bar] = (out.bars[bar] or 0) + 1
+            else
+                out.main = out.main + 1
+            end
         end
     end
     byUnit[which] = out
@@ -1297,6 +2135,31 @@ function Data.EnsureSeeded()
         end
     end
     d.npcSeed = Data.SEED_VERSION
+end
+
+-- The one special buff frame every unit type starts with, seeded the same way
+-- and for the same reason as the NPC list above: a frame shipped through
+-- DEFAULTS would come back every login after it was deleted, because
+-- applyDefaults refills whatever it finds missing.
+--
+-- Seeded even for a profile that predates the feature. It draws nothing until
+-- something is ticked onto it, so an existing profile gains a place to put
+-- things and no change to how its plates look.
+Data.SPECIAL_SEED_VERSION = 1
+Data.SPECIAL_SEED_NAME    = "Special Buffs"
+
+function Data.EnsureSpecialBars()
+    if not Data.Get() then return end
+    for _, def in ipairs(Data.AURA_UNITS) do
+        local s = Data.SpecialBlock(def.key)
+        if s and (s.seed or 0) < Data.SPECIAL_SEED_VERSION then
+            s.seed = Data.SPECIAL_SEED_VERSION
+            -- Guarded on the list being empty, not just on the flag: an imported
+            -- profile arrives with frames of its own and no seed marker, and
+            -- adding a second "Special Buffs" to it would be nonsense.
+            if #s.bars == 0 then Data.AddSpecialBar(def.key, Data.SPECIAL_SEED_NAME) end
+        end
+    end
 end
 
 function Data.GetNpc(npcID)

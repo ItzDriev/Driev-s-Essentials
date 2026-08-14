@@ -12,7 +12,6 @@ local UI = addon.UI
 
 local WHITE        = "Interface\\Buttons\\WHITE8x8"
 local DEFAULT_BAR  = "Interface\\TargetingFrame\\UI-StatusBar"
-local DEFAULT_FONT = "Fonts\\FRIZQT__.TTF"
 -- How far the text box is inset from the bar's edges. Both strings span that
 -- whole box and justify to opposite sides of it; the user's X offset slides the
 -- box, so positive always means "further right" for both of them.
@@ -39,6 +38,9 @@ local DEFAULT_RESET_SPELLS = {
     -- real name from the client, which beats a comment that might be wrong.
     [16323] = true,
     [16329] = true,
+    [2480]  = true,
+    [7918]  = true,
+    [7919]  = true,
 }
 
 -- The two on-next-swing abilities that get their own bar colour while queued.
@@ -106,15 +108,19 @@ local DEFAULTS = {
     timerCombatOnly = false, -- ...and only while in combat
     timerHideZero   = false, -- ...and not while it reads 0.0
     showLabel       = true,  -- "Mainhand" / "Offhand", left of each bar
-    -- Per-string appearance. outline is a SetFont flag string; "NONE" becomes ""
-    -- on the way in. x/y nudge the string from its resting anchor, shadowX/Y
-    -- offset its drop shadow from the glyphs.
-    timerFont = { name = "Friz Quadrata TT", size = 11, outline = "OUTLINE", x = 0, y = 0,
-                  shadowColor = { 0, 0, 0 }, shadowX = 0, shadowY = 0 },
-    labelFont = { name = "Friz Quadrata TT", size = 11, outline = "OUTLINE", x = 0, y = 0,
-                  shadowColor = { 0, 0, 0 }, shadowX = 0, shadowY = 0 },
+    -- Per-string appearance, both the addon's shared font block (core's Font.lua):
+    -- face, size, outline, x/y nudge and drop shadow. These two predate the block
+    -- and stored the face under `name`; addon.Font.Adopt renames it in place on
+    -- first read, which is why `name` is no longer declared here.
+    timerFont = addon.Font.New({ size = 11 }),
+    labelFont = addon.Font.New({ size = 11 }),
     color        = { 0, 0.118, 1 },       -- 0, 30, 255
     texture      = "Blizzard",
+    -- The container's fill: sits behind both bars and shows through the padding
+    -- gap between them. Opacity is a percentage, like every other one here, and
+    -- multiplies with the combat-state opacity below.
+    backdropColor   = { 0.04, 0.04, 0.06 },
+    backdropOpacity = 85,
     outline      = true,
     outlineMode  = "around",   -- "around" the pair, or "each" bar separately
     outlineColor = { 0, 0, 0 },
@@ -138,6 +144,13 @@ local DEFAULTS = {
 }
 
 addon.RegisterDefaults("swingTimer", DEFAULTS)
+
+-- Both blocks stored the face under `name` before core's Font.lua existed. The
+-- rename has to happen before the defaults are merged in, or the merge fills
+-- `font` with the shipped default and the user's choice is left orphaned under
+-- the old key.
+addon.Font.MigrateBlock(function(s) return s.swingTimer end, "timerFont", { font = "name" })
+addon.Font.MigrateBlock(function(s) return s.swingTimer end, "labelFont", { font = "name" })
 
 local function stSettings()
     return addon.db and addon.db.settings and addon.db.settings.swingTimer
@@ -267,46 +280,25 @@ local function applyAlpha()
     f:SetAlpha(math.max(0, math.min(100, pct)) / 100)
 end
 
--- Paints one string from its settings block and re-seats it, nudged by the
--- user's offset.
+-- Paints one string from its shared font block (core's Font.lua) and re-seats it.
 --
--- The string is pinned to the bar's whole inner rect and justified to one side,
--- rather than anchored by that side alone. An edge-anchored FontString is sized
--- to its own content, and a drop shadow is PART of that content — so pinning the
--- right edge of a shadowed string pushes the glyphs left by the shadow offset,
--- which looks like moving the shadow drags the text along with it. A fixed box
--- can't be pushed around by anything drawn inside it.
---
--- SetFont returns false when the client rejects a font file, and a FontString
--- with no valid font renders nothing at all — so a failure falls back rather
--- than leaving an invisible string behind.
-local function applyFontTo(fs, cfg, def, justify)
-    cfg = (type(cfg) == "table") and cfg or def
-    local size  = cfg.size or def.size
-    local flags = cfg.outline or def.outline
-    if flags == "NONE" then flags = "" end
-
-    local path = addon.FetchMedia("font", cfg.name or def.name)
-    if not path or fs:SetFont(path, size, flags) == false then
-        fs:SetFont(DEFAULT_FONT, size, flags)
-    end
-    fs:SetTextColor(1, 1, 1)
-
-    -- A shadow at no offset sits directly under the glyph and only muddies its
-    -- antialiased edges, so zero offset is taken to mean no shadow at all rather
-    -- than needing a separate toggle to say so.
-    local sc = cfg.shadowColor or def.shadowColor or { 0, 0, 0 }
-    local sx, sy = cfg.shadowX or 0, cfg.shadowY or 0
-    fs:SetShadowColor(sc[1] or 0, sc[2] or 0, sc[3] or 0,
-        (sx ~= 0 or sy ~= 0) and 1 or 0)
-    fs:SetShadowOffset(sx, sy)
-
-    local x, y = cfg.x or 0, cfg.y or 0
-    fs:ClearAllPoints()
-    fs:SetPoint("TOPLEFT",      LABEL_INSET + x, y)
-    fs:SetPoint("BOTTOMRIGHT", -LABEL_INSET + x, y)
-    fs:SetJustifyH(justify)
-    fs:SetJustifyV("MIDDLE")
+-- `fill` rather than a single point: the string is pinned to the bar's whole
+-- inner rect and justified to one side, rather than anchored by that side alone.
+-- An edge-anchored FontString is sized to its own content, and a drop shadow is
+-- PART of that content — so pinning the right edge of a shadowed string pushes
+-- the glyphs left by the shadow offset, which looks like moving the shadow drags
+-- the text along with it. A fixed box can't be pushed around by anything drawn
+-- inside it.
+local function applyFontTo(fs, key, justify)
+    local s   = stSettings()
+    local cfg = s and addon.Font.Adopt(s, key, { font = "name" }) or nil
+    addon.Font.ApplyAt(fs, cfg, DEFAULTS[key], {
+        fill = fs:GetParent(), inset = LABEL_INSET,
+        justifyH = justify, justifyV = "MIDDLE",
+    })
+    -- White unless the block's custom colour is ticked, which is the colour
+    -- this string has always been.
+    addon.Font.ApplyColor(fs, cfg, DEFAULTS[key], 1, 1, 1)
 end
 
 -- The countdown can be limited to combat. Edit Mode counts as shown, so the
@@ -351,6 +343,11 @@ local function applyLayout()
 
     f:SetBackdropBorderColor(oc[1] or 0, oc[2] or 0, oc[3] or 0, aroundOn and 1 or 0)
 
+    local bd  = s.backdropColor or DEFAULTS.backdropColor
+    local bdA = math.max(0, math.min(100,
+        s.backdropOpacity or DEFAULTS.backdropOpacity)) / 100
+    f:SetBackdropColor(bd[1] or 0, bd[2] or 0, bd[3] or 0, bdA)
+
     for _, bar in ipairs({ f.main, f.off }) do
         bar:SetSize(w, h)
         bar:SetBackdropBorderColor(oc[1] or 0, oc[2] or 0, oc[3] or 0, eachOn and 1 or 0)
@@ -359,8 +356,8 @@ local function applyLayout()
         bar.fill:SetPoint("BOTTOMRIGHT", -barPad,  barPad)
         bar.fill:SetStatusBarTexture(tex)
         bar.fill:SetStatusBarColor(c[1] or 1, c[2] or 1, c[3] or 1)
-        applyFontTo(bar.name,  s.labelFont, DEFAULTS.labelFont, "LEFT")
-        applyFontTo(bar.timer, s.timerFont, DEFAULTS.timerFont, "RIGHT")
+        applyFontTo(bar.name,  "labelFont", "LEFT")
+        applyFontTo(bar.timer, "timerFont", "RIGHT")
         bar.name:SetShown(isPreviewing() or s.showLabel ~= false)
         bar.timer:SetShown(timerOn)
         bar.spark:SetSize(s.sparkWidth or DEFAULTS.sparkWidth, math.max(1, h - barPad * 2))

@@ -67,14 +67,15 @@ addon.RegisterDefaults("itemRack", {
     buttonScale         = 1,
     hideOOC             = false,
     showHotKeys         = true,   -- draw each button's key in its corner
-    -- `hotkeyFont` false means the game's own number font; anything else is a
-    -- LibSharedMedia name. Offsets are from the button's top-right corner, and the
-    -- size matches the Action Bars module so the two read as one UI.
-    hotkeyFont          = false,
-    hotkeyFontSize      = 13,
-    hotkeyOffsetX       = -2,
-    hotkeyOffsetY       = -2,
-    hotkeyColor         = { 1, 1, 1 },
+    -- Keybind text, as core's shared font block (Font.lua): face, size, outline,
+    -- colour, offset and shadow, the same nine settings every other text in the
+    -- addon gets. The defaults reproduce what this drew before the block existed
+    -- — the game's own number font (Arial Narrow), outlined, white, tucked into
+    -- the button's top-right corner — and match the Action Bars module so the two
+    -- read as one UI.
+    hotkeyFont          = addon.Font.New({
+        font = "Arial Narrow", size = 13, x = -2, y = -2,
+    }),
     cooldownCount       = false,
     largeNumbers        = false,
     cooldown90          = false,
@@ -82,11 +83,12 @@ addon.RegisterDefaults("itemRack", {
     -- behaviour
     equipToggle         = false,  -- equipping an already-worn set unequips it
     equipOnSetPick      = false,  -- picking an item in the set editor equips it too
-    -- Opening the set editor off the set button, opt-in per mouse button. Left
-    -- only applies when there's no set to equip; right is dead while menuOnRight
-    -- has claimed that click for the set menu.
+    -- Opening the set editor off the set button, per mouse button. Left only
+    -- applies when there's no set to equip, so it stays opt-in; right has nothing
+    -- else to do with that click and is on by default (dead only while
+    -- menuOnRight has claimed it for the set menu).
     setEditorOnLeft     = false,
-    setEditorOnRight    = false,
+    setEditorOnRight    = true,
     notify              = true,   -- announce when a used item comes off cooldown
     notifyThirty        = false,
     notifyChatAlso      = false,
@@ -96,6 +98,29 @@ addon.RegisterDefaults("itemRack", {
     showSetInTooltip    = true,
     disableAltClick     = false,  -- let Alt+click fall through (self-cast) on buttons
 })
+
+-- The keybind text stored its face as a bare LSM name (or `false` for the
+-- game's own font) beside flat size/offset/colour keys. Folding those into the
+-- font block has to happen before the defaults are merged, since the merge would
+-- replace the saved name with a freshly defaulted block. See Font.lua.
+addon.RegisterMigration(function(prof)
+    local settings = prof.settings
+    local d = type(settings) == "table" and settings.itemRack or nil
+    if type(d) ~= "table" then return end
+
+    -- Read before Adopt, which clears the old key on its way past.
+    local hadColor = d.hotkeyColor ~= nil
+    local block = addon.Font.Adopt(d, "hotkeyFont", {
+        size  = "hotkeyFontSize", x = "hotkeyOffsetX", y = "hotkeyOffsetY",
+        color = "hotkeyColor",
+    })
+    -- The old colour setting always applied, so an upgraded profile starts with
+    -- the block's colour override ON. The block's own default is off, which is
+    -- the right answer only for a profile that never had the setting.
+    if hadColor and block and block.colorEnabled == nil then
+        block.colorEnabled = true
+    end
+end)
 
 -- Stand-in returned before core has picked an active profile at PLAYER_LOGIN.
 -- Every value reads as nil, i.e. "off", which is the right answer for a module
@@ -1041,6 +1066,26 @@ local function sanitiseSet(set)
             out.equip[slot] = id
         end
     end
+    -- Conditionals travel with the set: they're part of what it equips, and a set
+    -- that arrived without them would quietly stop swapping on the new character.
+    -- Keys are left as they are — an unknown one simply never holds (see
+    -- IR.ConditionalHolds), which is what a string someone else typed deserves.
+    for key, overrides in pairs(set.conditionals or {}) do
+        if type(key) == "string" and type(overrides) == "table" then
+            local clean
+            for slot, id in pairs(overrides) do
+                if type(slot) == "number" and (type(id) == "string" or type(id) == "number") then
+                    clean = clean or {}
+                    clean[slot] = id
+                end
+            end
+            if clean then
+                out.conditionals = out.conditionals or {}
+                out.conditionals[key] = clean
+            end
+        end
+    end
+
     -- An icon is a texture path on older clients and a bare file ID on newer ones.
     -- Accepting only strings quietly dropped every file-ID icon on the way out, so
     -- those sets arrived wearing the default gear icon. File IDs are the client's
@@ -1219,6 +1264,36 @@ local function slashHandler(arg)
         IR.Print("/deir toggle <set>[, other set]")
         IR.Print("/deir lock | unlock | reset | unstick")
     end
+end
+
+-- A function rather than a table: the aliases below are only claimed once every
+-- other addon has had its say, so what `/driev help` should print isn't known at
+-- load time. Read back off the globals so the listing can't drift from what was
+-- actually registered.
+if addon.RegisterSlash then
+    addon.RegisterSlash("Item Rack", function()
+        local aliases = {}
+        local i = 3   -- 1 and 2 are /deir and /drievitemrack, named in the entry itself
+        while _G["SLASH_DRIEVITEMRACK" .. i] do
+            aliases[#aliases + 1] = _G["SLASH_DRIEVITEMRACK" .. i]
+            i = i + 1
+        end
+
+        local open = "open the set editor"
+        if #aliases > 0 then
+            open = open .. " (also " .. table.concat(aliases, ", ") .. ")"
+        end
+
+        return {
+            { "/deir",                       open },
+            { "/deir equip <set>",           "equip a set by name" },
+            { "/deir toggle <set>",          "equip a set, or take it off if it's already on" },
+            { "/deir toggle <set>, <other>", "swap between two sets" },
+            { "/deir lock | unlock",         "lock or unlock the buttons in place" },
+            { "/deir reset",                 "put the buttons back where they started" },
+            { "/deir unstick",               "clear a set swap that got stuck mid-equip" },
+        }
+    end)
 end
 
 -- /deir and /drievitemrack name this addon, so they're ours outright.

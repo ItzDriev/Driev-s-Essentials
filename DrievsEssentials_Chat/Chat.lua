@@ -5,6 +5,11 @@ if not addon then return end
 -- takes over Blizzard's dock manager or draws panels behind the chat — each
 -- fought FloatingChatFrame and broke tab dragging.
 
+-- The sentinel the font picker offers for "leave whatever face this element
+-- already had". Not a LibSharedMedia name, so it can never collide with a real
+-- one — which is the whole reason it's spelled out rather than stored as nil.
+local FONT_DEFAULT_NAME = "Default"
+
 -- Defaults mirror the author's own long-running setup, so first enabling the
 -- module starts dialed-in rather than bare. `enabled` is the exception.
 addon.RegisterDefaults("chat", {
@@ -50,10 +55,30 @@ addon.RegisterDefaults("chat", {
     tabSelectedColor = { 1.00, 1.00, 1.00 },
     chatHistory      = true, -- Up/Down through what you've sent before
     historySize      = 30,
-    -- One font for message text, tab names and the DataText bars. false / "Default"
-    -- leaves Blizzard's; otherwise a LibSharedMedia name.
-    font             = "Expressway",
+    -- One font for message text, tab names and the DataText bars, as core's
+    -- shared font block (Font.lua). Two of its settings mean something slightly
+    -- different here, because these strings are not ours to place:
+    --   font "Default" — leave whatever face the element already had
+    --   size 0         — leave whatever size it already had, which is what keeps
+    --                    Blizzard's per-window chat font size working
+    -- The X/Y offsets and the text colour are left out of the panel entirely: a
+    -- chat frame lays out its own lines, and each line already carries its
+    -- channel's colour. See ChatUI.lua.
+    font = addon.Font.New({ font = "Expressway", size = 0, outline = "NONE" }),
 })
+
+-- The face used to be stored on its own as an LSM name, or as `false` for "leave
+-- Blizzard's". Folded into the block before the defaults are merged, since the
+-- merge starts a fresh table wherever a saved value isn't one — and an empty
+-- block would then be filled with the shipped face, quietly switching the font
+-- of anyone who had chosen not to have one. See Font.lua.
+addon.RegisterMigration(function(prof)
+    local settings = prof.settings
+    local d = type(settings) == "table" and settings.chat or nil
+    if type(d) ~= "table" then return end
+    if d.font == false then d.font = FONT_DEFAULT_NAME end
+    addon.Font.Adopt(d, "font")
+end)
 
 -- addon.db only exists once Core has applied the active profile at
 -- PLAYER_LOGIN, and some of what we hook runs earlier during UI load.
@@ -67,18 +92,24 @@ local function getData()
 end
 
 -- ── Font ─────────────────────────────────────────────────────────────────────
--- One font for chat text and tab names (DataTexts.lua reads the same setting).
--- Only the face changes; each element keeps its own size and flags, so
--- Blizzard's per-window chat font size is preserved.
-local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
+-- One font block for chat text and tab names (DataTexts.lua reads the same
+-- setting). Unlike everywhere else in the addon these strings belong to Blizzard,
+-- so two of the block's settings carry a "leave it alone" value: the face
+-- "Default", and size 0 — which is what keeps Blizzard's per-window chat font
+-- size working, since one value here would otherwise flatten all ten windows.
+local CHAT_FONT_DEFAULT = addon.Font.New({
+    font = FONT_DEFAULT_NAME, size = 0, outline = "NONE",
+})
+
+local function chatFont()
+    return addon.Font.Adopt(getData(), "font")
+end
 
 -- The chosen font's file path, or nil when set to Default (leave Blizzard's).
 local function chatFontPath()
-    local d = getData()
-    if d.font and d.font ~= "Default" and LSM then
-        return LSM:Fetch("font", d.font, true)   -- nil if the font isn't found
-    end
-    return nil
+    local name = addon.Font.Name(chatFont(), CHAT_FONT_DEFAULT)
+    if not name or name == FONT_DEFAULT_NAME then return nil end
+    return addon.FetchMedia("font", name)   -- nil if the font isn't installed
 end
 
 -- ChatFontNormal is the game's own chat font, so re-applying it when set to
@@ -88,21 +119,33 @@ local function defaultChatFace()
     return (ChatFontNormal and select(1, ChatFontNormal:GetFont())) or STANDARD_TEXT_FONT
 end
 
-local function applyChatFont(cf)
-    if not cf.GetFont then return end
-    local _, size, flags = cf:GetFont()
-    if not size then return end   -- font not initialised yet
-    cf:SetFont(chatFontPath() or defaultChatFace(), size, flags)
+-- The block's size, or the size the element already had where it is left at 0.
+local function chatFontSize(own)
+    local size = addon.Font.Size(chatFont(), CHAT_FONT_DEFAULT)
+    return (size and size > 0) and size or own
 end
+
+-- Face, size, flags and drop shadow, applied to one FontInstance — a chat frame,
+-- a tab label and a DataText segment are all one, so the callers differ only in
+-- what they have to go and find first. `ownFace` is what the "Default" face means
+-- for that element; chat's own strings answer for themselves through
+-- defaultChatFace, and DataTexts passes its segment font's.
+local function styleFontInstance(obj, ownFace)
+    if not (obj and obj.GetFont) then return end
+    local _, size = obj:GetFont()
+    if not size then return end   -- font not initialised yet
+    obj:SetFont(chatFontPath() or ownFace or defaultChatFace(),
+        chatFontSize(size), addon.Font.Flags(chatFont(), CHAT_FONT_DEFAULT))
+    addon.Font.ApplyShadow(obj, chatFont(), CHAT_FONT_DEFAULT)
+end
+
+local applyChatFont = styleFontInstance
 
 local function applyTabFont(cf)
     local name  = cf:GetName()
     local tab   = name and _G[name .. "Tab"]
     local label = tab and (tab.Text or _G[name .. "TabText"])
-    if not label then return end
-    local _, size, flags = label:GetFont()
-    if not size then return end
-    label:SetFont(chatFontPath() or defaultChatFace(), size, flags)
+    styleFontInstance(label)
 end
 
 local function eachChatFrame(fn)
@@ -1345,6 +1388,11 @@ end
 addon.Chat = {
     refresh     = refresh,
     getFontPath = chatFontPath,
+    -- Applies the shared chat font block to any FontInstance. DataTexts styles
+    -- its segments through this rather than reading the setting itself, so the
+    -- bars, the chat text and the tab names can't end up styled by two sets of
+    -- rules that drift apart.
+    styleText   = styleFontInstance,
     isEnabled   = isEnabled,
     eachFrame   = eachChatFrame,
     -- For windows that didn't exist at PLAYER_LOGIN — see hookFrame.

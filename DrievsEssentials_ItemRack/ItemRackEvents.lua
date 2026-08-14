@@ -242,7 +242,7 @@ end
 local function alreadyWearing(setname)
     local set = DB().sets[setname]
     if not set or not set.equip then return false end
-    for slot, wanted in pairs(IR.ResolveInterchangeable(set.equip)) do
+    for slot, wanted in pairs(IR.ResolveInterchangeable(IR.ResolveConditionals(set))) do
         if IR.GetID(slot) ~= wanted then return false end
     end
     return true

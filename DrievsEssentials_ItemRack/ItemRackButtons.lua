@@ -1010,28 +1010,36 @@ function IR.AbbreviateKey(key)
     return key
 end
 
--- Font, size, colour and position of a button's keybind text. Deliberately the
--- same treatment LibActionButton gives the action bars (the game's number font,
--- an explicit size, OUTLINE): the font object's own drop shadow is what made
--- this text look softer than theirs, and outline is what keeps small text crisp
--- against an icon.
-local HOTKEY_FLAGS = "OUTLINE"
+-- Font, size, colour and position of a button's keybind text, from the shared
+-- font block (core's Font.lua). The block's defaults reproduce the treatment
+-- LibActionButton gives the action bars (the game's number font, an explicit
+-- size, OUTLINE): the font object's own drop shadow is what made this text look
+-- softer than theirs, and outline is what keeps small text crisp against an icon.
+--
+-- The offsets are the block's, so the anchor itself is the bare corner.
+local HOTKEY_DEFAULT = addon.Font.New({
+    font = "Arial Narrow", size = 13, x = -2, y = -2,
+})
+local HOTKEY_LEGACY = {
+    size  = "hotkeyFontSize", x = "hotkeyOffsetX", y = "hotkeyOffsetY",
+    color = "hotkeyColor",
+}
 
 local function applyHotKeyStyle(btn)
     local d    = getData()
     local text = btn.irHotKey
 
-    local path = NumberFontNormalSmallGray:GetFont()
-    if d.hotkeyFont then
-        path = addon.FetchMedia("font", d.hotkeyFont) or path
-    end
-    if path then text:SetFont(path, d.hotkeyFontSize or 13, HOTKEY_FLAGS) end
-
-    local c = d.hotkeyColor
-    text:SetTextColor(c and c[1] or 1, c and c[2] or 1, c and c[3] or 1)
-    text:SetJustifyH("RIGHT")
-    text:ClearAllPoints()
-    text:SetPoint("TOPRIGHT", d.hotkeyOffsetX or -2, d.hotkeyOffsetY or -2)
+    -- Adopt upgrades a profile that stored the face as a bare LSM name (or as
+    -- `false`, meaning the game's own font) alongside flat size/offset/colour keys.
+    local cfg = addon.Font.Adopt(d, "hotkeyFont", HOTKEY_LEGACY)
+    addon.Font.ApplyAt(text, cfg, HOTKEY_DEFAULT, {
+        point = "TOPRIGHT", relativeTo = btn, relativePoint = "TOPRIGHT",
+        justifyH = "RIGHT",
+    })
+    -- The block's own colour, which is where the separate hotkeyColor setting
+    -- went: one font, one set of controls. White while it is unticked, which is
+    -- what hotkeyColor defaulted to.
+    addon.Font.ApplyColor(text, cfg, HOTKEY_DEFAULT, 1, 1, 1)
 end
 
 function IR.UpdateHotKeys()
@@ -1348,9 +1356,12 @@ function IR.ButtonPostClick(self, mouseButton, down)
         IR.RemoveButton(id)
 
     elseif id == SET_BTN then
-        -- Equipping the current set is all a plain click does. Opening the set editor
-        -- used to be the catch-all for every other click, so a stray right-click threw
-        -- the window open mid-fight. Now opt-in per mouse button, off by default.
+        -- Equipping the current set is all a left click does. Opening the set editor
+        -- used to be the catch-all for every OTHER click, which is how a click that
+        -- missed the left button threw the window open mid-fight. It's per mouse
+        -- button now: right click owns the editor (on by default — it has nothing
+        -- else to do, unless menuOnRight has taken it for the set menu), and left
+        -- click only offers it as an opt-in for when there's no set to equip.
         if mouseButton == "LeftButton" and DB().currentSet then
             if d.equipToggle then
                 IR.ToggleSet(DB().currentSet)

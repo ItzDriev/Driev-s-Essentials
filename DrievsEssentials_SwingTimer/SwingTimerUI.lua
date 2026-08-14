@@ -9,6 +9,7 @@ local W  = UI.widgets
 
 local applyBackdrop        = W.applyBackdrop
 local attachTooltip        = W.attachTooltip
+local buildFontOptions     = W.buildFontOptions
 local buildStepper         = W.buildStepper
 local createCheckbox       = W.createCheckbox
 local createColorSwatch    = W.createColorSwatch
@@ -87,20 +88,15 @@ local function stepperRow(parent, above, dy, text, opts)
 end
 
 -- ── Font sections ────────────────────────────────────────────────────────────
--- The timer and the hand labels are configured identically, so the block is
--- built once and stamped out per settings key.
-local FONT_OUTLINES = {
-    { value = "NONE",         label = "None" },
-    { value = "OUTLINE",      label = "Outline" },
-    { value = "THICKOUTLINE", label = "Thick outline" },
-}
+-- The timer and the hand labels are configured identically — and identically to
+-- every other font in the addon, so both are the shared block from
+-- UI.widgets.buildFontOptions rather than a set of controls of their own.
+local FONT_DEFAULT = addon.Font.New({ size = 11 })
 
-local FONT_DEFAULT = { name = "Friz Quadrata TT", size = 11, outline = "OUTLINE" }
-
+-- Renames the pre-block `name` key to `font` the first time each is read; see
+-- addon.Font.Adopt.
 local function fontData(key)
-    local d = stData()
-    d[key] = d[key] or {}
-    return d[key]
+    return addon.Font.Adopt(stData(), key, { font = "name" })
 end
 
 local function sectionHeader(panel, above, dy, text)
@@ -111,87 +107,21 @@ local function sectionHeader(panel, above, dy, text)
     return fs
 end
 
--- Returns the last row (to anchor whatever follows) and a refresh function the
+-- Returns the block (to anchor whatever follows) and a refresh function the
 -- panel's own refresh calls.
 local function fontSection(panel, above, title, key)
-    local header = sectionHeader(panel, above, -22, title)
-
-    local famRow = makeRow(panel, header, -12)
-    local famLbl = rowLabel(famRow, "Font:")
-    local famDD  = createScrollDropdown(famRow, 170,
-        function() return addon.MediaList("font", { fallback = FONT_DEFAULT.name }) end,
-        function(name)
-            fontData(key).name = name
-            apply()
-        end,
-        { preview = "font", tipTitle = "Font",
-          tipBody = "Any font registered with LibSharedMedia by this or another addon." })
-    famDD:SetPoint("LEFT", famLbl, "RIGHT", 10, 0)
-
-    local sizeRow = stepperRow(panel, famRow, -6, "Size:", {
-        min = 6, max = 40, step = 1,
-        get = function() return fontData(key).size or FONT_DEFAULT.size end,
-        set = function(v) fontData(key).size = v end,
+    local box = buildFontOptions(panel, {
+        title      = title,
+        defaults   = FONT_DEFAULT,
+        get        = function() return fontData(key) end,
+        onChange   = apply,
+        labelWidth = LABEL_W,
+        sizeMax    = 40,
     })
-
-    local outRow = makeRow(panel, sizeRow, -6)
-    local outLbl = rowLabel(outRow, "Outline:")
-    local outDD  = createDropdown(outRow, 170, FONT_OUTLINES,
-        function() return fontData(key).outline or FONT_DEFAULT.outline end,
-        function(v) fontData(key).outline = v end,
-        apply, "Outline", "Border drawn around each letter, to keep it readable "
-            .. "against a bright bar texture.")
-    outDD:SetPoint("LEFT", outLbl, "RIGHT", 10, 0)
-
-    local xRow = stepperRow(panel, outRow, -6, "X offset:", {
-        min = -200, max = 200, step = 1, valueWidth = 42,
-        get = function() return fontData(key).x or 0 end,
-        set = function(v) fontData(key).x = v end,
-    })
-    attachTooltip(xRow.stepper, "X offset",
-        "Nudges the text sideways from where it normally sits. Positive is right "
-            .. "for both strings.")
-
-    local yRow = stepperRow(panel, xRow, -6, "Y offset:", {
-        min = -200, max = 200, step = 1, valueWidth = 42,
-        get = function() return fontData(key).y or 0 end,
-        set = function(v) fontData(key).y = v end,
-    })
-
-    local shColorRow = colorRow(panel, yRow, -6, "Shadow color:",
-        function()
-            local c = fontData(key).shadowColor or { 0, 0, 0 }
-            return c[1], c[2], c[3]
-        end,
-        function(r, g, b) fontData(key).shadowColor = { r, g, b } end,
-        "Only visible once one of the shadow offsets below is non-zero — at no "
-            .. "offset the shadow sits directly behind the text and is drawn as "
-            .. "nothing at all.")
-
-    local shXRow = stepperRow(panel, shColorRow, -6, "Shadow X:", {
-        min = -10, max = 10, step = 1, valueWidth = 42,
-        get = function() return fontData(key).shadowX or 0 end,
-        set = function(v) fontData(key).shadowX = v end,
-    })
-
-    local shYRow = stepperRow(panel, shXRow, -6, "Shadow Y:", {
-        min = -10, max = 10, step = 1, valueWidth = 42,
-        get = function() return fontData(key).shadowY or 0 end,
-        set = function(v) fontData(key).shadowY = v end,
-    })
-
-    local function refresh()
-        famDD:setValue(fontData(key).name or FONT_DEFAULT.name)
-        outDD.Refresh()
-        sizeRow.stepper.Refresh()
-        xRow.stepper.Refresh()
-        yRow.stepper.Refresh()
-        shColorRow.swatch.Refresh()
-        shXRow.stepper.Refresh()
-        shYRow.stepper.Refresh()
-    end
-
-    return shYRow, refresh
+    -- The header the block draws sits above its own top edge, so the gap here is
+    -- measured to that rather than to the first row.
+    box:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -34)
+    return box, function() box:Refresh() end
 end
 
 -- ── General ──────────────────────────────────────────────────────────────────
@@ -324,10 +254,28 @@ local function buildGeneralPanel(parent)
           tipBody = "Any bar texture registered with LibSharedMedia by this or another addon." })
     texDropdown:SetPoint("LEFT", texLbl, "RIGHT", 10, 0)
 
+    local backdropColorRow = colorRow(panel, texRow, -8, "Backdrop color:",
+        function()
+            local c = stData().backdropColor or { 0.04, 0.04, 0.06 }
+            return c[1], c[2], c[3]
+        end,
+        function(r, g, b) stData().backdropColor = { r, g, b } end,
+        "The fill behind both bars, seen through the empty part of each bar and "
+            .. "through the padding gap between them.")
+
+    local backdropOpRow = stepperRow(panel, backdropColorRow, -6, "Backdrop opacity:", {
+        min = 0, max = 100, step = 5, suffix = "%",
+        get = function() return stData().backdropOpacity or 85 end,
+        set = function(v) stData().backdropOpacity = v end,
+    })
+    attachTooltip(backdropOpRow.stepper, "Backdrop opacity",
+        "0 leaves the empty part of each bar fully transparent. This stacks with "
+            .. "the combat opacity settings below rather than replacing them.")
+
     local outlineCB = createCheckbox(panel, "Show outline", 300,
         "A one-pixel border, drawn either around the pair or around each bar — "
             .. "see the setting below.")
-    outlineCB:SetPoint("TOPLEFT", texRow, "BOTTOMLEFT", 0, -10)
+    outlineCB:SetPoint("TOPLEFT", backdropOpRow, "BOTTOMLEFT", 0, -10)
     outlineCB.OnChange = function(_, checked)
         stData().outline = checked
         apply()
@@ -440,7 +388,9 @@ local function buildGeneralPanel(parent)
         sparkRow.stepper.Refresh()
         combatOpRow.stepper.Refresh()
         oocOpRow.stepper.Refresh()
+        backdropOpRow.stepper.Refresh()
         barColorRow.swatch.Refresh()
+        backdropColorRow.swatch.Refresh()
         outlineColorRow.swatch.Refresh()
         hsRow.swatch.Refresh()
         cleaveRow.swatch.Refresh()

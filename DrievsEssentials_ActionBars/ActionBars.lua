@@ -165,13 +165,23 @@ do
     -- false → whole button reddens when out of range (Blizzard default);
     -- true  → only the keybind text reddens.
     defaults.outOfRangeHotkey = false
-    -- Keybind-text font: false = game default; otherwise a LibSharedMedia name.
-    defaults.keybindFont    = false
-    defaults.keybindFontSize = 13   -- hotkey text size (LAB classic default)
-    defaults.keybindOffsetX  = -2   -- hotkey text offset from the button's TOPRIGHT
-    defaults.keybindOffsetY  = -4
+    -- Keybind text, as core's shared font block (Font.lua): face, size, outline,
+    -- offset from the button's TOPRIGHT, and drop shadow. The defaults are
+    -- LibActionButton's own classic treatment, so a profile that never touches
+    -- this looks exactly as it did.
+    defaults.keybindFont = addon.Font.New({
+        font = "Arial Narrow", size = 13, x = -2, y = -4,
+        color = { 0.75, 0.75, 0.75 },
+    })
     addon.RegisterDefaults("actionBars", defaults)
 end
+
+-- The face used to be a bare LSM name (or `false` for the game's own font)
+-- beside flat size/offset keys. Folded into the block before the defaults are
+-- merged, since the merge would otherwise replace the saved name outright.
+addon.Font.MigrateBlock(function(s) return s.actionBars end, "keybindFont", {
+    size = "keybindFontSize", x = "keybindOffsetX", y = "keybindOffsetY",
+})
 
 local function isReady()
     return addon.db ~= nil and addon.db.settings ~= nil
@@ -188,6 +198,23 @@ local function getData(key)
     local d = getGlobalData()
     if not d[key] then d[key] = barDefault(BAR_BY_KEY[key]) end
     return d[key]
+end
+
+-- ── Keybind text ─────────────────────────────────────────────────────────────
+-- The shared font block (core's Font.lua). LibActionButton owns the FontString
+-- and takes face/size/flags and a position through its config, so the block is
+-- unpacked into that shape in buildButtonConfig; the drop shadow is the one part
+-- LAB has no config for, and is applied to the string afterwards.
+local KEYBIND_FONT_DEFAULT = addon.Font.New({
+    font = "Arial Narrow", size = 13, x = -2, y = -4,
+    color = { 0.75, 0.75, 0.75 },
+})
+local KEYBIND_FONT_LEGACY = {
+    size = "keybindFontSize", x = "keybindOffsetX", y = "keybindOffsetY",
+}
+
+local function keybindFont()
+    return addon.Font.Adopt(getGlobalData(), "keybindFont", KEYBIND_FONT_LEGACY)
 end
 
 -- Fixed cell size (px) spacing the non-action bars. Their buttons keep their
@@ -332,17 +359,28 @@ local function buildButtonConfig(bar)
     -- and out-of-range colouring. LAB merges partial config against its defaults, so
     -- unspecified sub-keys stay default; with useGeneral off there's no `text` block.
     if d.useGeneral ~= false then
-        local g = getGlobalData()
-        local fontPath = (g.keybindFont and LSM and LSM:Fetch("font", g.keybindFont, true)) or false
+        local g   = getGlobalData()
+        local cf  = keybindFont()
+        local dx, dy = addon.Font.Offsets(cf, KEYBIND_FONT_DEFAULT)
         cfg.outOfRangeColoring = g.outOfRangeHotkey and "hotkey" or "button"
+        -- LibActionButton's own hotkey grey unless the block's colour override is
+        -- ticked, so a bar that never touches this looks exactly as it did.
+        local tr, tg, tb = addon.Font.ColorOr(cf, KEYBIND_FONT_DEFAULT, 0.75, 0.75, 0.75)
         cfg.text = {
             hotkey = {
-                font = { font = fontPath, size = g.keybindFontSize or 13 },
+                font = {
+                    font  = addon.Font.Path(cf, KEYBIND_FONT_DEFAULT),
+                    size  = addon.Font.Size(cf, KEYBIND_FONT_DEFAULT),
+                    flags = addon.Font.Flags(cf, KEYBIND_FONT_DEFAULT),
+                },
+                -- LAB paints the string itself (SetVertexColor), so the block's
+                -- colour goes through its config rather than being applied after.
+                color = { tr, tg, tb },
                 position = {
                     anchor    = "TOPRIGHT",
                     relAnchor = "TOPRIGHT",
-                    offsetX   = g.keybindOffsetX or -2,
-                    offsetY   = g.keybindOffsetY or -4,
+                    offsetX   = dx,
+                    offsetY   = dy,
                 },
             },
         }
@@ -364,11 +402,19 @@ end
 local function applyButtonConfig(bar)
     if bar.def.kind ~= "action" then return end
     local cfg = buildButtonConfig(bar)
+    -- Only where the bar opts into the General tab: with useGeneral off, cfg has
+    -- no text block and the hotkey string is LAB's to style, shadow included.
+    local shadowFrom = cfg.text and keybindFont() or nil
     for i, btn in ipairs(bar.buttons) do
         -- UpdateConfig deep-copies into the button's own config table, so reusing
         -- (and mutating) one table across the loop is safe — same as BT4.
         cfg.keyBoundTarget = blizzBindingFor(bar.def, i) or false
         btn:UpdateConfig(cfg)
+        -- After UpdateConfig, which re-runs LAB's own SetFont on the string. That
+        -- doesn't touch the shadow, so this only has to follow it, not fight it.
+        if shadowFrom then
+            addon.Font.ApplyShadow(btn.HotKey, shadowFrom, KEYBIND_FONT_DEFAULT)
+        end
     end
 end
 
@@ -1375,6 +1421,28 @@ local function toggleKeybindMode()
     return keybindActive
 end
 
+-- This module registers no command of its own, but keybind mode is reachable by
+-- one and it is the only part of the bars that is. The names are read back off
+-- the globals rather than hardcoded: LibKeyBound is shared, so the copy that
+-- registered them may not be ours, and listing a command nobody registered is
+-- worse than listing none.
+if addon.RegisterSlash then
+    addon.RegisterSlash("Action Bars", function()
+        if not KB then return nil end
+        local cmds = {}
+        local i = 1
+        while _G["SLASH_LibKeyBoundSlashCOMMAND" .. i] do
+            cmds[#cmds + 1] = _G["SLASH_LibKeyBoundSlashCOMMAND" .. i]
+            i = i + 1
+        end
+        if #cmds == 0 then return nil end
+        return {
+            { table.concat(cmds, " | "),
+              "toggle keybind mode — hover a button and press a key to bind it" },
+        }
+    end)
+end
+
 -- ── Drag-to-move modifier ────────────────────────────────────────────────────
 -- Buttons cast on key/mouse-down, so pressing to drag would fire the ability.
 -- LibActionButton's secure snippets solve this: with `buttonlock` set a button
@@ -1536,14 +1604,18 @@ addon.ActionBars = {
         applyDragModifier()
     end,
     -- Generic accessor for the addon-wide General-tab keybind settings
-    -- (keybindFont / keybindFontSize / keybindOffsetX / keybindOffsetY /
-    -- outOfRangeHotkey). Setting any of them re-pushes button config to every
-    -- action bar that opts in (combat-guarded).
+    -- (outOfRangeHotkey, and the useGeneral opt-in itself). Setting any of them
+    -- re-pushes button config to every action bar that opts in (combat-guarded).
     getGeneral = function(k) return getGlobalData()[k] end,
     setGeneral = function(k, v)
         getGlobalData()[k] = v
         applyActionButtonConfig()
     end,
+    -- The keybind-text font block, handed to the settings panel to edit in place
+    -- (which is why there is no setter — the panel writes into the live table and
+    -- calls applyKeybindFont).
+    getKeybindFont   = function() return isReady() and keybindFont() or {} end,
+    applyKeybindFont = function() applyActionButtonConfig() end,
 }
 
 -- Register the bars as movers in the addon's own Edit Mode (Modules list + the

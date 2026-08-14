@@ -16,6 +16,7 @@ local createDropdown       = W.createDropdown
 local createScrollDropdown = W.createScrollDropdown
 local createTab            = W.createTab
 local selectSubTab         = W.selectSubTab
+local makeSubTabPanel      = W.makeSubTabPanel
 local makeScrollPanel      = W.makeScrollPanel
 local attachScrollTrack    = W.attachScrollTrack
 local buildStepper         = W.buildStepper
@@ -309,12 +310,110 @@ local function newForm(panel, insetX, insetY)
     return form
 end
 
+-- ── Font blocks ──────────────────────────────────────────────────────────────
+-- Core's shared font block (Font.lua), laid out from this panel's own row
+-- primitives rather than through UI.widgets.buildFontOptions: every setting on
+-- these tabs has to be an individual `form:` call for the Search tab to index it
+-- (see the recorder at the bottom of this file). Same settings, in the same
+-- order, as every other font in the addon.
+--
+-- `get` returns the live block. `defaults` is what an unset field falls back to,
+-- and takes a function for the per-element blocks — theirs is the general block,
+-- so it changes as that one is edited.
+local FONT_TIP =
+    "Any font registered with LibSharedMedia by this or another addon."
+local SHADOW_TIP =
+    "Only visible once one of the shadow offsets below is non-zero — at no offset "
+    .. "the shadow sits directly behind the text and is drawn as nothing at all."
+
+local function fontLabels(prefix)
+    if not prefix then
+        return { "Font", "Font size", "Font outline",
+                 "Custom font color", "Font color",
+                 "Font X offset", "Font Y offset",
+                 "Font shadow color", "Font shadow X", "Font shadow Y" }
+    end
+    return { prefix .. " font",              prefix .. " font size",
+             prefix .. " font outline",      prefix .. " custom font color",
+             prefix .. " font color",        prefix .. " font X offset",
+             prefix .. " font Y offset",     prefix .. " font shadow color",
+             prefix .. " font shadow X",     prefix .. " font shadow Y" }
+end
+
+local function fontBlock(form, prefix, get, defaults, opts)
+    opts = opts or {}
+    local F = addon.Font
+    local L = fontLabels(prefix)
+    local function def()
+        return (type(defaults) == "function" and defaults()) or defaults or F.DEFAULTS
+    end
+
+    form:media(L[1], "font", F.DEFAULT_NAME,
+        function() return F.Name(get(), def()) end,
+        function(v) get().font = v end, nil, opts.fontDesc or FONT_TIP)
+    form:stepper(L[2], opts.sizeMin or F.SIZE_MIN, opts.sizeMax or 32,
+        function() return F.Size(get(), def()) end,
+        function(v) get().size = v end)
+    form:dropdown(L[3], F.OUTLINES,
+        function()
+            local v = get().outline or def().outline
+            return (v == nil or v == "") and "NONE" or v
+        end,
+        function(v) get().outline = v end, 140, opts.outlineDesc)
+    -- The colour is an override, so it is a tick box and a swatch: unticked, the
+    -- text keeps whatever colour it would have had. form:color hands the swatch a
+    -- live table to edit in place, so an unset colour is seeded from whatever
+    -- this block currently resolves to rather than from a literal — for a
+    -- per-element block that is the general one's.
+    if not opts.skipColor then
+        local colorDesc = opts.colorDesc
+            or "Paints the text this colour. Left unticked it keeps whatever "
+                .. "colour it already had."
+        form:check(L[4],
+            function() return F.ColorEnabled(get(), def()) end,
+            function(v) get().colorEnabled = v end, nil, colorDesc)
+        form:color(L[5], function()
+            local block = get()
+            if not block.color then
+                local r, g, b = F.Color(nil, def())
+                block.color = { r, g, b }
+            end
+            return block.color
+        end, colorDesc)
+    end
+    form:stepper(L[6], -F.OFFSET_RANGE, F.OFFSET_RANGE,
+        function() return (F.Offsets(get(), def())) end,
+        function(v) get().x = v end, "px", nil, opts.offsetDesc)
+    form:stepper(L[7], -F.OFFSET_RANGE, F.OFFSET_RANGE,
+        function() return select(2, F.Offsets(get(), def())) end,
+        function(v) get().y = v end, "px", nil, opts.offsetDesc)
+    form:color(L[8], function()
+        local block = get()
+        if not block.shadowColor then
+            local r, g, b = F.ShadowColor(nil, def())
+            block.shadowColor = { r, g, b }
+        end
+        return block.shadowColor
+    end, SHADOW_TIP)
+    form:stepper(L[9], -F.SHADOW_RANGE, F.SHADOW_RANGE,
+        function() return (F.ShadowOffsets(get(), def())) end,
+        function(v) get().shadowX = v end, "px")
+    form:stepper(L[10], -F.SHADOW_RANGE, F.SHADOW_RANGE,
+        function() return select(2, F.ShadowOffsets(get(), def())) end,
+        function(v) get().shadowY = v end, "px")
+end
+
 -- ── General ──────────────────────────────────────────────────────────────────
-local OUTLINE_OPTIONS = {
-    { value = "NONE",         label = "None"  },
-    { value = "OUTLINE",      label = "Thin"  },
-    { value = "THICKOUTLINE", label = "Thick" },
-}
+-- The general block, and the per-element ones that fall back to it. Adopt is
+-- what upgrades a profile written before these were blocks; it is a no-op once
+-- the login migration in NameplateData.lua has run.
+local function genFont()
+    return addon.Font.Adopt(gen(), "font", { size = "fontSize", outline = "fontOutline" })
+end
+
+local function elementFont(key, legacy)
+    return addon.Font.Adopt(gen(), key, legacy)
+end
 
 -- One picker rather than a stack of switches: the three are alternatives, so as
 -- checkboxes there was an order of precedence to learn and a combination that
@@ -368,40 +467,40 @@ local function generalContent(form)
     form:media("Cast bar texture", "statusbar", "Blizzard",
         function() return gen().castTexture end,
         function(v) gen().castTexture = v end)
-    form:media("Font", "font", "Friz Quadrata TT",
-        function() return gen().font end,
-        function(v) gen().font = v end)
-    form:stepper("Font size", 6, 24,
-        function() return gen().fontSize end,
-        function(v) gen().fontSize = v end)
-    form:dropdown("Font outline", OUTLINE_OPTIONS,
-        function() return gen().fontOutline or "OUTLINE" end,
-        function(v) gen().fontOutline = v end, 120)
+    local PLATE_COLOR_NOTE =
+        "Paints the text this colour. Left unticked it keeps whatever colour it "
+        .. "already had — and a class-coloured name keeps its class colour either "
+        .. "way, since that is decided per unit rather than here."
+    fontBlock(form, nil, genFont, nil, {
+        sizeMin = 6, sizeMax = 24,
+        colorDesc = PLATE_COLOR_NOTE,
+        offsetDesc = "Nudges every string on a plate that hasn't been given an offset of its own. Each unit type's own name and health-text nudges are added on top of this.",
+    })
 
-    form:header("Per-text fonts", "Each of these can use its own font instead of the one above. Size and outline still come from the general settings — this is the typeface only.")
-    -- Checkbox plus picker rather than a "same as general" entry in the font list:
+    form:header("Per-text fonts", "Each of these can be given a font of its own instead of the one above. Anything you leave alone still comes from the general settings, so a typeface on its own doesn't drag the size and outline with it.")
+    -- Checkbox plus block rather than a "same as general" entry in the font list:
     -- that list is LibSharedMedia's, every entry renders itself in the font it
     -- names, and a sentinel row would have nothing to render with.
     local PER_TEXT_FONT_NOTE =
-        "A picker with its box unticked is ignored, and keeps whatever you left it on for next time."
+        "A block with its box unticked is ignored, and keeps whatever you left it on for next time."
     form:check("Name uses its own font",
         function() return gen().nameFontEnabled end,
         function(v) gen().nameFontEnabled = v end, nil, PER_TEXT_FONT_NOTE)
-    form:media("Name font", "font", "Friz Quadrata TT",
-        function() return gen().nameFont end,
-        function(v) gen().nameFont = v end, nil, PER_TEXT_FONT_NOTE)
+    fontBlock(form, "Name", function() return elementFont("nameFont") end, genFont,
+        { sizeMin = 6, sizeMax = 24, fontDesc = PER_TEXT_FONT_NOTE,
+          colorDesc = PLATE_COLOR_NOTE })
     form:check("Health text uses its own font",
         function() return gen().healthFontEnabled end,
         function(v) gen().healthFontEnabled = v end, nil, PER_TEXT_FONT_NOTE)
-    form:media("Health text font", "font", "Friz Quadrata TT",
-        function() return gen().healthFont end,
-        function(v) gen().healthFont = v end, nil, PER_TEXT_FONT_NOTE)
+    fontBlock(form, "Health text", function() return elementFont("healthFont") end, genFont,
+        { sizeMin = 6, sizeMax = 24, fontDesc = PER_TEXT_FONT_NOTE,
+          colorDesc = PLATE_COLOR_NOTE })
     form:check("Level text uses its own font",
         function() return gen().levelFontEnabled end,
         function(v) gen().levelFontEnabled = v end, nil, PER_TEXT_FONT_NOTE)
-    form:media("Level font", "font", "Friz Quadrata TT",
-        function() return gen().levelFont end,
-        function(v) gen().levelFont = v end, nil, PER_TEXT_FONT_NOTE)
+    fontBlock(form, "Level", function() return elementFont("levelFont") end, genFont,
+        { sizeMin = 6, sizeMax = 24, fontDesc = PER_TEXT_FONT_NOTE,
+          colorDesc = PLATE_COLOR_NOTE })
     form:stepper("Border thickness", 0, 5,
         function() return gen().borderSize end,
         function(v) gen().borderSize = v end, "px")
@@ -444,16 +543,21 @@ local function generalContent(form)
         function() return gen().totFontEnabled end,
         function(v) gen().totFontEnabled = v end, nil,
         "A picker with its box unticked is ignored, and keeps whatever you left it on for next time.")
-    form:media("Target of target font", "font", "Friz Quadrata TT",
-        function() return gen().totFont end,
-        function(v) gen().totFont = v end)
-    form:stepper("Font size", 6, 24,
-        function() return gen().totSize end,
-        function(v) gen().totSize = v end)
-    form:dropdown("Font outline", OUTLINE_OPTIONS,
-        function() return gen().totOutline or "OUTLINE" end,
-        function(v) gen().totOutline = v end, 120,
-        "Its own, not the general one: this line sits over the world rather than on a coloured bar, so what it takes to stay readable is a different question.")
+    -- The tick box above governs the face alone, so this block is passed no
+    -- fallback of its own: everything but the typeface is this line's whether the
+    -- box is on or off.
+    fontBlock(form, "Target of target",
+        function()
+            return elementFont("totFont",
+                { size = "totSize", outline = "totOutline", x = "totX", y = "totY" })
+        end, genFont, {
+        sizeMin = 6, sizeMax = 32,
+        -- No colour row: "Colour by" below is this line's colour setting, and a
+        -- second one in the block would be two controls fighting over one string.
+        skipColor = true,
+        outlineDesc = "Its own, not the general one: this line sits over the world rather than on a coloured bar, so what it takes to stay readable is a different question.",
+        offsetDesc = "Nudges in screen directions rather than mirrored ones: +X is right on both sides. Applied to the corner the name hangs off rather than to the text, so it keeps growing the same way wherever you put it.",
+    })
     form:stepper("Opacity", 10, 100,
         function() return gen().totAlpha end,
         function(v) gen().totAlpha = v end, "%", 5,
@@ -461,12 +565,6 @@ local function generalContent(form)
     form:dropdown("Corner", TOT_ANCHORS,
         function() return gen().totAnchor or "bottomRight" end,
         function(v) gen().totAnchor = v end, 170)
-    form:stepper("Nudge X", -150, 150,
-        function() return gen().totX end,
-        function(v) gen().totX = v end, "px")
-    form:stepper("Nudge Y", -150, 150,
-        function() return gen().totY end,
-        function(v) gen().totY = v end, "px")
     form:dropdown("Colour by", TOT_COLOR_MODES,
         function() return gen().totColorMode or "class" end,
         function(v) gen().totColorMode = v end, 170,
@@ -544,6 +642,18 @@ local function generalContent(form)
     form:stepper("Vertical spacing", 50, 250,
         function() return gen().overlapV end,
         function(v) gen().overlapV = v end, "%", 5)
+    form:stepper("Click box padding X", 0, 100,
+        function() return gen().clickPadX end,
+        function(v) gen().clickPadX = v end, "px", 1,
+        "Slack added either side of the widest bar to make the invisible click box, so clicks just off the end of a bar still land. Screen pixels, not bar pixels — it stays the same physical size whatever your interface scale.")
+    form:stepper("Click box padding Y", 0, 100,
+        function() return gen().clickPadY end,
+        function(v) gen().clickPadY = v end, "px", 1,
+        "The same above and below the bar — but this one also sets how far apart stacked nameplates sit, because the game spaces them by the click box rather than by the bar you see. At the default it's most of the gap: lower it to stack plates tighter, and the point where the name stops being clickable is roughly where to stop.")
+    form:button("Show Clickpad Area for 10s", function()
+        local NP = addon.Nameplates
+        if NP and NP.ShowClickPadArea then NP.ShowClickPadArea() end
+    end, "Shades the padding on every nameplate on screen for ten seconds: cyan is the slack the two numbers above add, and the clear gap inside it is your health bar. The top and bottom bands are the ones that also set stacking distance. It keeps running with this window closed, which is the only way to judge it against real plates.", 200)
     form:check("Keep nameplates the same size at any distance",
         function() return gen().constantSize ~= false end,
         function(v) gen().constantSize = v end, nil,
@@ -552,7 +662,7 @@ local function generalContent(form)
         function() return gen().constantAlpha ~= false end,
         function(v) gen().constantAlpha = v end, nil,
         "The same again for fading. The game dims every plate that isn't your target — half opacity out of the box — and fades distant ones, and it does it underneath everything on this page, so mobs you're fighting still grey out the moment you target one of them even with the Fade settings turned off. This pins the game's own fading to 1, leaving the Fade settings here as the only thing dimming a plate. Unticking puts back the values you had before it was first ticked.")
-    form:note("The click area is the invisible box the game uses for targeting, separate from the bar you see. It's sized automatically to match the widest bar, so it follows your width, height and scale settings on its own.")
+    form:note("The click area is the invisible box the game uses for targeting, separate from the bar you see. It tracks the widest bar on its own, following your width, height and scale settings; the two padding numbers are the slack added around that. Padding Y is worth knowing about even if clicking is fine — the game stacks nameplates by this box, not by the bar, so it and Vertical spacing multiply together to make the gap you actually see.")
 end
 
 local function buildGeneralPanel(parent)
@@ -1346,7 +1456,69 @@ local AURA_TIMER_W  = 38
 local AURA_REMOVE_W = 20
 local AURA_NAME_MIN = 60
 
+-- The row of "put this on a special frame" boxes each whitelist entry carries
+-- under it. One line of them is shorter than the entry's own row: they are a
+-- footnote to it, and reading as one is what keeps a list of ten auras with
+-- three frames from reading as a list of forty things.
+local BAR_CHECK_H   = 17
+local BAR_CHECK_BOX = 14   -- createCheckbox's own square, which it doesn't expose
+local BAR_CHECK_GAP = 10
+
+-- A group heading inside a whitelist, and the gap above it that separates one
+-- section from the last. The gap is part of the heading's height rather than
+-- padding on the row before it, so the list stays a run of items whose heights
+-- add up — which is what the virtualised list walks.
+local GROUP_ROW_H = 20
+local GROUP_GAP   = 6
+
 local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
+
+-- ── Dragging an aura onto a group ────────────────────────────────────────────
+-- One ghost for the whole addon, not one per column: only one drag can be in
+-- flight, and it is what makes a drag legible — without something under the
+-- cursor, dragging is indistinguishable from a click that did nothing.
+--
+-- Built on first use. Most sessions never drag anything.
+local dragGhost
+local function auraDragGhost()
+    if dragGhost then return dragGhost end
+
+    local g = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    g:SetSize(200, 22)
+    -- Over the settings window, which is DIALOG: a ghost the window covers is
+    -- worse than no ghost.
+    g:SetFrameStrata("TOOLTIP")
+    applyBackdrop(g, 1, C.panelDark, C.red)
+    g:Hide()
+
+    g.icon = g:CreateTexture(nil, "ARTWORK")
+    g.icon:SetSize(16, 16)
+    g.icon:SetPoint("LEFT", 4, 0)
+    g.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    g.text = g:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    g.text:SetPoint("LEFT", g.icon, "RIGHT", 5, 0)
+    g.text:SetPoint("RIGHT", -6, 0)
+    g.text:SetJustifyH("LEFT")
+    g.text:SetWordWrap(false)
+    UI.tint(g.text, C.textWhite)
+
+    -- Follows the cursor here rather than in the column that owns the drag, so
+    -- the column has one job: say what a drop would mean. `tick` is set while a
+    -- drag is in flight and is what hit-tests and finishes it.
+    g:SetScript("OnUpdate", function(self)
+        local scale = UIParent:GetEffectiveScale()
+        local x, y = GetCursorPosition()
+        self:ClearAllPoints()
+        -- Below and right of the cursor, so the pointer stays on the row it is
+        -- over rather than on the thing it is carrying.
+        self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x / scale + 14, y / scale - 4)
+        if self.tick then self.tick() end
+    end)
+
+    dragGhost = g
+    return g
+end
 
 -- Short forms of the growth labels. The full ones spell out what each does,
 -- which is right on a full-width row and impossible in a half-column dropdown.
@@ -1417,6 +1589,52 @@ local function newAuraColumn(parent, label)
     return col
 end
 
+-- ── Number grid ──────────────────────────────────────────────────────────────
+-- Two steppers to a line at fixed x positions rather than packed left to right:
+-- the labels are different lengths, so packing would land the second stepper
+-- somewhere different on every line.
+--
+-- Shared by the appearance columns and the special frame editor, which lay out
+-- the same run of numbers in the same half-width space — and, being the same
+-- settings, would be a bug if they ever stopped looking alike.
+local STEP_COL2 = 134
+local STEP_LBL  = 42
+
+local function numberGrid(shell, refresh)
+    local g = {}
+
+    function g.line(above, gap)
+        local line = CreateFrame("Frame", nil, shell)
+        line:SetHeight(22)
+        line:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -(gap or 5))
+        line:SetPoint("RIGHT", shell, "RIGHT", 0, 0)
+        return line
+    end
+
+    function g.label(line, x, text)
+        local fs = line:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        fs:SetPoint("LEFT", x, 0)
+        fs:SetWidth(STEP_LBL); fs:SetJustifyH("LEFT")
+        fs:SetText(text)
+        UI.tint(fs, C.textGrey)
+        return fs
+    end
+
+    function g.stepper(line, x, text, min, max, get, set)
+        local fs = g.label(line, x, text)
+        local st = buildStepper(line, {
+            min = min, max = max, step = 1, valueWidth = 32, gap = 4,
+            get = function() return tonumber(get()) or min end,
+            set = function(v) set(v); apply() end,
+        })
+        st:SetPoint("LEFT", fs, "RIGHT", 2, 0)
+        refresh[#refresh + 1] = st.Refresh
+        return st
+    end
+
+    return g
+end
+
 -- ── Appearance column ────────────────────────────────────────────────────────
 -- What the row looks like and where it sits. Nothing here decides what shows up
 -- — that's the tracking page — which is why they're separate pages: this is a
@@ -1459,40 +1677,8 @@ local function buildAuraLookColumn(parent, unitKey, which, label)
     stackCB:SetPoint("LEFT", timerCB, "RIGHT", 4, 0)
 
     -- ── Numbers ──────────────────────────────────────────────────────────────
-    -- Two per line at fixed x positions rather than packed left to right: the labels
-    -- are different lengths, so packing would land the second stepper somewhere
-    -- different on every line.
-    local STEP_COL2 = 134
-    local STEP_LBL  = 42
-
-    local function newLine(above, gap)
-        local line = CreateFrame("Frame", nil, shell)
-        line:SetHeight(22)
-        line:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -(gap or 5))
-        line:SetPoint("RIGHT", shell, "RIGHT", 0, 0)
-        return line
-    end
-
-    local function addLabel(line, x, text)
-        local fs = line:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        fs:SetPoint("LEFT", x, 0)
-        fs:SetWidth(STEP_LBL); fs:SetJustifyH("LEFT")
-        fs:SetText(text)
-        UI.tint(fs, C.textGrey)
-        return fs
-    end
-
-    local function addStepper(line, x, text, min, max, get, set)
-        local fs = addLabel(line, x, text)
-        local st = buildStepper(line, {
-            min = min, max = max, step = 1, valueWidth = 32, gap = 4,
-            get = function() return tonumber(get()) or min end,
-            set = function(v) set(v); apply() end,
-        })
-        st:SetPoint("LEFT", fs, "RIGHT", 2, 0)
-        refresh[#refresh + 1] = st.Refresh
-        return st
-    end
+    local grid = numberGrid(shell, refresh)
+    local newLine, addLabel, addStepper = grid.line, grid.label, grid.stepper
 
     local sizeLine = newLine(mineCB, 8)
     addStepper(sizeLine, 0, "Size", 4, 64,
@@ -1544,6 +1730,423 @@ local function buildAuraLookColumn(parent, unitKey, which, label)
     return shell
 end
 
+-- ── Special buff frames ──────────────────────────────────────────────────────
+-- Extra strips of icons off the side of the plate, each holding whichever
+-- whitelist entries have been ticked onto it over on the tracking page. This is
+-- where the frames themselves are made and placed; what goes ON them is decided
+-- next to the auras, because that is where you are when you decide it.
+--
+-- Same two-column split as the other pages, but the halves are a list and an
+-- editor rather than buffs and debuffs: there are at most five frames and they
+-- carry a screenful of settings each, so a column apiece is the shape that fits.
+local SPECIAL_ANCHOR_OPTIONS = {}
+for _, e in ipairs(Data.SPECIAL_ANCHORS) do
+    SPECIAL_ANCHOR_OPTIONS[#SPECIAL_ANCHOR_OPTIONS + 1] = { value = e.value, label = e.short or e.label }
+end
+
+local SPECIAL_GROWTH_OPTIONS = {}
+for _, e in ipairs(Data.SPECIAL_GROWTHS) do
+    SPECIAL_GROWTH_OPTIONS[#SPECIAL_GROWTH_OPTIONS + 1] = { value = e.value, label = e.short or e.label }
+end
+
+local SPECIAL_ROW_H = 22
+
+local SPECIAL_INTRO = {
+    "A strip of icons of its own, off whichever side of the plate you point it at. Anything on the two whitelists can be moved onto one — tick it in the row of boxes under the aura, over on Aura Tracking.",
+    "What it is for is the aura the pull is actually about. Above the health bar an interrupt-me cast and a stacking bleed are two more 28px squares in a queue of eight; on a frame of their own at twice the size, off to the side, they are the thing you see.",
+    "An aura moved onto a frame stops being drawn above the health bar — it is shown there INSTEAD, not as well.",
+}
+
+-- The list half. Rows are built once for the whole cap and bound on refresh:
+-- five is few enough that a scrolling, recycling list would be more machinery
+-- than the thing it lists.
+local function buildSpecialList(shell, unitKey, opts)
+    local col  = newAuraColumn(shell, "Frames")
+    local list = col.shell
+    local rows = {}
+
+    local info = list:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    info:SetPoint("TOPLEFT", col.head, "BOTTOMLEFT", 2, -6)
+    info:SetPoint("RIGHT", list, "RIGHT", -2, 0)
+    info:SetJustifyH("LEFT")
+    info:SetWordWrap(false)
+
+    -- A heading is a FontString and takes no mouse, so the hover target is a
+    -- frame laid over it — the same trick the whitelist's row icons use.
+    local headHit = CreateFrame("Frame", nil, list)
+    headHit:SetAllPoints(col.head)
+    headHit:EnableMouse(true)
+    attachTooltip(headHit, "Special buff frames", SPECIAL_INTRO)
+
+    -- Same toolbar as the whitelist's, and for the same reason: the count above
+    -- doubles as the line a rejected add explains itself on.
+    local toolRow = CreateFrame("Frame", nil, list)
+    toolRow:SetHeight(20)
+    toolRow:SetPoint("TOPLEFT", info, "BOTTOMLEFT", -2, -4)
+    toolRow:SetPoint("RIGHT", list, "RIGHT", 0, 0)
+
+    local addBtn = flatButton(toolRow, "Add", 42, 20, "GameFontNormalSmall")
+    addBtn:SetPoint("RIGHT", 0, 0)
+
+    local addBox = textBox(toolRow, 100, 20, nil, Data.SPECIAL_NAME_MAX)
+    addBox:SetPoint("LEFT", 0, 0)
+    addBox:SetPoint("RIGHT", addBtn, "LEFT", -4, 0)
+    setPlaceholder(addBox, "name")
+
+    local function doAdd()
+        local bar, err = Data.AddSpecialBar(unitKey, addBox.box:GetText())
+        if not bar then
+            info:SetText(err or "")
+            UI.tint(info, C.red)
+            return
+        end
+        addBox.box:SetText("")
+        addBox.box:ClearFocus()
+        -- Straight onto the new one: you made it to set it up.
+        opts.select(bar.id)
+        apply()
+    end
+    addBtn:SetScript("OnClick", doAdd)
+    addBox.box:SetScript("OnEnterPressed", doAdd)
+
+    local listBox = CreateFrame("Frame", nil, list, "BackdropTemplate")
+    listBox:SetPoint("TOPLEFT", toolRow, "BOTTOMLEFT", 0, -8)
+    listBox:SetPoint("RIGHT", list, "RIGHT", 0, 0)
+    listBox:SetHeight(Data.SPECIAL_BAR_CAP * SPECIAL_ROW_H + 6)
+    applyBackdrop(listBox, 1, C.panelDeep, C.tabBorder)
+
+    local function createRow(index)
+        local row = CreateFrame("Button", nil, listBox)
+        row:SetHeight(SPECIAL_ROW_H)
+        row:SetPoint("TOPLEFT", listBox, "TOPLEFT", 3, -3 - (index - 1) * SPECIAL_ROW_H)
+        row:SetPoint("RIGHT", listBox, "RIGHT", -3, 0)
+        row:Hide()
+
+        local stripe = row:CreateTexture(nil, "BACKGROUND")
+        stripe:SetAllPoints(row)
+        stripe:SetTexture("Interface\\Buttons\\WHITE8x8")
+        row.stripe = stripe
+
+        -- Switches the frame off without taking it apart: the entries ticked onto
+        -- it stay where they are and simply stop being drawn, so a frame you keep
+        -- for one fight can be parked rather than rebuilt.
+        row.enable = createCheckbox(row, "", 16,
+            "Draws this frame. Unticked, what is on it stays on it and shows nowhere.")
+        row.enable:SetPoint("LEFT", 4, 0)
+        row.enable.OnChange = function(_, checked)
+            local bar = Data.SpecialBar(unitKey, row.id)
+            if not bar then return end
+            bar.enabled = checked
+            apply()
+        end
+
+        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.name:SetPoint("LEFT", 26, 0)
+        row.name:SetJustifyH("LEFT")
+        row.name:SetWordWrap(false)
+
+        row.count = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.count:SetJustifyH("RIGHT")
+        UI.tint(row.count, C.textDim)
+
+        row.remove = flatButton(row, "X", AURA_REMOVE_W, 16, "GameFontNormalSmall")
+        row.remove:SetPoint("RIGHT", -4, 0)
+        UI.tint(row.remove.label, C.red)
+        row.remove:SetScript("OnClick", function()
+            if not row.id then return end
+            Data.RemoveSpecialBar(unitKey, row.id)
+            -- Falls onto whatever is left rather than onto nothing: deleting the
+            -- third of three frames is not a decision to stop editing.
+            local first = Data.SpecialBars(unitKey)[1]
+            opts.select(first and first.id or nil)
+            apply()
+        end)
+
+        -- The count sits between the two, and the name truncates against it: a
+        -- long name is still recognisable clipped, and "how many are on it" is
+        -- one word that has to be readable in full.
+        row.count:SetPoint("RIGHT", row.remove, "LEFT", -6, 0)
+        row.name:SetPoint("RIGHT", row.count, "LEFT", -6, 0)
+
+        row:SetScript("OnClick", function() opts.select(row.id) end)
+
+        rows[index] = row
+        return row
+    end
+
+    -- One line, and only because this page cannot answer the question it raises:
+    -- everything here makes a frame and places it, and nothing here puts anything
+    -- ON one. Without a pointer, a frame reading "empty" has no next step.
+    local hint = list:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hint:SetPoint("TOPLEFT", listBox, "BOTTOMLEFT", 2, -10)
+    hint:SetPoint("RIGHT", list, "RIGHT", -2, 0)
+    hint:SetJustifyH("LEFT")
+    hint:SetText("Auras go on a frame from the Aura Tracking page: every entry there carries a box per frame, and ticking one moves that aura onto it.")
+    UI.tint(hint, C.textDim)
+
+    -- How many whitelist entries a frame is holding, across both lists. The one
+    -- number that says whether a frame is doing anything, and the reason a frame
+    -- drawing nothing on your plates is easy to explain.
+    local function boundCount(id)
+        local n = 0
+        for _, which in ipairs({ "buffs", "debuffs" }) do
+            for _, entry in pairs(Data.AuraList(unitKey, which) or {}) do
+                if entry.bar == id and entry.enabled ~= false then n = n + 1 end
+            end
+        end
+        return n
+    end
+
+    list.Refresh = function()
+        local bars = Data.SpecialBars(unitKey)
+        for i = 1, Data.SPECIAL_BAR_CAP do
+            local bar = bars[i]
+            local row = rows[i] or createRow(i)
+            if bar then
+                row.id = bar.id
+                row.enable:SetChecked(bar.enabled ~= false)
+                row.name:SetText(bar.name or "")
+                UI.tint(row.name, bar.enabled == false and C.textDim or C.textWhite)
+
+                local n = boundCount(bar.id)
+                row.count:SetText(n > 0 and tostring(n) or "empty")
+                -- The selected row is the one the editor beside this is editing,
+                -- so it is lit rather than merely striped.
+                local on = (bar.id == opts.selected())
+                row.stripe:SetVertexColor(0.14, 0.15, 0.23, on and 0.85 or ((i % 2 == 0) and 0.5 or 0.18))
+                row:Show()
+            else
+                row.id = nil
+                row:Hide()
+            end
+        end
+
+        info:SetText(#bars .. " of " .. Data.SPECIAL_BAR_CAP)
+        UI.tint(info, C.textDim)
+        addBox:SetShown(#bars < Data.SPECIAL_BAR_CAP)
+        addBtn:SetShown(#bars < Data.SPECIAL_BAR_CAP)
+    end
+
+    return list
+end
+
+-- The editor half: everything about the frame the list has selected. Same run of
+-- numbers as an appearance column, plus the two settings only a frame with a side
+-- of its own needs — where it hangs, and which way it runs from there.
+local function buildSpecialEditor(shell, unitKey, opts)
+    local col     = newAuraColumn(shell, "Frame settings")
+    local editor  = col.shell
+    local refresh = {}
+
+    -- Stands in for "nothing selected" so every accessor below can be written as
+    -- though there always is one. Written to only while the controls are hidden,
+    -- and thrown away unread.
+    local ORPHAN = { borderColor = {} }
+    local function b() return Data.SpecialBar(unitKey, opts.selected()) or ORPHAN end
+
+    local empty = editor:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    empty:SetPoint("TOPLEFT", col.head, "BOTTOMLEFT", 2, -8)
+    empty:SetPoint("RIGHT", editor, "RIGHT", -2, 0)
+    empty:SetJustifyH("LEFT")
+    empty:SetText("Pick a frame on the left, or add one.")
+    UI.tint(empty, C.textDim)
+
+    -- Everything that only means something with a frame selected, hidden as one
+    -- rather than a dozen times over.
+    local body = CreateFrame("Frame", nil, editor)
+    body:SetPoint("TOPLEFT", col.head, "BOTTOMLEFT", 0, -4)
+    body:SetPoint("BOTTOMRIGHT", editor, "BOTTOMRIGHT", 0, 0)
+
+    local nameLbl = body:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    nameLbl:SetPoint("TOPLEFT", 2, -4)
+    nameLbl:SetText("Name")
+    UI.tint(nameLbl, C.textGrey)
+
+    -- The name is what labels this frame's checkbox on every whitelist row, so
+    -- it is worth keeping short and worth keeping meaningful.
+    --
+    -- Committed against the frame the box was FILLED for rather than whatever is
+    -- selected when it commits: dropping focus is what commits an edit, and
+    -- switching frames is one of the things that drops it — so those two are the
+    -- same moment, and reading the selection here would write the name you typed
+    -- for one frame onto the next one.
+    -- Declared before it is built, because the commit handler below is part of
+    -- the call that builds it: written as `local nameBox = textBox(...)` the
+    -- closure captures the global, and the first rename indexes nil.
+    local nameBox
+    nameBox = textBox(body, 150, 20, function(text)
+        local id = nameBox.editingID
+        if not id then return end
+        -- Put back to what was actually stored: blank, over-long and already-taken
+        -- names are all refused, and a box still showing a refused name reads as
+        -- though it took.
+        nameBox.box:SetText(Data.RenameSpecialBar(unitKey, id, text) or "")
+        opts.renamed()
+        apply()
+    end, Data.SPECIAL_NAME_MAX)
+    nameBox:SetPoint("LEFT", nameLbl, "RIGHT", 8, 0)
+
+    local function toggle(text, width, get, set, desc)
+        local cb = createCheckbox(body, text, width, desc)
+        cb.OnChange = function(_, checked) set(checked); apply() end
+        refresh[#refresh + 1] = function() cb:SetChecked(get() and true or false) end
+        return cb
+    end
+
+    local mineCB = toggle("Only mine", 86,
+        function() return b().onlyMine end,
+        function(v) b().onlyMine = v end,
+        "Only auras you applied yourself.")
+    mineCB:SetPoint("TOPLEFT", nameLbl, "BOTTOMLEFT", 0, -8)
+
+    local timerCB = toggle("Timer", 64,
+        function() return b().showTimer ~= false end,
+        function(v) b().showTimer = v end)
+    timerCB:SetPoint("LEFT", mineCB, "RIGHT", 4, 0)
+
+    local stackCB = toggle("Stacks", 70,
+        function() return b().showStacks ~= false end,
+        function(v) b().showStacks = v end)
+    stackCB:SetPoint("LEFT", timerCB, "RIGHT", 4, 0)
+
+    local grid = numberGrid(body, refresh)
+
+    -- Placement first, since it's the pair that makes this a special frame
+    -- rather than a third row above the bar.
+    local anchorLine = grid.line(mineCB, 8)
+    grid.label(anchorLine, 0, "Side")
+    local anchorDD = createDropdown(anchorLine, 150, SPECIAL_ANCHOR_OPTIONS,
+        function() return Data.SpecialAnchor(b().anchor) end,
+        function(v) b().anchor = v end, apply, "Side",
+        "Which point on the health bar the frame hangs off. The corners are the placements that keep clear of both the aura rows above the bar and the cast bar below it.")
+    anchorDD:SetPoint("LEFT", anchorLine, "LEFT", STEP_LBL + 2, 0)
+    refresh[#refresh + 1] = anchorDD.Refresh
+
+    local growLine = grid.line(anchorLine)
+    grid.label(growLine, 0, "Grow")
+    local growDD = createDropdown(growLine, 150, SPECIAL_GROWTH_OPTIONS,
+        function() return Data.SpecialGrowth(b().growth) end,
+        function(v) b().growth = v end, apply, "Grow",
+        "Which way the icons run from that point, and so which way the frame is laid out: a row, or a column. A frame off the left or right of a plate has height to grow into and almost no width, so a column is usually what fits there.")
+    growDD:SetPoint("LEFT", growLine, "LEFT", STEP_LBL + 2, 0)
+    refresh[#refresh + 1] = growDD.Refresh
+
+    local sizeLine = grid.line(growLine)
+    grid.stepper(sizeLine, 0, "Size", 4, 80,
+        function() return b().size end, function(v) b().size = v end)
+    grid.stepper(sizeLine, STEP_COL2, "Gap", 0, 30,
+        function() return b().spacing end, function(v) b().spacing = v end)
+
+    local maxLine = grid.line(sizeLine)
+    grid.stepper(maxLine, 0, "Max", 1, 20,
+        function() return b().max end, function(v) b().max = v end)
+    grid.stepper(maxLine, STEP_COL2, "Text", 6, 24,
+        function() return b().timerSize end, function(v) b().timerSize = v end)
+
+    local nudgeLine = grid.line(maxLine)
+    grid.stepper(nudgeLine, 0, "Nudge X", -400, 400,
+        function() return b().x end, function(v) b().x = v end)
+    grid.stepper(nudgeLine, STEP_COL2, "Nudge Y", -400, 400,
+        function() return b().y end, function(v) b().y = v end)
+
+    local borderLine = grid.line(nudgeLine)
+    grid.stepper(borderLine, 0, "Border", 0, 4,
+        function() return b().borderSize end, function(v) b().borderSize = v end)
+    local swatchLbl = grid.label(borderLine, STEP_COL2, "Color")
+    local borderSwatch = colorSwatch(borderLine,
+        function()
+            local c = b().borderColor or {}
+            return c[1] or 0, c[2] or 0, c[3] or 0
+        end,
+        function(r, g, b2)
+            local t = b()
+            t.borderColor = t.borderColor or {}
+            t.borderColor[1], t.borderColor[2], t.borderColor[3] = r, g, b2
+        end,
+        apply, 18)
+    borderSwatch:SetPoint("LEFT", swatchLbl, "RIGHT", 2, 0)
+    refresh[#refresh + 1] = borderSwatch.Refresh
+
+    -- A commit re-enters this through opts.renamed(), and the pass already
+    -- running is about to sync everything anyway.
+    local syncing = false
+
+    editor.Refresh = function()
+        if syncing then return end
+        syncing = true
+
+        -- First, so a half-typed name lands on the frame it was typed for while
+        -- editingID still names it — see the box itself.
+        nameBox.box:ClearFocus()
+
+        local bar = Data.SpecialBar(unitKey, opts.selected())
+        col.head:SetText(bar and (bar.name or "Frame settings") or "Frame settings")
+        empty:SetShown(not bar)
+        body:SetShown(bar and true or false)
+
+        nameBox.editingID = bar and bar.id or nil
+        nameBox.box:SetText(bar and (bar.name or "") or "")
+        for _, fn in ipairs(refresh) do fn() end
+
+        syncing = false
+    end
+
+    return editor
+end
+
+local function buildSpecialPage(parent, def)
+    local shell = CreateFrame("Frame", nil, parent)
+    shell:SetAllPoints()
+    shell:Hide()
+
+    -- Which frame the editor is showing. Per unit type, since the two tabs have
+    -- their own frames — a remembered id from the other one names nothing here.
+    local selected
+
+    local listCol, editorCol
+    local function refreshBoth()
+        if listCol then listCol.Refresh() end
+        if editorCol then editorCol.Refresh() end
+    end
+
+    local opts = {
+        selected = function() return selected end,
+        select = function(id)
+            selected = id
+            refreshBoth()
+        end,
+        -- A rename changes the list's labels and this page's heading, but nothing
+        -- about what is selected.
+        renamed = refreshBoth,
+    }
+
+    listCol   = buildSpecialList(shell, def.key, opts)
+    editorCol = buildSpecialEditor(shell, def.key, opts)
+
+    listCol:SetPoint("TOPLEFT", shell, "TOPLEFT", 10, -8)
+    listCol:SetPoint("BOTTOMRIGHT", shell, "BOTTOM", -7, 8)
+    editorCol:SetPoint("TOPLEFT", listCol, "TOPRIGHT", 14, 0)
+    editorCol:SetPoint("BOTTOMRIGHT", shell, "BOTTOMRIGHT", -10, 8)
+
+    local divider = shell:CreateTexture(nil, "ARTWORK")
+    divider:SetTexture("Interface\\Buttons\\WHITE8x8")
+    UI.tintTexture(divider, C.tabBorder)
+    divider:SetPoint("TOPLEFT", listCol, "TOPRIGHT", 6, 0)
+    divider:SetPoint("BOTTOMRIGHT", listCol, "BOTTOMRIGHT", 7, 0)
+
+    shell:HookScript("OnShow", function()
+        -- Falls onto the first frame rather than nothing: there is one to start
+        -- with, and a page that opens on an empty editor looks broken.
+        if not Data.SpecialBar(def.key, selected) then
+            local first = Data.SpecialBars(def.key)[1]
+            selected = first and first.id or nil
+        end
+        refreshBoth()
+    end)
+
+    return shell
+end
+
 -- ── Tracking column ──────────────────────────────────────────────────────────
 -- The whitelist itself: what to add, what is on it, and what each entry matches.
 -- With the look settings on their own page this gets the whole column height
@@ -1556,8 +2159,87 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
     local filter  = ""
     local list    = {}
     local rows    = {}
+    -- The group headings, pooled separately from the aura rows: the two are
+    -- different shapes, and one pool of rows that could be either would be a row
+    -- carrying both sets of widgets with half of them hidden.
+    local heads   = {}
     local cols    = auraLayout(280)
-    local rebuild, syncRows
+    -- Forward-declared: the toolbar is built before the list it acts on, so its
+    -- buttons close over these names before there is anything to bind them to.
+    local rebuild, syncRows, scrollToGroup
+    -- The group whose name box should take focus on the next bind — set when one
+    -- is made, since which row it lands on isn't known until the list is rebuilt.
+    local focusGroup
+
+    -- ── Special frame checkboxes ─────────────────────────────────────────────
+    -- One box per special buff frame, under each entry: tick it and that aura is
+    -- drawn on that frame instead of in this row. One at a time, so ticking a
+    -- second box moves the aura rather than copying it — an aura is somewhere,
+    -- and "instead" is what the frames are for.
+    --
+    -- The boxes are laid out once per rebuild rather than once per row: every row
+    -- carries the same set, so the positions are worked out on a plan the rows
+    -- then apply. That plan is also what makes the list's fixed row height still
+    -- true — every row is the same amount taller, so the virtualised list can go
+    -- on multiplying an index by a constant.
+    local barPlan = {}
+    local rowH    = AURA_ROW_H
+    -- Bumped whenever the plan changes, so a recycled row knows to re-anchor its
+    -- boxes rather than trusting the ones it was left with.
+    local planStamp = 0
+
+    -- Names are the user's, so their width is measured rather than guessed.
+    local ruler = shell:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ruler:Hide()
+
+    -- Filled in place and compared as it goes, so a rebuild that finds the frames
+    -- exactly as it left them doesn't bump the stamp — and the rows on screen
+    -- don't re-anchor a set of boxes that hasn't moved. Every rebuild comes
+    -- through here (see the call site for why), so this is the common case.
+    local function planBarChecks()
+        local bars = Data.SpecialBars(unitKey)
+        -- Indented to the spell name, not to the row's edge: the boxes belong to
+        -- the aura above them, and lining them up under its name says so.
+        local left    = cols.name
+        local avail   = math.max(80, cols.width - left - 4)
+        local changed = false
+
+        local n, x, line = 0, 0, 0
+        for _, bar in ipairs(bars) do
+            local name = bar.name or ""
+            ruler:SetText(name)
+            local w = BAR_CHECK_BOX + 6 + math.ceil(ruler:GetStringWidth() or 0) + 2
+            -- Wrapped rather than clipped: five frames with names of any length
+            -- won't fit on one line of a half-width column, and a box whose label
+            -- is cut off names nothing.
+            if x > 0 and x + w > avail then
+                line = line + 1
+                x = 0
+            end
+
+            n = n + 1
+            local p = barPlan[n]
+            if not p then
+                p = {}
+                barPlan[n] = p
+            end
+            if p.id ~= bar.id or p.name ~= name or p.x ~= left + x
+               or p.line ~= line or p.w ~= w then
+                p.id, p.name, p.x, p.line, p.w = bar.id, name, left + x, line, w
+                changed = true
+            end
+
+            x = x + w + BAR_CHECK_GAP
+        end
+
+        for i = #barPlan, n + 1, -1 do
+            barPlan[i] = nil
+            changed = true
+        end
+
+        rowH = AURA_ROW_H + ((n > 0) and (line + 1) or 0) * BAR_CHECK_H
+        if changed then planStamp = planStamp + 1 end
+    end
 
     -- ── Whitelist toolbar ────────────────────────────────────────────────────
     -- The count on its own line above the boxes is what leaves room for search and
@@ -1587,8 +2269,20 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         rebuild()
     end)
 
+    -- Makes an empty heading and opens its name for typing, the way a new folder
+    -- works everywhere else. Deliberately NOT fed from the box beside it: that box
+    -- is where spells go, and a button next to it that sometimes takes what is in
+    -- it and sometimes doesn't is worse than one that never does.
+    local groupBtn = flatButton(toolRow, "Group", 50, 20, "GameFontNormalSmall")
+    groupBtn:SetPoint("RIGHT", 0, 0)
+    attachTooltip(groupBtn, "New group", {
+        "A heading inside this list, to drag auras under: \"Stuns\", \"CC\", \"Dispel these\".",
+        "Organisation only — nothing about a group reaches the nameplates. What is drawn, and how, is exactly the same whether a whitelist has headings or none.",
+        "Drag an aura by its row onto a heading to put it there, and onto Ungrouped to take it back out.",
+    })
+
     local addBtn = flatButton(toolRow, "Add", 42, 20, "GameFontNormalSmall")
-    addBtn:SetPoint("RIGHT", 0, 0)
+    addBtn:SetPoint("RIGHT", groupBtn, "LEFT", -4, 0)
 
     -- The flexible one of the three, so the width a wider window gives the
     -- column lands here: a spell name is longer than the search term that finds
@@ -1617,6 +2311,31 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
     -- the mouse is the slower way round when you're adding several.
     addBox.box:SetScript("OnEnterPressed", doAdd)
 
+    groupBtn:SetScript("OnClick", function()
+        local group, err = Data.AddAuraGroup(unitKey, which)
+        if not group then
+            info:SetText(err or "")
+            UI.tint(info, C.red)
+            return
+        end
+        -- A search would hide the new one the moment it appeared: it holds
+        -- nothing, and an empty group is what a search drops.
+        filter = ""
+        searchBox.box:SetText("")
+        rebuild()
+        -- A new group joins the END of the list, which on a long one is past the
+        -- bottom of the view — so its heading is never bound and the box nobody
+        -- can see is the one about to be told to take the typing.
+        scrollToGroup(group.id)
+
+        -- Asked for LAST, and this is the whole reason it is a flag rather than a
+        -- call: binding a heading drops focus (it is what commits a rename), and
+        -- the scroll above re-binds every row it moves. Anything that syncs the
+        -- rows after this point takes the focus away again.
+        focusGroup = group.id
+        syncRows()
+    end)
+
     -- ── Column header ────────────────────────────────────────────────────────
     local headerRow = CreateFrame("Frame", nil, shell, "BackdropTemplate")
     headerRow:SetPoint("TOPLEFT", toolRow, "BOTTOMLEFT", 0, -8)
@@ -1638,7 +2357,10 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
     -- spell and only the one you pasted, and at this width there is room for
     -- the answer or the ID but not both. The ID IS the answer when there is one.
     local hMatch = headerLabel("Matched on")
-    local hTimer = headerLabel("Timer(s)")
+    -- "Override" rather than "Timer" since the duration engine started filling
+    -- these in: a blank box is no longer a missing countdown, it is the normal
+    -- state. A number here is what you type when the worked-out one is wrong.
+    local hTimer = headerLabel("Override")
 
     -- ── Scrolling list ───────────────────────────────────────────────────────
     local listBox = CreateFrame("Frame", nil, shell, "BackdropTemplate")
@@ -1674,33 +2396,364 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         hTimer:SetPoint("LEFT", cols.timer + COL_INSET, 0); hTimer:SetWidth(AURA_TIMER_W + 12)
     end
 
+    -- ── Dragging into a group ────────────────────────────────────────────────
+    -- Per column, because a drag can only ever end in the list it started in:
+    -- the two columns are separate whitelists, and an entry has no meaning in
+    -- the other one.
+    --
+    -- Hit-tested per frame against the rows actually on screen rather than
+    -- resolved from cursor coordinates: the list scrolls, and its rows move
+    -- under the cursor while the drag is in flight. There are at most a couple
+    -- of dozen of them.
+    --
+    -- `dragKey` is the whitelist key being carried, `dropOn` the group it would
+    -- land in — an id, `false` for the ungrouped pile, or nil for nowhere.
+    local dragKey, dropOn
+
+    -- Every frame that answers for a group: the headings, and the aura rows
+    -- under them (dropping onto a row means the group that row is in, which is
+    -- what makes a whole section a target rather than one line of it).
+    local function dropTargetAt()
+        -- Inside the list first: a row that is only half scrolled into view still
+        -- has a full-height rect, and without this the top one would answer for
+        -- the cursor sitting on the table header above it.
+        if not scroll:IsMouseOver() then return nil end
+
+        for _, head in ipairs(heads) do
+            if head:IsShown() and head:IsMouseOver() then
+                return head.groupID or false
+            end
+        end
+        for _, row in ipairs(rows) do
+            if row:IsShown() and row:IsMouseOver() then
+                return row.groupID or false
+            end
+        end
+        return nil
+    end
+
+    -- The highlight is on the target, not on the cursor: what matters is which
+    -- section a drop lands in, and the section is what has to say so.
+    local function paintTargets()
+        for _, head in ipairs(heads) do
+            head.hit:SetShown(dragKey ~= nil and dropOn ~= nil
+                and (head.groupID or false) == dropOn)
+        end
+        for _, row in ipairs(rows) do
+            row.hit:SetShown(dragKey ~= nil and dropOn ~= nil
+                and (row.groupID or false) == dropOn)
+        end
+    end
+
+    local function endDrag(commit)
+        if not dragKey then return end
+        local key, target = dragKey, dropOn
+        dragKey, dropOn = nil, nil
+
+        local ghost = auraDragGhost()
+        ghost.tick, ghost.release = nil, nil
+        ghost:Hide()
+        paintTargets()
+
+        -- A drop on nothing puts it back where it was rather than un-grouping
+        -- it: letting go over the toolbar is how a drag is cancelled everywhere
+        -- else, and Ungrouped is a target you can aim at.
+        if not (commit and target ~= nil) then return end
+        Data.SetAuraGroup(unitKey, which, key, target or nil)
+        rebuild()
+    end
+
+    local function beginDrag(row)
+        if not row.key then return end
+        GameTooltip:Hide()
+
+        local ghost = auraDragGhost()
+        -- The ghost is shared by all four whitelists, so taking it means telling
+        -- whoever had it that their drag is over. Nothing should be able to get
+        -- here with another one in flight — a drag ends when the button comes up
+        -- and a new one needs it pressed again — but the columns cannot see each
+        -- other, and this is the one place the invariant can be stated.
+        if ghost.release then ghost.release() end
+        ghost.release = function() endDrag(false) end
+
+        dragKey = row.key
+        dropOn  = nil
+
+        ghost.icon:SetTexture(row.icon:GetTexture() or QUESTION_MARK)
+        ghost.text:SetText(row.nameText:GetText() or row.key)
+        ghost.tick = function()
+            -- The safety net, and the reason a lost OnDragStop can't strand the
+            -- ghost on screen: a drag is over when the button is up, whatever
+            -- the frame it started on has had happen to it since (recycled by a
+            -- scroll, hidden by a rebuild).
+            if not IsMouseButtonDown("LeftButton") then
+                endDrag(true)
+                return
+            end
+            local target = dropTargetAt()
+            if target ~= dropOn then
+                dropOn = target
+                paintTargets()
+            end
+        end
+        ghost:Show()
+        paintTargets()
+    end
+
+    -- Both scripts, because either can be the one that fires: OnDragStop is the
+    -- normal end, and the ghost's own tick covers the case where the row it
+    -- started on was recycled out from under the drag.
+    local function makeDraggable(frame, row)
+        frame:RegisterForDrag("LeftButton")
+        frame:SetScript("OnDragStart", function() beginDrag(row) end)
+        frame:SetScript("OnDragStop", function() endDrag(true) end)
+    end
+
+    -- ── Group headings ───────────────────────────────────────────────────────
+    -- A band across the list with a name you can type into, a count, a twisty
+    -- and a delete. The ungrouped pile gets the same band with a plain label
+    -- instead of the box and no delete — it isn't a group, it's what is left.
+    local function createHead(index)
+        local head = CreateFrame("Button", nil, content, "BackdropTemplate")
+        head:SetHeight(GROUP_ROW_H)
+        head:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)  -- re-anchored by syncRows
+        applyBackdrop(head, 1, C.panelDark, C.tabBorder)
+        head:Hide()
+
+        -- Over the backdrop and under the widgets: it says "this section" and
+        -- must not swallow the name box.
+        head.hit = head:CreateTexture(nil, "BORDER")
+        head.hit:SetAllPoints(head)
+        head.hit:SetTexture("Interface\\Buttons\\WHITE8x8")
+        head.hit:SetVertexColor(0.95, 0.15, 0.15, 0.30)
+        head.hit:Hide()
+
+        head.twisty = flatButton(head, "-", 16, 16, "GameFontNormalSmall")
+        head.twisty:SetPoint("LEFT", 3, 0)
+        head.twisty:SetScript("OnClick", function()
+            Data.ToggleAuraGroup(unitKey, which, head.groupID)
+            rebuild()
+        end)
+
+        -- What the ungrouped pile gets instead of the box: it has no name to
+        -- change, and a box you can type into that throws the typing away is
+        -- worse than a label.
+        head.label = head:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        head.label:SetPoint("LEFT", head.twisty, "RIGHT", 6, 0)
+        head.label:SetJustifyH("LEFT")
+        head.label:SetWordWrap(false)
+        UI.tint(head.label, C.textGrey)
+
+        -- Committed against the group the box was FILLED for: rows are recycled,
+        -- and dropping focus is both what commits an edit and what a rebind does.
+        head.nameBox = textBox(head, 120, 16, function(text)
+            local id = head.editingID
+            if not id then return end
+            head.nameBox.box:SetText(Data.RenameAuraGroup(unitKey, which, id, text) or "")
+        end, Data.AURA_GROUP_NAME_MAX)
+        head.nameBox:SetPoint("LEFT", head.twisty, "RIGHT", 4, 0)
+        head.nameBox.box:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
+
+        head.count = head:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        head.count:SetJustifyH("RIGHT")
+        UI.tint(head.count, C.textDim)
+
+        head.remove = flatButton(head, "X", AURA_REMOVE_W, 14, "GameFontNormalSmall")
+        head.remove:SetPoint("RIGHT", -3, 0)
+        UI.tint(head.remove.label, C.red)
+        head.remove:SetScript("OnClick", function()
+            if not head.groupID then return end
+            head.nameBox.box:ClearFocus()
+            Data.RemoveAuraGroup(unitKey, which, head.groupID)
+            rebuild()
+        end)
+
+        -- Both the box and the label stop short of the count, so a long group
+        -- name truncates rather than running under it.
+        head.count:SetPoint("RIGHT", head.remove, "LEFT", -6, 0)
+        head.nameBox:SetPoint("RIGHT", head.count, "LEFT", -6, 0)
+        head.label:SetPoint("RIGHT", head.count, "LEFT", -6, 0)
+
+        -- The whole band toggles, not just the twisty: it is a heading, and
+        -- collapsing is the only thing a heading does.
+        head:SetScript("OnClick", function()
+            Data.ToggleAuraGroup(unitKey, which, head.groupID)
+            rebuild()
+        end)
+
+        -- The only place the drag is explained to someone who has found the
+        -- headings but not worked out how to fill them.
+        head:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(self.groupID and "Group" or "Ungrouped", 1, 1, 1)
+            GameTooltip:AddLine("Drag an aura's row onto this band to put it here.",
+                0.75, 0.75, 0.75, true)
+            GameTooltip:AddLine("Click the band to fold it away. Nothing here changes what is drawn on a nameplate — groups are for finding things in a long list.",
+                0.75, 0.75, 0.75, true)
+            if not self.groupID then
+                GameTooltip:AddLine("This is everything that isn't in a group, and where a drag out of one lands.",
+                    0.75, 0.75, 0.75, true)
+            end
+            GameTooltip:Show()
+        end)
+        head:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        heads[index] = head
+        return head
+    end
+
+    local function bindHead(head, item)
+        -- Before groupID moves, for the same reason bindRow drops the timer box
+        -- first: dropping focus commits, and that edit belongs to the group the
+        -- row is still holding.
+        head.nameBox.box:ClearFocus()
+
+        head.groupID   = item.id
+        head.editingID = item.id
+
+        local real = item.id ~= nil
+        head.nameBox:SetShown(real)
+        head.remove:SetShown(real)
+        head.label:SetShown(not real)
+        if real then
+            head.nameBox.box:SetText(item.name or "")
+        else
+            head.label:SetText(item.name or "Ungrouped")
+        end
+
+        head.twisty.label:SetText(item.collapsed and "+" or "-")
+        head.count:SetText(item.count > 0 and tostring(item.count) or "empty")
+
+        -- Typing straight into a group you have just made, without going to find
+        -- the row it landed on.
+        if real and focusGroup == item.id then
+            focusGroup = nil
+            head.nameBox.box:SetFocus()
+        end
+    end
+
+    -- One of the boxes under an entry. Built here rather than in createRow
+    -- because how many there are is a setting, not a fact about the row.
+    local function newBarCheck(row, index)
+        local cb = createCheckbox(row, "", 16)
+        -- A footnote to the entry above it, and sized like one.
+        cb.text:SetFontObject("GameFontNormalSmall")
+
+        cb.OnChange = function(self, checked)
+            if not row.key then
+                self:SetChecked(false)
+                return
+            end
+            Data.SetAuraBar(unitKey, which, row.key, checked and self.barID or nil)
+            -- Ticking one unticks the rest: the aura is drawn in exactly one
+            -- place, so these are boxes behaving as a set of alternatives rather
+            -- than a set of flags. Untick the ticked one to bring it back to the
+            -- row above the health bar.
+            if checked then
+                for _, other in ipairs(row.barChecks) do
+                    if other ~= self then other:SetChecked(false) end
+                end
+            end
+            apply()
+        end
+
+        -- Written on hover rather than baked in: the label is the frame's name and
+        -- the user can rewrite it whenever they like.
+        cb:HookScript("OnEnter", function(self)
+            if not self.barName then return end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(self.barName, 1, 1, 1)
+            GameTooltip:AddLine("Draws this aura on the " .. self.barName
+                .. " frame instead of in the row above the health bar.",
+                0.75, 0.75, 0.75, true)
+            GameTooltip:Show()
+        end)
+        cb:HookScript("OnLeave", function() GameTooltip:Hide() end)
+
+        row.barChecks[index] = cb
+        return cb
+    end
+
     local function layoutRow(row)
-        if row.laidOutFor == cols.width then return end
+        if row.laidOutFor == cols.width and row.planStamp == planStamp then return end
         row.laidOutFor = cols.width
-        row:SetWidth(cols.width)
+        row.planStamp  = planStamp
+        row:SetSize(cols.width, rowH)
         for _, part in ipairs({ row.enable, row.icon, row.iconHit, row.nameText,
                                 row.matchText, row.timerBox, row.remove }) do
             part:ClearAllPoints()
         end
-        row.enable:SetPoint("LEFT", cols.enable, 0)
-        row.icon:SetPoint("LEFT", cols.icon, 0)
-        row.iconHit:SetPoint("LEFT", cols.icon, 0)
-        row.nameText:SetPoint("LEFT", cols.name, 0)
+        -- Against the entry's own band rather than the row, which is taller than
+        -- it whenever there are frames to tick — centring on the whole thing
+        -- would drop the entry into the middle of its own footnotes.
+        row.enable:SetPoint("LEFT", row.main, "LEFT", cols.enable, 0)
+        row.icon:SetPoint("LEFT", row.main, "LEFT", cols.icon, 0)
+        row.iconHit:SetPoint("LEFT", row.main, "LEFT", cols.icon, 0)
+        row.nameText:SetPoint("LEFT", row.main, "LEFT", cols.name, 0)
         row.nameText:SetWidth(cols.nameW)
-        row.matchText:SetPoint("LEFT", cols.match, 0)
-        row.timerBox:SetPoint("LEFT", cols.timer, 0)
-        row.remove:SetPoint("LEFT", cols.remove, 0)
+        row.matchText:SetPoint("LEFT", row.main, "LEFT", cols.match, 0)
+        row.timerBox:SetPoint("LEFT", row.main, "LEFT", cols.timer, 0)
+        row.remove:SetPoint("LEFT", row.main, "LEFT", cols.remove, 0)
+
+        for i, p in ipairs(barPlan) do
+            local cb = row.barChecks[i] or newBarCheck(row, i)
+            cb.barID   = p.id
+            cb.barName = p.name
+            cb.text:SetText(p.name)
+            cb:SetSize(p.w, BAR_CHECK_H - 1)
+            cb:ClearAllPoints()
+            cb:SetPoint("TOPLEFT", row, "TOPLEFT", p.x, -(AURA_ROW_H + p.line * BAR_CHECK_H))
+            cb:Show()
+        end
+        for i = #barPlan + 1, #row.barChecks do
+            row.barChecks[i]:Hide()
+            row.barChecks[i].barID, row.barChecks[i].barName = nil, nil
+        end
     end
 
     local function createRow(index)
         local row = CreateFrame("Frame", nil, content)
-        row:SetSize(cols.width, AURA_ROW_H)
+        row:SetSize(cols.width, rowH)
         row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)  -- re-anchored by syncRows
 
         local stripe = row:CreateTexture(nil, "BACKGROUND")
         stripe:SetAllPoints(row)
         stripe:SetTexture("Interface\\Buttons\\WHITE8x8")
         row.stripe = stripe
+
+        -- What says a row belongs to the heading above it. A bar down the left
+        -- edge rather than an indent: every column position on this row is
+        -- measured off the panel's live width, and shifting them all sideways to
+        -- say one thing about the row is a lot of arithmetic for a hint.
+        row.groupBar = row:CreateTexture(nil, "BACKGROUND", nil, 1)
+        row.groupBar:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+        row.groupBar:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+        row.groupBar:SetWidth(2)
+        row.groupBar:SetTexture("Interface\\Buttons\\WHITE8x8")
+        UI.tintTexture(row.groupBar, C.red)
+        row.groupBar:Hide()
+
+        -- The drop highlight, over the stripe and under everything else.
+        row.hit = row:CreateTexture(nil, "BORDER")
+        row.hit:SetAllPoints(row)
+        row.hit:SetTexture("Interface\\Buttons\\WHITE8x8")
+        row.hit:SetVertexColor(0.95, 0.15, 0.15, 0.20)
+        row.hit:Hide()
+
+        -- Mouse-enabled so the row can be picked up; its widgets are children and
+        -- still get the clicks that land on them.
+        row:EnableMouse(true)
+        makeDraggable(row, row)
+
+        -- The entry's own band, which is one AURA_ROW_H tall whatever the row
+        -- underneath it grows to. Everything about the entry hangs off this;
+        -- the special frame boxes hang off the row below it.
+        row.main = CreateFrame("Frame", nil, row)
+        row.main:SetHeight(AURA_ROW_H)
+        row.main:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+        row.main:SetPoint("TOPRIGHT", row, "TOPRIGHT", 0, 0)
+
+        row.barChecks = {}
 
         row.enable = createCheckbox(row, "", 16)
         row.enable.OnChange = function(_, checked)
@@ -1721,6 +2774,10 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         row.iconHit = CreateFrame("Frame", nil, row)
         row.iconHit:SetSize(AURA_ICON_W, AURA_ICON_W)
         row.iconHit:EnableMouse(true)
+        -- The icon is the obvious thing to grab, and it is the one part of the
+        -- row that has a frame of its own over it — without this, a drag started
+        -- on the picture is a drag that doesn't happen.
+        makeDraggable(row.iconHit, row)
         row.iconHit:SetScript("OnEnter", function(self)
             local entry = row.entry
             if not entry then return end
@@ -1765,9 +2822,10 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         row.matchText:SetWidth(AURA_MATCH_W); row.matchText:SetJustifyH("LEFT")
         UI.tint(row.matchText, C.textGrey)
 
-        -- Only ever read for auras the engine had to work out from events, which
-        -- is why it's an optional box and not a stepper: for everything else the
-        -- game supplies the real duration and this is left blank.
+        -- An override, and empty for almost every entry: the duration engine
+        -- works a countdown out for anything in its 1.12 tables, and a real
+        -- aura off the unit carries its own. This is the way to force a number
+        -- onto the handful neither of them can answer for.
         row.timerBox = textBox(row, AURA_TIMER_W, 18, function(text)
             if not row.key then return end
             local secs = Data.SetAuraDuration(unitKey, which, row.key, text)
@@ -1789,7 +2847,7 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         return row
     end
 
-    local function bindRow(row, item, dataIndex)
+    local function bindRow(row, item, stripeIndex)
         -- Before row.key moves, not after. Rows are recycled as you scroll, and
         -- dropping focus is what commits the timer box — so this has to land on
         -- the entry that was being edited, not on the one taking its place.
@@ -1798,7 +2856,12 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
 
         row.key   = item.key
         row.entry = item.entry
-        row.stripe:SetVertexColor(0.14, 0.15, 0.23, (dataIndex % 2 == 0) and 0.55 or 0.20)
+        -- What a drop on this row would mean: the group it is already in. Kept on
+        -- the row so the hit test is one field read per frame, and so a row that
+        -- has scrolled out of the data still answers for what it last showed.
+        row.groupID = item.group
+        row.groupBar:SetShown(item.group ~= nil)
+        row.stripe:SetVertexColor(0.14, 0.15, 0.23, (stripeIndex % 2 == 0) and 0.55 or 0.20)
         row.enable:SetChecked(item.entry.enabled ~= false)
 
         local name, icon = Data.AuraDisplay(item.entry)
@@ -1806,35 +2869,96 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         row.nameText:SetText(name ~= "" and name or item.key)
         row.matchText:SetText(item.entry.id and tostring(item.entry.id) or "Name")
         row.timerBox.box:SetText(item.entry.duration and tostring(item.entry.duration) or "")
+
+        -- After layoutRow, which is what has built and labelled these.
+        for i, p in ipairs(barPlan) do
+            local cb = row.barChecks[i]
+            if cb then cb:SetChecked(item.entry.bar == p.id) end
+        end
+    end
+
+    -- Brings a heading into view, for the one case that needs it: a group just
+    -- made, which joins the end of a list that may be longer than the window.
+    scrollToGroup = function(id)
+        for _, item in ipairs(list) do
+            if item.kind == "group" and item.id == id then
+                scroll:SetVerticalScroll(math.max(0,
+                    math.min(item.y, scroll:GetVerticalScrollRange() or 0)))
+                return
+            end
+        end
+    end
+
+    -- The first item whose bottom edge is past the top of the view. Binary
+    -- search rather than a division, because the items are no longer all one
+    -- height: a heading is shorter than an entry, and an entry is as tall as the
+    -- special frame boxes under it make it.
+    local function firstVisible(offset)
+        local lo, hi, found = 1, #list, #list + 1
+        while lo <= hi do
+            local mid = math.floor((lo + hi) / 2)
+            local item = list[mid]
+            if item.y + item.h > offset then
+                found = mid
+                hi = mid - 1
+            else
+                lo = mid + 1
+            end
+        end
+        return found
     end
 
     syncRows = function()
-        local offset  = scroll:GetVerticalScroll() or 0
-        local first   = math.floor(offset / AURA_ROW_H)
-        local visible = math.ceil((scroll:GetHeight() or 0) / AURA_ROW_H) + 2
+        local offset = scroll:GetVerticalScroll() or 0
+        -- One row of slack past the bottom edge, so a partly-scrolled row is
+        -- bound rather than blank.
+        local last   = offset + (scroll:GetHeight() or 0) + 1
 
-        for i = 1, visible do
-            local row = rows[i] or createRow(i)
-            local dataIndex = first + i
-            local item = list[dataIndex]
-            if item then
-                row:ClearAllPoints()
-                row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -((dataIndex - 1) * AURA_ROW_H))
-                bindRow(row, item, dataIndex)
-                row:Show()
+        local nRows, nHeads = 0, 0
+        local i = firstVisible(offset)
+        while i <= #list do
+            local item = list[i]
+            if item.y >= last then break end
+
+            if item.kind == "group" then
+                nHeads = nHeads + 1
+                local head = heads[nHeads] or createHead(nHeads)
+                bindHead(head, item)
+                head:ClearAllPoints()
+                -- The gap belongs to the heading's own height, so the band is
+                -- drawn below it and the section above keeps its breathing room.
+                head:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -(item.y + GROUP_GAP))
+                head:SetPoint("RIGHT", content, "RIGHT", 0, 0)
+                head:Show()
             else
-                -- Hidden before it's unbound, for the same reason bindRow drops
-                -- focus first: hiding the row commits whatever was being typed
-                -- into its timer box, and that edit belongs to the entry the row
-                -- is still holding.
-                row:Hide()
-                row.key, row.entry = nil, nil
+                nRows = nRows + 1
+                local row = rows[nRows] or createRow(nRows)
+                row:ClearAllPoints()
+                row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -item.y)
+                -- The stripe is the item's own, not the pooled row's: banding by
+                -- which recycled frame happens to be showing it would repaint
+                -- every row as the list scrolls.
+                bindRow(row, item, item.stripe or 1)
+                row:Show()
             end
+            i = i + 1
         end
-        for i = visible + 1, #rows do
-            rows[i]:Hide()
-            rows[i].key, rows[i].entry = nil, nil
+
+        for j = nRows + 1, #rows do
+            -- Hidden before it's unbound, for the same reason bindRow drops focus
+            -- first: hiding the row commits whatever was being typed into its
+            -- timer box, and that edit belongs to the entry the row is still
+            -- holding.
+            rows[j]:Hide()
+            rows[j].key, rows[j].entry, rows[j].groupID = nil, nil, nil
         end
+        for j = nHeads + 1, #heads do
+            heads[j]:Hide()
+            heads[j].groupID, heads[j].editingID = nil, nil
+        end
+
+        -- A drag in flight has just had the rows move under it.
+        if dragKey then paintTargets() end
     end
 
     rebuild = function()
@@ -1845,19 +2969,50 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
             content:SetWidth(usable)
         end
 
-        list = Data.SortedAuras(unitKey, which, filter)
-        content:SetHeight(math.max(#list * AURA_ROW_H, 1))
+        -- Re-planned on every rebuild, not only on a width change: frames are
+        -- added, renamed and deleted on a page of their own, and coming back
+        -- here is how you find out. It costs one text measurement per frame.
+        planBarChecks()
+
+        list = Data.GroupedAuras(unitKey, which, filter)
+
+        -- Where each item sits and how tall it is, worked out once here so
+        -- scrolling is a lookup rather than a sum. Entries alone means no
+        -- headings at all, and the list is exactly what it was before groups.
+        local y, drawn, headings, held = 0, 0, 0, 0
+        for _, item in ipairs(list) do
+            item.y = y
+            item.h = (item.kind == "group") and (GROUP_ROW_H + GROUP_GAP) or rowH
+            if item.kind == "group" then
+                headings = headings + 1
+                held = held + item.count
+            else
+                drawn = drawn + 1
+                item.stripe = drawn
+            end
+            y = y + item.h
+        end
+        content:SetHeight(math.max(y, 1))
+
+        -- What the count line is about is how much of the list you are looking at,
+        -- which is a question about the SEARCH and not about which sections happen
+        -- to be folded away. So a collapsed group's rows still count — they are
+        -- matches, they are just not on screen — and with headings present that
+        -- number is the headings' own counts rather than the rows drawn.
+        local matched = (headings > 0) and held or drawn
 
         local total = 0
         for _ in pairs(Data.AuraList(unitKey, which) or {}) do total = total + 1 end
-        info:SetText(#list == total
+        info:SetText(matched == total
             and (total .. " tracked")
-            or (#list .. " of " .. total))
+            or (matched .. " of " .. total))
         UI.tint(info, C.textDim)
 
         emptyText:SetText(total == 0
             and "Nothing tracked yet."
             or "Nothing matches that.")
+        -- On the list being empty outright: with headings there is always
+        -- something drawn, and each says for itself that it holds nothing.
         emptyText:SetShown(#list == 0)
         syncRows()
         updateTrack()
@@ -1884,6 +3039,352 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
     end
 
     shell.Refresh = rebuild
+    return shell
+end
+
+-- ── Library ──────────────────────────────────────────────────────────────────
+-- Everything the duration library knows about, browsable, with the same two Add
+-- buttons the Seen page carries. The difference between the two pages is where
+-- the rows come from: this one is the 1.12 spell tables, so it is complete from
+-- the first login and does not need you to have met anything.
+--
+-- Duration is the column the Seen page cannot offer at all, and it is usually
+-- the reason to come here — knowing a debuff runs 18s is what tells you whether
+-- it is worth a slot on a nameplate.
+local LIB_ROW_H  = 22
+local LIB_ICON_W = 18
+local LIB_BTN_W  = 118
+local LIB_DUR_W  = 54
+local LIB_ID_W   = 60
+local LIB_TYPE_W = 92
+local LIB_GAP    = 10
+
+local function buildLibraryPanel(parent)
+    local shell = CreateFrame("Frame", nil, parent)
+    shell:SetAllPoints()
+    shell:Hide()
+
+    local kind    = "debuffs"
+    local filter  = ""
+    local list, total = {}, 0
+    local rows    = {}
+    local cols    = {}
+    local rebuild, syncRows
+
+    -- ── Kind selector ────────────────────────────────────────────────────────
+    local bar = CreateFrame("Frame", nil, shell)
+    bar:SetHeight(22)
+    bar:SetPoint("TOPLEFT", 10, -8)
+    bar:SetPoint("RIGHT", shell, "RIGHT", -10, 0)
+
+    local kindTabs = {}
+
+    local function selectKind(key)
+        kind = key
+        for k, tab in pairs(kindTabs) do
+            local on = (k == key)
+            tab.active = on
+            tab:SetBackdropColor(unpack(on and C.tabActive or C.tabIdle))
+            tab:SetBackdropBorderColor(unpack(on and C.tabActiveBdr or C.tabBorder))
+            tab.text:SetTextColor(unpack(on and C.textWhite or C.textGrey))
+        end
+        rebuild()
+    end
+
+    local prev
+    for _, def in ipairs(Data.LIBRARY_KINDS) do
+        local tab = createTab(bar, def.label, 76)
+        tab:SetHeight(20)
+        tab.text:SetFontObject("GameFontNormalSmall")
+        if prev then tab:SetPoint("LEFT", prev, "RIGHT", 4, 0) else tab:SetPoint("LEFT", 0, 0) end
+        tab:SetScript("OnClick", function() selectKind(def.key) end)
+        kindTabs[def.key] = tab
+        prev = tab
+    end
+
+    local searchBox = textBox(bar, 150, 20, nil, 40)
+    searchBox:SetPoint("LEFT", prev, "RIGHT", 14, 0)
+    setPlaceholder(searchBox, "name, ID or type")
+    attachTooltip(searchBox, "Search", {
+        "Matches the spell's name, its ID, and any of the tags in the Type column — so \"cc\" lists every hard crowd control at once, and \"stun\" narrows it to the stuns.",
+        "Tags: CC covers Stun, Root, Fear, Incap, Sleep, Charm, Banish and Horror. Silence, Disarm and Slow are searchable on their own but are deliberately NOT under CC — they take one option away from the target rather than all of them.",
+        "Dispel schools are here too: Magic, Curse, Poison and Disease.",
+        "Creature abilities carry far fewer tags. The 1.12 tables record nothing but a duration for those, so only the ones sharing a diminishing returns bracket with a player spell are labelled.",
+    })
+    searchBox.box:SetScript("OnTextChanged", function(self)
+        filter = self:GetText() or ""
+        rebuild()
+    end)
+
+    local countText = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    countText:SetPoint("LEFT", searchBox, "RIGHT", 12, 0)
+    countText:SetPoint("RIGHT", bar, "RIGHT", 0, 0)
+    countText:SetJustifyH("LEFT")
+    countText:SetWordWrap(false)
+    UI.tint(countText, C.textDim)
+
+    -- ── Column header ────────────────────────────────────────────────────────
+    local headerRow = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+    headerRow:SetPoint("TOPLEFT", bar, "BOTTOMLEFT", -4, -8)
+    headerRow:SetPoint("RIGHT", shell, "RIGHT", -6, 0)
+    headerRow:SetHeight(HEADER_H)
+    applyBackdrop(headerRow, 1, C.panelDark, C.tabBorder)
+
+    local function headerLabel(text)
+        local fs = headerRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        fs:SetJustifyH("LEFT")
+        fs:SetText(text)
+        UI.tint(fs, C.textWhite)
+        return fs
+    end
+    local hSpell = headerLabel("Spell")
+    local hType  = headerLabel("Type")
+    local hID    = headerLabel("ID")
+    local hDur   = headerLabel("Duration")
+
+    -- ── Scrolling list ───────────────────────────────────────────────────────
+    local listBox = CreateFrame("Frame", nil, shell, "BackdropTemplate")
+    listBox:SetPoint("TOPLEFT", headerRow, "BOTTOMLEFT", 0, -2)
+    listBox:SetPoint("BOTTOMRIGHT", shell, "BOTTOMRIGHT", -6, 8)
+    applyBackdrop(listBox, 1, C.panelDeep, C.tabBorder)
+
+    local scroll = CreateFrame("ScrollFrame", nil, listBox)
+    scroll:SetPoint("TOPLEFT", 3, -3)
+    scroll:SetPoint("BOTTOMRIGHT", -(W.scrollbarWidth + 5), 3)
+
+    local content = CreateFrame("Frame", nil, scroll)
+    content:SetSize(600, 1)
+    scroll:SetScrollChild(content)
+
+    local _, updateTrack = attachScrollTrack(scroll, listBox)
+
+    local emptyText = listBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    emptyText:SetPoint("TOPLEFT", 10, -12)
+    emptyText:SetPoint("RIGHT", listBox, "RIGHT", -10, 0)
+    emptyText:SetJustifyH("LEFT")
+    UI.tint(emptyText, C.textDim)
+    emptyText:Hide()
+
+    -- ID and Duration are fixed: both hold a short token, and a share of a wide
+    -- window would only pad them. The name takes everything left over.
+    local function layout(w)
+        cols.icon   = 6
+        cols.name   = cols.icon + LIB_ICON_W + 8
+        cols.player = w - LIB_BTN_W - 6
+        cols.npc    = cols.player - LIB_BTN_W - 6
+        cols.dur    = cols.npc - LIB_GAP - LIB_DUR_W
+        cols.durW   = LIB_DUR_W
+        cols.id     = cols.dur - LIB_GAP - LIB_ID_W
+        cols.idW    = LIB_ID_W
+        cols.type   = cols.id - LIB_GAP - LIB_TYPE_W
+        cols.typeW  = LIB_TYPE_W
+        cols.nameW  = math.max(70, cols.type - LIB_GAP - cols.name)
+        cols.width  = w
+    end
+    layout(600)
+
+    local function layoutHeader()
+        for _, fs in ipairs({ hSpell, hType, hID, hDur }) do fs:ClearAllPoints() end
+        hSpell:SetPoint("LEFT", cols.name + COL_INSET, 0); hSpell:SetWidth(cols.nameW)
+        hType:SetPoint("LEFT", cols.type + COL_INSET, 0);  hType:SetWidth(cols.typeW)
+        hID:SetPoint("LEFT", cols.id + COL_INSET, 0);      hID:SetWidth(cols.idW)
+        hDur:SetPoint("LEFT", cols.dur + COL_INSET, 0);    hDur:SetWidth(cols.durW)
+    end
+
+    local function layoutRow(row)
+        if row.laidOutFor == cols.width then return end
+        row.laidOutFor = cols.width
+        row:SetWidth(cols.width)
+        for _, part in ipairs({ row.icon, row.iconHit, row.nameText, row.typeText,
+                                row.idText, row.durText, row.npcBtn, row.playerBtn }) do
+            part:ClearAllPoints()
+        end
+        row.icon:SetPoint("LEFT", cols.icon, 0)
+        row.iconHit:SetPoint("LEFT", cols.icon, 0)
+        row.nameText:SetPoint("LEFT", cols.name, 0); row.nameText:SetWidth(cols.nameW)
+        row.typeText:SetPoint("LEFT", cols.type, 0); row.typeText:SetWidth(cols.typeW)
+        row.idText:SetPoint("LEFT", cols.id, 0);     row.idText:SetWidth(cols.idW)
+        row.durText:SetPoint("LEFT", cols.dur, 0);   row.durText:SetWidth(cols.durW)
+        row.npcBtn:SetPoint("LEFT", cols.npc, 0)
+        row.playerBtn:SetPoint("LEFT", cols.player, 0)
+    end
+
+    local function refreshAddButton(btn, unitKey, key)
+        local which = Data.LibraryWhichFor(kind, key)
+        local l  = Data.AuraList(unitKey, which)
+        local on = l and l[key] ~= nil
+        btn.label:SetText(on and "On list" or btn.addLabel)
+        btn.label:SetTextColor(unpack(on and C.textDim or C.textWhite))
+        if on then btn:Disable() else btn:Enable() end
+    end
+
+    local function createRow(index)
+        local row = CreateFrame("Frame", nil, content)
+        row:SetSize(cols.width, LIB_ROW_H)
+        row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)  -- re-anchored by syncRows
+
+        local stripe = row:CreateTexture(nil, "BACKGROUND")
+        stripe:SetAllPoints(row)
+        stripe:SetTexture("Interface\\Buttons\\WHITE8x8")
+        row.stripe = stripe
+
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetSize(LIB_ICON_W, LIB_ICON_W)
+        row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+        row.iconHit = CreateFrame("Frame", nil, row)
+        row.iconHit:SetSize(LIB_ICON_W, LIB_ICON_W)
+        row.iconHit:EnableMouse(true)
+        row.iconHit:SetScript("OnEnter", function(self)
+            local item = row.item
+            if not item then return end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(item.name, 1, 1, 1)
+            GameTooltip:AddLine("Spell ID " .. item.id, 0.75, 0.75, 0.75)
+            if item.labelText ~= "" then
+                GameTooltip:AddLine(item.labelText, 0.55, 0.75, 1)
+            end
+
+            local seconds, varies, permanent = addon.Durations
+                and addon.Durations.DescribeDuration(item.id)
+            GameTooltip:AddLine(" ")
+            if permanent then
+                GameTooltip:AddLine("Lasts until it is removed — no countdown is drawn for it.",
+                    0.75, 0.75, 0.75, true)
+            elseif not seconds then
+                GameTooltip:AddLine("The library has no duration for this one. Its icon will show with no countdown unless you fill in an Override on the whitelist.",
+                    0.75, 0.75, 0.75, true)
+            elseif varies then
+                GameTooltip:AddLine(("About %gs. This one varies with rank, talents or combo points, so the real number depends on who cast it — the addon works the exact one out from the combat log when it lands."):format(seconds),
+                    0.75, 0.75, 0.75, true)
+            else
+                GameTooltip:AddLine(("Lasts %gs."):format(seconds), 0.75, 0.75, 0.75, true)
+            end
+
+            local which = Data.LibraryWhichFor(kind, item.key)
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine(("Adds to the %s list, by NAME — so it catches every rank."):format(
+                which == "buffs" and "buff" or "debuff"), 0.75, 0.75, 0.75, true)
+            GameTooltip:Show()
+        end)
+        row.iconHit:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        row.nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.nameText:SetJustifyH("LEFT")
+        row.nameText:SetWordWrap(false)
+        UI.tint(row.nameText, C.textWhite)
+
+        -- Tinted like a heading rather than like the grey data columns: the tags
+        -- are how you find a row, so they should catch the eye while scanning a
+        -- filtered list for the one you meant.
+        row.typeText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.typeText:SetJustifyH("LEFT")
+        row.typeText:SetWordWrap(false)
+        UI.tint(row.typeText, C.textWhite)
+
+        row.idText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.idText:SetJustifyH("LEFT")
+        row.idText:SetWordWrap(false)
+        UI.tint(row.idText, C.textGrey)
+
+        row.durText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.durText:SetJustifyH("LEFT")
+        row.durText:SetWordWrap(false)
+        UI.tint(row.durText, C.textGrey)
+
+        local function addButton(unitKey, label)
+            local btn = flatButton(row, label, LIB_BTN_W, 16, "GameFontNormalSmall")
+            btn.addLabel = label
+            btn:SetScript("OnClick", function(self)
+                local item = row.item
+                if not item then return end
+                Data.AddAura(unitKey, Data.LibraryWhichFor(kind, item.key), item.name)
+                refreshAddButton(self, unitKey, item.key)
+                apply()
+            end)
+            return btn
+        end
+
+        row.npcBtn    = addButton("enemyNPC",    "Add to Enemy NPC")
+        row.playerBtn = addButton("enemyPlayer", "Add to Enemy Player")
+
+        rows[index] = row
+        return row
+    end
+
+    local function bindRow(row, item, dataIndex)
+        layoutRow(row)
+        row.item = item
+        row.stripe:SetVertexColor(0.14, 0.15, 0.23, (dataIndex % 2 == 0) and 0.55 or 0.20)
+
+        row.icon:SetTexture(item.icon or QUESTION_MARK)
+        row.nameText:SetText(item.name)
+        row.typeText:SetText(item.labelText ~= "" and item.labelText or "—")
+        row.idText:SetText(tostring(item.id))
+        row.durText:SetText(item.durText or "—")
+
+        refreshAddButton(row.npcBtn,    "enemyNPC",    item.key)
+        refreshAddButton(row.playerBtn, "enemyPlayer", item.key)
+    end
+
+    syncRows = function()
+        local offset  = scroll:GetVerticalScroll() or 0
+        local first   = math.floor(offset / LIB_ROW_H)
+        local visible = math.ceil((scroll:GetHeight() or 0) / LIB_ROW_H) + 2
+
+        for i = 1, visible do
+            local row = rows[i] or createRow(i)
+            local dataIndex = first + i
+            local item = list[dataIndex]
+            if item then
+                row:ClearAllPoints()
+                row:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -((dataIndex - 1) * LIB_ROW_H))
+                bindRow(row, item, dataIndex)
+                row:Show()
+            else
+                row.item = nil
+                row:Hide()
+            end
+        end
+        for i = visible + 1, #rows do
+            rows[i].item = nil
+            rows[i]:Hide()
+        end
+    end
+
+    rebuild = function()
+        local usable = scroll:GetWidth() or 0
+        if usable > 20 and math.abs(usable - cols.width) > 0.5 then
+            layout(usable)
+            layoutHeader()
+            content:SetWidth(usable)
+        end
+
+        list, total = Data.LibraryRows(kind, filter)
+        content:SetHeight(math.max(#list * LIB_ROW_H, 1))
+
+        countText:SetText(#list == total
+            and (total .. " spells")
+            or (#list .. " of " .. total .. " spells"))
+
+        emptyText:SetText(total == 0
+            and "The duration library did not load, so there is nothing to list here."
+            or "Nothing matches that.")
+        emptyText:SetShown(#list == 0)
+        syncRows()
+        updateTrack()
+    end
+
+    scroll:HookScript("OnVerticalScroll", syncRows)
+    scroll:HookScript("OnSizeChanged", function() rebuild() end)
+
+    layoutHeader()
+
+    shell:HookScript("OnShow", function()
+        selectKind(kind)
+        C_Timer.After(0, rebuild)
+    end)
+
     return shell
 end
 
@@ -2284,6 +3785,24 @@ local function buildLearnedPanel(parent)
     return shell
 end
 
+-- ── Spells ───────────────────────────────────────────────────────────────────
+-- The two ways of finding out what there is to track, under one tab.
+--
+-- Library is the duration library's own roster: complete from the first login,
+-- and the only one of the two that can tell you how long anything lasts. Seen
+-- is what this install has actually watched land — the only one that knows who
+-- wears what, and the only one that reaches spells the 1.12 tables never had.
+--
+-- Both end in the same two Add buttons, so which page you found something on
+-- makes no difference to where it goes.
+local function buildSpellsPanel(parent)
+    local panel, _, _, addSubTab = makeSubTabPanel(parent, { barHeight = 22, hidden = true })
+    addSubTab("library", "Library", 90, buildLibraryPanel)
+    addSubTab("seen",    "Seen",    76, buildLearnedPanel)
+    selectSubTab(panel, "library")
+    return panel
+end
+
 -- What the events switch is for. The one-liner sits under the checkbox because
 -- that setting is off by default on NPCs and on by default on players, and a
 -- switch whose default flips between tabs has to say why somewhere you can't
@@ -2298,7 +3817,7 @@ local AURA_EVENTS_HELP = {
             "The aura API answers for your target, your mouseover and your group. For anyone else it reports nothing, so a whitelisted buff on an enemy player can never appear however it is spelled.",
             "With this on, the module watches their cast land and reads the combat log's own aura lines instead.",
             "That makes it a record of what was last seen to happen rather than a reading of the unit: it can miss an aura applied before the plate came into view, or one that ran out while they were away from you. A real aura always wins where there is one.",
-            "Neither source carries a duration. Fill in Timer(s) against a spell to give its worked-out icon a countdown.",
+            "Neither source carries a duration, so the countdown is worked out from the addon's own table of 1.12 durations. Where that has nothing to say — an unlisted spell, or a server that changed one — fill in Override against the spell to force a number.",
         },
     },
     enemyNPC = {
@@ -2306,7 +3825,7 @@ local AURA_EVENTS_HELP = {
             "Rarely needed here — an NPC's debuffs read off the unit properly.",
             "Debuffs you have applied to an NPC come back off the unit correctly, so working them out from events would only be a worse copy of what is already right.",
             "Worth turning on for buffs an NPC gives itself, which the client is no more forthcoming about than it is for players.",
-            "Neither source carries a duration. Fill in Timer(s) against a spell to give its worked-out icon a countdown.",
+            "Neither source carries a duration, so the countdown is worked out from the addon's own table of 1.12 durations — which covers creature abilities as well as player ones. Fill in Override against a spell it has nothing for.",
         },
     },
 }
@@ -2401,6 +3920,9 @@ local auraSection = "tracking"
 local AURA_SECTIONS = {
     { key = "tracking",   label = "Aura Tracking", width = 106, build = buildAuraTrackingPage },
     { key = "appearance", label = "Appearance",    width =  96, build = buildAuraLookPage     },
+    -- Last: it is about where a handful of the entries on the first page go, so
+    -- it reads as a refinement of that page rather than a third way in.
+    { key = "special",    label = "Special Buffs", width = 104, build = buildSpecialPage      },
 }
 
 local function buildAuraUnitPanel(parent, def)
@@ -2576,10 +4098,10 @@ local function buildAurasPanel(parent)
     -- Last, and set apart by being last: the two before it are where you say
     -- what to show, and this is where you find out what there is to ask for.
     defs[#defs + 1] = {
-        key   = "learned",
-        label = "Learned",
+        key   = "spells",
+        label = "Spells",
         width = 90,
-        build = function() return buildLearnedPanel(content) end,
+        build = function() return buildSpellsPanel(content) end,
     }
     -- And then the one strip on the plate that isn't fed from these lists at
     -- all. It lives here because it is icons on a nameplate and this is the tab

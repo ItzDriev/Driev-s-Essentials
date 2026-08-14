@@ -13,6 +13,10 @@ addon.Nameplates = NP
 local LSM   = LibStub and LibStub("LibSharedMedia-3.0", true)
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 
+-- Aura duration reconstruction (core addon). Absent on a client that reports
+-- real durations, so every use of it is guarded.
+local Durations = addon.Durations
+
 local function cfg()
     return addon.db and addon.db.settings and addon.db.settings.nameplates
 end
@@ -30,20 +34,45 @@ local function barTexture(name)
         or "Interface\\TargetingFrame\\UI-StatusBar"
 end
 
-local function fontPath(name)
-    return (LSM and name and LSM:Fetch("font", name, true)) or "Fonts\\FRIZQT__.TTF"
-end
+-- ── Fonts ────────────────────────────────────────────────────────────────────
+-- Every string on a plate is styled from core's shared font block (Font.lua):
+-- face, size, outline, offset and drop shadow. The general block is the baseline
+-- for all of them; a per-element block sits IN FRONT of it and only overrides
+-- what it actually sets, which is why an element that was only ever given a
+-- typeface still follows the general size and outline.
+local FONT_DEFAULT = addon.Font.New({ font = "Expressway", size = 9 })
 
-local function outlineFlag(name)
-    if name == "OUTLINE" or name == "THICKOUTLINE" then return name end
-    return ""
+-- The keys each block used before it was a block. General kept a bare face name
+-- beside fontSize/fontOutline; the per-element ones were the face alone, which
+-- Adopt handles without a map.
+local GENERAL_LEGACY = { size = "fontSize", outline = "fontOutline" }
+local TOT_LEGACY     = { size = "totSize", outline = "totOutline", x = "totX", y = "totY" }
+
+local function generalFont(g)
+    return addon.Font.Adopt(g, "font", GENERAL_LEGACY)
 end
 
 -- The FLAG decides, not whether a font is picked, so unticking returns to the
--- general font instead of keeping whatever the picker was last left on.
-local function elementFont(g, key)
-    if g[key .. "Enabled"] and g[key] then return fontPath(g[key]) end
-    return fontPath(g.font)
+-- general font instead of keeping whatever the picker was last left on. nil means
+-- "nothing of its own", which is what Font.Apply reads as "use the fallback".
+local function elementFont(g, key, legacy)
+    if not g[key .. "Enabled"] then return nil end
+    return addon.Font.Adopt(g, key, legacy)
+end
+
+-- Target of target is the exception: its size, outline, offset and shadow are its
+-- own whether or not its tick box is on — that box has only ever governed the
+-- face. Handed back through one reused scratch table, since this runs per plate.
+local totScratch = {}
+
+local function totFont(g)
+    local blk = addon.Font.Adopt(g, "totFont", TOT_LEGACY)
+    wipe(totScratch)
+    for k, v in pairs(blk) do totScratch[k] = v end
+    -- nil, not the stored face: Font.Apply then falls through to the general
+    -- block, which is what "doesn't use its own font" means.
+    if not g.totFontEnabled then totScratch.font = nil end
+    return totScratch
 end
 
 -- ── Small helpers ────────────────────────────────────────────────────────────
@@ -482,9 +511,14 @@ local function buildPlate(base)
     -- go off the health bar's top left, clear of the two above.
     f.bossRow = createAuraRow(f)
 
+    -- The special buff frames, keyed by frame id and built on demand — there are
+    -- none until something is ticked onto one, and a plate that never meets a
+    -- tracked aura never pays for them.
+    f.specialRows = {}
+
     -- Every icon row, for passes that don't care which feed a row is on (frame
     -- levels, clearing on handover, ticking countdowns). Keyed rows above for those
-    -- that do.
+    -- that do. Special frames append themselves as they're built.
     f.iconRows = { f.auraRows.buffs, f.auraRows.debuffs, f.bossRow }
 
     f.baseLevel = lvl
@@ -600,8 +634,9 @@ local function updateStyle(f)
     local nameOnly = grp.nameOnlyWhenSafe and UnitIsPlayer(f.unit)
         and not UnitCanAttack("player", f.unit) and true or false
     f.nameOnly = nameOnly
-    local fp  = fontPath(g.font)
-    local fl  = outlineFlag(g.fontOutline)
+    -- The general block is the fallback behind every per-element one below, so a
+    -- setting an element doesn't carry comes from here.
+    local base = generalFont(g)
 
     local w = (tonumber(grp.width)  or 124)
     local h = (tonumber(grp.height) or 12)
@@ -636,11 +671,16 @@ local function updateStyle(f)
     -- the previous occupant would stop it noticing the change.
     f.hovered = nil
 
-    local nameSize = tonumber(grp.nameSize) or tonumber(g.fontSize) or 10
+    -- The group's own size still wins where it is set: it is a per-unit-type
+    -- answer, and the font block is the shared one behind it.
+    local nameCfg  = elementFont(g, "nameFont")
+    local levelCfg = elementFont(g, "levelFont")
+    local healthCfg = elementFont(g, "healthFont")
+    local nameSize = tonumber(grp.nameSize) or addon.Font.Size(nameCfg, base)
     -- A name-only plate gets its own size: the one above was picked to share a bar
     -- with the level and health text, neither of which is on screen here.
     if nameOnly then nameSize = tonumber(grp.nameOnlySize) or nameSize end
-    f.name:SetFont(elementFont(g, "nameFont"), nameSize, fl)
+    local nameDX, nameDY = addon.Font.Apply(f.name, nameCfg, base, nameSize)
     f.name:SetShown(grp.showName ~= false)
 
     -- Re-anchored from scratch, since the placements use different anchor points.
@@ -649,12 +689,21 @@ local function updateStyle(f)
     local place = namePlacementFor(f, grp)
     f.name:ClearAllPoints()
     f.name:SetPoint(place.point, f.health, place.rel,
-        place.dx + (tonumber(grp.nameX) or 0),
-        place.dy + (tonumber(grp.nameY) or 0))
+        place.dx + (tonumber(grp.nameX) or 0) + nameDX,
+        place.dy + (tonumber(grp.nameY) or 0) + nameDY)
     f.name:SetJustifyH(place.justify)
-    f.level:SetFont(elementFont(g, "levelFont"), nameSize, fl)
+    -- Re-anchored rather than left on its creation point, so the level's own font
+    -- offsets aren't a pair of controls that quietly do nothing.
+    local levelDX, levelDY = addon.Font.Apply(f.level, levelCfg, base, nameSize)
+    f.level:ClearAllPoints()
+    f.level:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", levelDX, 3 + levelDY)
     f.level:SetShown(not nameOnly and grp.showLevel ~= false)
-    f.healthText:SetFont(elementFont(g, "healthFont"), tonumber(g.fontSize) or 10, fl)
+    local healthDX, healthDY = addon.Font.Apply(f.healthText, healthCfg, base)
+    -- Health text, and the two cast strings below, are the plate's text that
+    -- nothing recolours as the fight goes on, so their block colour is applied
+    -- here with the rest of the styling. The name and the level are done in
+    -- updateName instead, where a class or difficulty colour may claim them.
+    addon.Font.ApplyColor(f.healthText, healthCfg, base, 1, 1, 1)
     f.healthText:SetShown(not nameOnly and grp.showHealthText ~= false and grp.healthFormat ~= "none")
 
     -- The bar carries its background, fill and hover highlight as children, so one
@@ -669,7 +718,8 @@ local function updateStyle(f)
     local hEdge = (hAnchor == "LEFT" and 2) or (hAnchor == "RIGHT" and -2) or 0
     f.healthText:ClearAllPoints()
     f.healthText:SetPoint(hAnchor, f.health, hAnchor,
-        hEdge + (tonumber(grp.healthTextX) or 0), tonumber(grp.healthTextY) or 0)
+        hEdge + (tonumber(grp.healthTextX) or 0) + healthDX,
+        (tonumber(grp.healthTextY) or 0) + healthDY)
     f.healthText:SetJustifyH(hAnchor)
 
     layoutIcon(f.raidIcon,    f.health, iconOpts(d, "raidMarker"))
@@ -690,37 +740,52 @@ local function updateStyle(f)
     f.castBG:SetVertexColor(br, bg_, bb, pct(g.bgAlpha, 80))
     f.castIcon:SetSize(ch, ch)
     f.castIcon:SetShown(grp.castShowIcon ~= false)
-    f.castName:SetFont(fp, math.max(6, ch - 2), fl)
+    -- Sized to the cast bar rather than from the block: this text has to fit a bar
+    -- whose height is its own setting. Everything else about it is the general
+    -- font's, offsets included — both strings are anchored at creation, so those
+    -- are folded back in here.
+    local castSize = math.max(6, ch - 2)
+    local castDX, castDY = addon.Font.Apply(f.castName, nil, base, castSize)
+    addon.Font.ApplyColor(f.castName, nil, base, 1, 1, 1)
+    f.castName:ClearAllPoints()
+    f.castName:SetPoint("LEFT", f.cast, "LEFT", 3 + castDX, castDY)
     f.castName:SetShown(grp.castShowName ~= false)
-    f.castTime:SetFont(fp, math.max(6, ch - 2), fl)
+    addon.Font.Apply(f.castTime, nil, base, castSize)
+    addon.Font.ApplyColor(f.castTime, nil, base, 1, 1, 1)
+    f.castTime:ClearAllPoints()
+    f.castTime:SetPoint("RIGHT", f.cast, "RIGHT", -3 + castDX, castDY)
     f.castTime:SetShown(grp.castShowTimer ~= false)
+
+    -- Its own size, outline, offset and shadow rather than the shared ones: this
+    -- line is over the world, not on a bar, so what it takes to stay readable is a
+    -- different question. Its tick box governs the FACE alone, which is all it has
+    -- ever meant — the rest was never inherited.
+    local totCfg  = totFont(g)
+    local totSize = math.max(6, addon.Font.Size(totCfg, base))
+    local totDX, totDY = addon.Font.Apply(f.totText, totCfg, base, totSize)
 
     -- The end NEAREST the corner is anchored, so the name runs inwards and the
     -- corner never moves however long it is. Hung off the cast bar rather than the
     -- health bar: the cast bar's rect is reserved whether casting or not, so
     -- anchoring above it would mean text a cast slides out from under. Both bars
-    -- keep their geometry while hidden.
+    -- keep their geometry while hidden. The block's offsets move that corner
+    -- rather than the text, so it keeps growing the same way wherever you put it.
     local totRight = (g.totAnchor or "bottomRight") ~= "bottomLeft"
     f.totText:ClearAllPoints()
     f.totText:SetPoint(totRight and "TOPRIGHT" or "TOPLEFT",
         (grp.showCastBar ~= false) and f.cast or f.health,
         totRight and "BOTTOMRIGHT" or "BOTTOMLEFT",
-        tonumber(g.totX) or 0, -2 + (tonumber(g.totY) or 0))
+        totDX, -2 + totDY)
     -- Nothing rides on this while the FontString has no width, but it's what the
     -- field means — something later giving it one shouldn't right-align a left-hung
     -- name.
     f.totText:SetJustifyH(totRight and "RIGHT" or "LEFT")
-    -- Its own outline and opacity rather than the shared ones: this line is over the
-    -- world, not on a bar. Opacity is relative to the plate's, so a faded plate
-    -- fades this too.
-    local totFont, totSize = elementFont(g, "totFont"), math.max(6, tonumber(g.totSize) or 9)
-    local totOutline = outlineFlag(g.totOutline)
-    f.totText:SetFont(totFont, totSize, totOutline)
+    -- Opacity is relative to the plate's, so a faded plate fades this too.
     f.totText:SetAlpha(pct(g.totAlpha, 100))
     -- The coloured copy must be the same text, font and size, or the two wouldn't
     -- line up letter for letter. The alpha goes on the clip frame, since the copy is
     -- its region.
-    f.totFill:SetFont(totFont, totSize, totOutline)
+    addon.Font.Apply(f.totFill, totCfg, base, totSize)
     f.totClip:SetAlpha(pct(g.totAlpha, 100))
 
     -- Height and art only. Its width and its anchor both depend on how wide the
@@ -931,6 +996,9 @@ local function updateName(f)
     local unit = f.unit
     if not unit then return end
     local grp = f.group
+    -- For the two colour fallbacks below. Nothing here needs it when the dynamic
+    -- colour applies, so it's fetched once rather than per branch.
+    local g = (cfg() or {}).general
 
     if grp.showName ~= false then
         local name = Data.GetNpcName(f.npcID) or UnitName(unit) or ""
@@ -950,20 +1018,29 @@ local function updateName(f)
         end
         f.name:SetWidth(math.max(10, (f:GetWidth() or 0) - reserve))
 
+        -- Class colour wins where it applies; the font block's colour is what the
+        -- name falls back to, which is where the white this used to force went.
         local cc = grp.classColorName and UnitIsPlayer(unit) and classColorFor(unit)
         if cc then
             f.name:SetTextColor(cc[1], cc[2], cc[3])
-        else
-            f.name:SetTextColor(1, 1, 1)
+        elseif g then
+            addon.Font.ApplyColor(f.name, elementFont(g, "nameFont"), generalFont(g), 1, 1, 1)
         end
     end
 
     if grp.showLevel ~= false then
         local level = UnitLevel(unit)
         f.level:SetText(levelText(unit))
+        -- Same shape as the name: the level's own difficulty colour is the point of
+        -- this text, so it wins, and the block's colour covers everything it can't
+        -- answer for (a ?? mob has no difficulty colour).
         local c = (level and level > 0) and GetQuestDifficultyColor
             and GetQuestDifficultyColor(level) or nil
-        if c then f.level:SetTextColor(c.r, c.g, c.b) else f.level:SetTextColor(0.9, 0.9, 0.9) end
+        if c then
+            f.level:SetTextColor(c.r, c.g, c.b)
+        elseif g then
+            addon.Font.ApplyColor(f.level, elementFont(g, "levelFont"), generalFont(g), 0.9, 0.9, 0.9)
+        end
     end
 end
 
@@ -1292,16 +1369,37 @@ local MAX_AURA_SCAN = 40
 local QUESTION_MARK = "Interface\\Icons\\INV_Misc_QuestionMark"
 
 -- One reader for both aura APIs: C_UnitAuras on current builds, UnitAura on
--- Classic Era. Same flat tuple either way.
-local function readAura(unit, index, filter)
+-- Classic Era. Same flat tuple either way, plus the caster where the client
+-- names one — a DoT two people are running needs it to tell the timers apart.
+local function clientAura(unit, index, filter)
     if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
         local a = C_UnitAuras.GetAuraDataByIndex(unit, index, filter)
         if not a then return nil end
-        return a.name, a.icon, a.applications, a.duration, a.expirationTime, a.spellId
+        return a.name, a.icon, a.applications, a.duration, a.expirationTime, a.spellId, a.sourceUnit
     end
     if not UnitAura then return nil end
-    local name, icon, count, _, duration, expires, _, _, _, spellID = UnitAura(unit, index, filter)
+    local name, icon, count, _, duration, expires, caster, _, _, spellID = UnitAura(unit, index, filter)
     if not name then return nil end
+    return name, icon, count, duration, expires, spellID, caster
+end
+
+-- Classic Era fills duration and expirationTime in only for auras the PLAYER
+-- applied. Everything else — the rest of the raid's debuffs on the boss, a
+-- mob's own buffs — arrives zeroed, which drawAuraIcon correctly renders as an
+-- icon with no swipe and no countdown.
+--
+-- addon.Durations reconstructs those from the combat log, so ask it for the
+-- ones the client left blank and never for the ones it answered: a real
+-- duration from the API is the truth and this is a reconstruction.
+local function readAura(unit, index, filter)
+    local name, icon, count, duration, expires, spellID, caster = clientAura(unit, index, filter)
+    if not name then return nil end
+
+    if Durations and spellID and ((tonumber(duration) or 0) <= 0 or (tonumber(expires) or 0) <= 0) then
+        local d, e = Durations.GetDuration(unit, spellID, caster, name)
+        if d then duration, expires = d, e end
+    end
+
     return name, icon, count, duration, expires, spellID
 end
 
@@ -1331,17 +1429,32 @@ local auraStyle = {}
 -- corner of their own. Passed rather than read off `o` because it's a fact about
 -- which strip this is — and the style table is reused, so a value left behind
 -- would move the next row.
-local function readAuraStyle(o, g, pin)
+--
+-- `special` marks a special buff frame, which is the one caller whose growth can
+-- run vertically and whose own attach point is worked out rather than derived
+-- from the growth alone. Both fields are written on every call for the reason
+-- above: a leftover rowPoint would re-anchor the next row through here.
+local function readAuraStyle(o, g, pin, special)
     local st = auraStyle
     st.pin     = pin
     st.size    = math.max(4, tonumber(o.size) or 20)
     st.spacing = math.max(0, tonumber(o.spacing) or 2)
     st.max     = math.max(1, math.min(20, tonumber(o.max) or 8))
-    st.growth  = Data.AuraGrowth(o.growth)
+    if special then
+        st.growth   = Data.SpecialGrowth(o.growth)
+        st.vertical = Data.SPECIAL_VERTICAL[st.growth] and true or false
+        st.rowPoint = Data.SpecialRowPoint(pin, st.growth)
+    else
+        st.growth   = Data.AuraGrowth(o.growth)
+        st.vertical = false
+        st.rowPoint = nil
+    end
     st.step    = st.size + st.spacing
 
-    st.font     = fontPath(g.font)
-    st.outline  = outlineFlag(g.fontOutline)
+    -- Icon text takes the general font block, sized by the row's own timer size —
+    -- these strings are centred on an icon, so the block's offsets are left out of
+    -- it (they place the plate's own text, not what is drawn on an aura).
+    st.font     = generalFont(g)
     st.textSize = math.max(6, tonumber(o.timerSize) or 9)
     st.showTime = o.showTimer ~= false
     st.showQty  = o.showStacks ~= false
@@ -1363,8 +1476,16 @@ local function drawAuraIcon(row, index, st, icon, count, duration, expires, now)
     b:SetSize(st.size, st.size)
     b:ClearAllPoints()
     -- The first icon pins to the growth edge and the rest queue behind it, so the
-    -- one you look at first never moves. Centred is the exception by definition.
-    if st.growth == "left" then
+    -- one you look at first never moves. Centred is the exception by definition,
+    -- and falls into the "from the near edge" branch of its axis — the ROW is
+    -- what's centred, and finishAuraRow sizes it to exactly these icons.
+    if st.vertical then
+        if st.growth == "up" then
+            b:SetPoint("BOTTOM", row, "BOTTOM", 0, (index - 1) * st.step)
+        else
+            b:SetPoint("TOP", row, "TOP", 0, -(index - 1) * st.step)
+        end
+    elseif st.growth == "left" then
         b:SetPoint("RIGHT", row, "RIGHT", -(index - 1) * st.step, 0)
     else
         b:SetPoint("LEFT", row, "LEFT", (index - 1) * st.step, 0)
@@ -1395,12 +1516,14 @@ local function drawAuraIcon(row, index, st, icon, count, duration, expires, now)
     end
 
     b.timerOn = st.showTime and b.expires and true or false
-    b.timer:SetFont(st.font, st.textSize, st.outline)
+    addon.Font.Apply(b.timer, st.font, FONT_DEFAULT, st.textSize)
+    addon.Font.ApplyColor(b.timer, st.font, FONT_DEFAULT, 1, 1, 1)
     b.timer:SetShown(b.timerOn)
     if b.timerOn then b.timer:SetText(auraTimeText(math.max(0, b.expires - now))) end
 
     count = tonumber(count) or 0
-    b.count:SetFont(st.font, st.textSize, st.outline)
+    addon.Font.Apply(b.count, st.font, FONT_DEFAULT, st.textSize)
+    addon.Font.ApplyColor(b.count, st.font, FONT_DEFAULT, 1, 1, 1)
     b.count:SetShown(st.showQty and count > 1)
     if count > 1 then b.count:SetFormattedText("%d", count) end
 
@@ -1423,7 +1546,14 @@ local function finishAuraRow(f, row, shown, st)
     end
 
     row.shown = shown
-    row:SetSize(shown * st.size + (shown - 1) * st.spacing, st.size)
+    -- Sized to exactly its icons along whichever axis they run, which is what
+    -- makes "centred" free: centring the row centres what is on it.
+    local span = shown * st.size + (shown - 1) * st.spacing
+    if st.vertical then
+        row:SetSize(st.size, span)
+    else
+        row:SetSize(span, st.size)
+    end
     row:ClearAllPoints()
 
     -- Anchored to the health bar, not `f`: on a name-only plate the bar is hidden
@@ -1440,7 +1570,11 @@ local function finishAuraRow(f, row, shown, st)
     -- A row pinned to a corner keeps that corner whichever way it grows. The boss
     -- mod strip is the one that does — growing leftwards would otherwise send "off
     -- the top left" to the far end of the plate.
-    row:SetPoint(mine, f.health, st.pin or theirs, st.x, st.y)
+    --
+    -- A special buff frame brings both halves with it: it can hang off any of the
+    -- eight points and run in any of six directions, so which of its own corners
+    -- meets the bar is worked out from the pair rather than from the growth.
+    row:SetPoint(st.rowPoint or mine, f.health, st.pin or theirs, st.x, st.y)
     row:Show()
 end
 
@@ -1565,7 +1699,7 @@ local function forgetInferred(guid, name)
     inferredGUIDs = inferredGUIDs - 1
 end
 
-local function rememberInferred(guid, which, spellID, name, icon, count)
+local function rememberInferred(guid, which, spellID, name, icon, count, srcGUID)
     if not (guid and name) then return end
     local unitKey = unitKeyForGUID(guid)
     if not unitKey then return end
@@ -1605,11 +1739,19 @@ local function rememberInferred(guid, which, spellID, name, icon, count)
     rec.count = count > 1 and count or 1
 
     local dur = tonumber(entry.duration)
+    -- A duration typed on the whitelist entry always wins — it is the override
+    -- for anything the tables get wrong or never had. Failing that, ask the
+    -- duration engine what this spell lasts: it is reading the same event we
+    -- are, so "just applied" is exactly the case it answers best.
+    if not (dur and dur > 0) and Durations then
+        dur = Durations.GetAppliedDuration(spellID, name, srcGUID, guid,
+                                           unitKey == "enemyPlayer")
+    end
     rec.duration = (dur and dur > 0) and dur or nil
     rec.applied  = GetTime()
     rec.expires  = rec.applied + (rec.duration or INFER_TTL)
-    -- Only a user-supplied duration earns a swipe and countdown. Timing a guessed
-    -- aura from a number nobody gave us would look authoritative and be wrong.
+    -- A number from either source earns the swipe and countdown; with neither,
+    -- the icon rides untimed rather than counting down from an invention.
     rec.timed    = rec.duration and true or false
 
     markInferredDirty(guid)
@@ -1645,7 +1787,7 @@ local function sweepInferred(elapsed)
 end
 
 local function onCombatLogAura()
-    local _, sub, _, _, _, _, _, destGUID, destName, _, _, spellID, spellName, _, auraType, amount =
+    local _, sub, _, srcGUID, _, _, _, destGUID, destName, _, _, spellID, spellName, _, auraType, amount =
         CombatLogGetCurrentEventInfo()
 
     -- A corpse keeps none of its buffs, and the same GUID can be resurrected
@@ -1687,7 +1829,7 @@ local function onCombatLogAura()
         end
     end
 
-    rememberInferred(destGUID, which, spellID, spellName, nil, amount)
+    rememberInferred(destGUID, which, spellID, spellName, nil, amount, srcGUID)
 end
 
 -- A cast that landed, on a unit the client will name. The aura is ASSUMED to be
@@ -1704,7 +1846,10 @@ local function onCastSucceeded(unit, spellID)
     if not guid then return end
     local name, icon = Data.SpellInfo(spellID)
     if not name then return end
-    rememberInferred(guid, "buffs", spellID, name, icon, nil)
+    -- The aura is assumed to be the spell on its own caster, so the caster GUID
+    -- is the unit's — which is what makes talent-scaled durations resolvable
+    -- when the cast happens to be ours.
+    rememberInferred(guid, "buffs", spellID, name, icon, nil, guid)
 end
 
 -- Sorted before drawing so the strip doesn't reshuffle every scan — pairs() has
@@ -1712,7 +1857,13 @@ end
 -- Oldest first, so a new aura joins the end rather than shoving the others along.
 local inferScratch = {}
 
-local function collectInferred(f, which, seen, now)
+-- `wantBar` is the special buff frame being filled, or nil for the row above the
+-- health bar. The record itself doesn't carry one — the assignment lives on the
+-- whitelist entry and can be changed while the record is still riding — so it's
+-- resolved back through the lookup here. An entry that has since been removed
+-- from the whitelist resolves to nothing and is dropped, which is right: the
+-- record only exists because it was tracked.
+local function collectInferred(f, which, seen, now, lookup, wantBar)
     wipe(inferScratch)
     local bag = f.guid and inferred[f.guid]
     if not bag then return inferScratch end
@@ -1721,7 +1872,10 @@ local function collectInferred(f, which, seen, now)
         if now >= rec.expires then
             bag[key] = nil
         elseif rec.which == which and not seen[key] then
-            inferScratch[#inferScratch + 1] = rec
+            local entry = (rec.spellID and lookup.byID[rec.spellID]) or lookup.byName[key]
+            if entry and lookup.barFor[entry] == wantBar then
+                inferScratch[#inferScratch + 1] = rec
+            end
         end
     end
     table.sort(inferScratch, function(a, b) return a.applied < b.applied end)
@@ -1845,8 +1999,12 @@ local function updateAuraRow(f, which)
     -- aura on the unit to discover that. Checked first, so with every list empty
     -- (the shipped state) this costs one table lookup per plate per tick. Nothing
     -- can have been inferred either — the store is fed through the same whitelist.
+    --
+    -- `main` rather than `count`: an entry ticked onto a special buff frame is
+    -- drawn there INSTEAD, so a list every one of whose entries has been moved
+    -- leaves this row with nothing to do.
     local lookup = Data.AuraLookup(uKey, which)
-    if lookup.count == 0 then
+    if lookup.main == 0 then
         hideAuraRow(row)
         return
     end
@@ -1866,14 +2024,20 @@ local function updateAuraRow(f, which)
         local key = name:lower()
         local hit = (spellID and lookup.byID[spellID]) or lookup.byName[key]
         if hit then
-            shown = shown + 1
-            auraSeen[key] = true
             -- The one moment a by-name entry can be told what it matches: the
             -- name that found it and the ID and art that came with it are all
-            -- in hand right here, and nowhere else.
+            -- in hand right here, and nowhere else. Done for an entry bound to a
+            -- special frame too — it is the same entry, and the frame's own pass
+            -- has no better claim on teaching it.
             learnAura(hit, spellID, icon)
-            drawAuraIcon(row, shown, st, icon, count, duration, expires, now)
-            if shown >= st.max then break end
+            if lookup.barFor[hit] == nil then
+                shown = shown + 1
+                -- Marked seen only where it was drawn, so the inferred pass for
+                -- the frame it went to can still fill it in over there.
+                auraSeen[key] = true
+                drawAuraIcon(row, shown, st, icon, count, duration, expires, now)
+                if shown >= st.max then break end
+            end
         end
     end
 
@@ -1885,7 +2049,7 @@ local function updateAuraRow(f, which)
     -- but the store doesn't keep it, and quietly showing someone else's aura under a
     -- filter that promises otherwise is worse than showing none.
     if shown < st.max and u.fromEvents and not o.onlyMine then
-        for _, rec in ipairs(collectInferred(f, which, auraSeen, now)) do
+        for _, rec in ipairs(collectInferred(f, which, auraSeen, now, lookup, nil)) do
             shown = shown + 1
             drawAuraIcon(row, shown, st, rec.icon, rec.count,
                 rec.timed and rec.duration or 0,
@@ -1897,10 +2061,178 @@ local function updateAuraRow(f, which)
     finishAuraRow(f, row, shown, st)
 end
 
+-- ── Special buff frames ──────────────────────────────────────────────────────
+-- The same icons, drawn somewhere else. A frame takes whichever entries of the
+-- unit type's two whitelists have been ticked onto it, from both at once — an
+-- aura that earned its own frame is one you stopped caring which list it came
+-- off — and the rows above the health bar skip exactly those.
+--
+-- Built per plate on demand and never destroyed: the set of frames changes only
+-- when the settings do, and a handful of empty rows costs a hidden frame each.
+--
+-- ONE file-scope local for the whole feature, like Boss and Icons above it: this
+-- chunk is close enough to Lua 5.1's cap of 200 locals that a feature spending
+-- six of them on itself is a feature that stops the file loading.
+local Special = {
+    -- Which sweep of Special.updateRows a row last drew on. See the sweep itself
+    -- for why it's a stamp rather than a set of what drew.
+    pass = 0,
+}
+
+-- Keyed by frame id alone, so the two unit types' frames of the same id share
+-- one row on a recycled plate. Deliberate: a plate holds one unit type at a
+-- time, and every draw re-anchors, re-sizes and re-fills the row from scratch,
+-- so there is nothing of the previous occupant's frame left in it.
+function Special.row(f, id)
+    local row = f.specialRows[id]
+    if row then return row end
+
+    row = createAuraRow(f)
+    f.specialRows[id] = row
+    f.iconRows[#f.iconRows + 1] = row
+    -- Frame levels are absolute and this row missed the pass that set them, so
+    -- the plate re-derives the lot — which now includes this one.
+    setPlateLevel(f, f:GetFrameLevel() or 0)
+    return row
+end
+
+-- Preview art for a frame, off both whitelists at once rather than one. A frame
+-- needs the preview more than the rows above the bar do: it is placed against a
+-- plate's outline, and until something is drawn on it there is nothing to place.
+--
+-- Cached beside the two kinds, keyed by frame id: the ids are numbers and the
+-- kinds are strings, so neither can collide with the other.
+function Special.previewArt(unitKey, bar)
+    local byUnit = previewArtCache[unitKey]
+    if not byUnit then
+        byUnit = {}
+        previewArtCache[unitKey] = byUnit
+    end
+    if byUnit[bar.id] then return byUnit[bar.id] end
+
+    local out = {}
+    for _, which in ipairs(AURA_KINDS) do
+        for _, item in ipairs(Data.SortedAuras(unitKey, which)) do
+            if item.entry.enabled ~= false and item.entry.bar == bar.id then
+                local _, icon = Data.AuraDisplay(item.entry)
+                out[#out + 1] = icon or QUESTION_MARK
+            end
+        end
+    end
+    if #out == 0 then out = PREVIEW_ART.buffs end
+
+    byUnit[bar.id] = out
+    return out
+end
+
+function Special.drawPreview(f, row, unitKey, bar, st, now)
+    local art = Special.previewArt(unitKey, bar)
+    for i = 1, st.max do
+        local icon     = art[((i - 1) % #art) + 1]
+        local duration = PREVIEW_DURATIONS[((i - 1) % #PREVIEW_DURATIONS) + 1]
+        local left     = duration - ((now + i * 5) % duration)
+        drawAuraIcon(row, i, st, icon, (i % 3 == 0) and (i + 1) or 1,
+            duration, now + left, now)
+    end
+    finishAuraRow(f, row, st.max, st)
+end
+
+function Special.updateRow(f, bar, uKey, u, d, now)
+    local row = Special.row(f, bar.id)
+
+    local st = readAuraStyle(bar, d.general, Data.SpecialAnchor(bar.anchor), true)
+
+    if auraPreviewUnit == uKey then
+        Special.drawPreview(f, row, uKey, bar, st, now)
+        return row
+    end
+
+    local shown = 0
+    for _, which in ipairs(AURA_KINDS) do
+        local lookup = Data.AuraLookup(uKey, which)
+        -- Nothing of this kind bound to this frame is the common case for at
+        -- least one of the two, and it costs one lookup to skip a forty-slot scan.
+        if (lookup.bars[bar.id] or 0) > 0 and shown < st.max then
+            local filter = AURA_FILTER[which]
+            if bar.onlyMine then filter = filter .. "|PLAYER" end
+
+            wipe(auraSeen)
+            for i = 1, MAX_AURA_SCAN do
+                local name, icon, count, duration, expires, spellID = readAura(f.unit, i, filter)
+                if not name then break end
+
+                local key = name:lower()
+                local hit = (spellID and lookup.byID[spellID]) or lookup.byName[key]
+                if hit and lookup.barFor[hit] == bar.id then
+                    shown = shown + 1
+                    auraSeen[key] = true
+                    learnAura(hit, spellID, icon)
+                    drawAuraIcon(row, shown, st, icon, count, duration, expires, now)
+                    if shown >= st.max then break end
+                end
+            end
+
+            -- Inferred auras land on the frame their entry was moved to, under
+            -- the same two conditions the row above the bar applies them: the
+            -- unit type has to be working them out at all, and "only mine" turns
+            -- them off because the store doesn't keep who cast what.
+            --
+            -- Everything else about a frame is read off the FRAME, never off the
+            -- row the entry came from. Whether events are consulted is the one
+            -- exception, and it isn't a preference — it's whether this unit type
+            -- has anything worked out from events to offer.
+            if shown < st.max and u.fromEvents and not bar.onlyMine then
+                for _, rec in ipairs(collectInferred(f, which, auraSeen, now, lookup, bar.id)) do
+                    shown = shown + 1
+                    drawAuraIcon(row, shown, st, rec.icon, rec.count,
+                        rec.timed and rec.duration or 0,
+                        rec.timed and rec.expires  or 0, now)
+                    if shown >= st.max then break end
+                end
+            end
+        end
+    end
+
+    finishAuraRow(f, row, shown, st)
+    return row
+end
+
+function Special.updateRows(f)
+    local rows = f.specialRows
+    if not rows then return end
+
+    local d = cfg()
+    local a = d and d.auras
+    local uKey = f.kind and Data.AURA_UNIT_FOR_KIND[f.kind]
+    local u    = uKey and a and a.units and a.units[uKey]
+    local live = (f.unit and a and a.enabled ~= false and u) and true or false
+
+    local now = live and GetTime() or 0
+    -- Stamped rather than collected into a set of what drew: this runs per plate
+    -- per tick, and a table built to be thrown away every time is the kind of
+    -- garbage a raid pull multiplies by forty.
+    Special.pass = Special.pass + 1
+    if live then
+        for _, bar in ipairs(Data.SpecialBars(uKey)) do
+            if bar.enabled ~= false then
+                Special.updateRow(f, bar, uKey, u, d, now).pass = Special.pass
+            end
+        end
+    end
+
+    -- Everything that didn't draw is put away: switched off, deleted, or built
+    -- for the unit type this plate no longer holds. Plates are recycled, so the
+    -- frames it filled for a player are still on it when an NPC takes it over.
+    for _, row in pairs(rows) do
+        if row.pass ~= Special.pass and (row.shown or 0) > 0 then hideAuraRow(row) end
+    end
+end
+
 local function updateAuras(f)
     if not f.auraRows then return end
     f.auraDirty = nil
     for _, which in ipairs(AURA_KINDS) do updateAuraRow(f, which) end
+    Special.updateRows(f)
 end
 
 -- Ticks the timer text on whatever is showing, without re-scanning. An expired
@@ -1932,6 +2264,13 @@ local function advanceAuraTimers(f)
     local now = GetTime()
     for _, row in pairs(f.auraRows) do
         if tickRowTimers(row, now) then f.auraDirty = true end
+    end
+    -- Special frames are fed by the same scan as the rows above the bar, so an
+    -- icon running out on one means the same thing: rescan the plate.
+    if f.specialRows then
+        for _, row in pairs(f.specialRows) do
+            if tickRowTimers(row, now) then f.auraDirty = true end
+        end
     end
     if f.bossRow and tickRowTimers(f.bossRow, now) then f.bossDirty = true end
 end
@@ -2782,7 +3121,23 @@ end
 -- draws the widest bar. The target multiplier is left out — growing every click
 -- box for the one plate you already clicked makes packed plates fight over the
 -- mouse. CLICK_PAD is slack so clicks just off a thin bar still land.
-local CLICK_PAD_X, CLICK_PAD_Y = 10, 24
+--
+-- The vertical half is not only slack: it lands in the HEIGHT handed to
+-- SetNamePlateSize, and that rect is what the client stacks plates by. On a 22px
+-- bar it is most of the gap between two stacked plates, which is why it is a
+-- setting (general.clickPadX/Y) rather than a constant — a "my plates are too far
+-- apart" reading has to be able to tell this apart from Vertical spacing, and
+-- then act on it. These are only the fallbacks behind those keys.
+local CLICK_PAD_X_DEFAULT, CLICK_PAD_Y_DEFAULT = 10, 24
+
+-- Floored and clamped at the read rather than the write, so a value that reached
+-- the profile some other way (import, hand-edited SavedVariables) can't hand a
+-- fractional or negative size to the plate API.
+local function clickPad(g)
+    local x = math.floor(tonumber(g and g.clickPadX) or CLICK_PAD_X_DEFAULT)
+    local y = math.floor(tonumber(g and g.clickPadY) or CLICK_PAD_Y_DEFAULT)
+    return math.max(0, x), math.max(0, y)
+end
 
 local sizesPending = false
 
@@ -2887,8 +3242,9 @@ local function computePlateSize()
 
     -- Rounded: these end up as frame sizes, and a fractional one only invites the
     -- same per-side pixel rounding that made the borders uneven.
-    return math.floor(widest  + CLICK_PAD_X + 0.5),
-           math.floor(tallest + CLICK_PAD_Y + 0.5),
+    local padX, padY = clickPad(g)
+    return math.floor(widest  + padX + 0.5),
+           math.floor(tallest + padY + 0.5),
            widest, tallest
 end
 
@@ -3099,8 +3455,14 @@ end
 -- for every swing in a forty-man pull, and a profile that infers nothing
 -- shouldn't pay to read one.
 local inferEventsOn = false
+local durationsOn   = false
 
-local function auraInferenceWanted()
+-- Is any aura strip actually drawing? `requireFromEvents` narrows that to unit
+-- types whose strips are ALSO fed by the combat log, which is what the inferred
+-- store needs. The duration engine does not: rebuilding the timer on an aura
+-- the client already listed has nothing to do with whether we additionally
+-- infer the ones it won't list.
+local function auraStripsWanted(requireFromEvents)
     if not isEnabled() then return false end
     local d = cfg()
     local a = d and d.auras
@@ -3110,11 +3472,19 @@ local function auraInferenceWanted()
     -- reason to listen if only the NPC lists have anything in them.
     for _, def in ipairs(Data.AURA_UNITS) do
         local u = a.units[def.key]
-        if u and u.fromEvents then
+        if u and (u.fromEvents or not requireFromEvents) then
             for _, which in ipairs(AURA_KINDS) do
                 local o = u[which]
-                if o and o.enabled ~= false and Data.AuraLookup(def.key, which).count > 0 then
-                    return true
+                local lookup = Data.AuraLookup(def.key, which)
+                -- `main`, not `count`: entries moved onto a special frame are
+                -- not drawn by this row and can't keep it listening.
+                if o and o.enabled ~= false and lookup.main > 0 then return true end
+                -- And the frames themselves, which draw whether or not the row
+                -- an entry came off is showing — so they answer for themselves.
+                for _, bar in ipairs(Data.SpecialBars(def.key)) do
+                    if bar.enabled ~= false and (lookup.bars[bar.id] or 0) > 0 then
+                        return true
+                    end
                 end
             end
         end
@@ -3123,7 +3493,21 @@ local function auraInferenceWanted()
 end
 
 local function syncAuraEvents()
-    local want = auraInferenceWanted()
+    -- The duration engine reads the combat log itself and costs nothing while
+    -- nobody has registered, so it follows the weaker condition of the two.
+    if Durations then
+        local wantDurations = auraStripsWanted(false)
+        if wantDurations ~= durationsOn then
+            durationsOn = wantDurations
+            if wantDurations then
+                Durations.Register("Nameplates")
+            else
+                Durations.Unregister("Nameplates")
+            end
+        end
+    end
+
+    local want = auraStripsWanted(true)
     if want == inferEventsOn then return end
     inferEventsOn = want
 
@@ -3303,6 +3687,10 @@ function NP.refresh()
     -- Before anything reads the aura settings: a profile saved under the old
     -- single-pair shape still has its whitelists at auras.buffs/auras.debuffs.
     Data.MigrateAuras()
+    -- After it, since it works on the per-unit-type blocks that migration
+    -- creates. Like the NPC seed, it fires here as well as at login so a profile
+    -- switched to later gets its starting frame on the switch.
+    Data.EnsureSpecialBars()
     -- The whitelists flatten into match maps nothing else diffs, so every path that
     -- can change them drops the cache here. The preview's list derives from them too.
     Data.InvalidateAuras()
@@ -3411,8 +3799,9 @@ NP.active = active
 --   /denp click  outlines each base plate's rect. With insets zeroed that rect
 --                IS the click box: a bar outside it means the plate is too
 --                small, a bar inside it with dead edges means something else is
---                cropping or covering it. Yellow while the cursor is
---                geometrically inside.
+--                cropping or covering it. Yellow while the client considers the
+--                unit moused over — a cursor-in-rect test is impossible here,
+--                see unitIsHovered.
 --   /denp dump   the same as numbers, including the two widths in screen pixels.
 local function debugPrint(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cfffb2c36Nameplates:|r " .. msg)
@@ -3426,6 +3815,12 @@ local clickDebugShown = false
 -- from a too-small click box, so the overlay names whatever is under the cursor.
 -- Printed only on change and time-limited, or a cursor on a boundary is two
 -- lines of chat a frame.
+--
+-- Reaches less than it used to, now that the caller's hover test is the mouseover
+-- TOKEN rather than a cursor-in-rect test (see unitIsHovered): a frame that
+-- blocks world hit-testing outright also stops the token being set, so this can't
+-- fire for it. What it still catches is the token coming from the unit's 3D model
+-- while a frame covers the plate itself — same finding, reached from the side.
 local lastFocusKey, lastFocusAt = nil, 0
 local FOCUS_REPORT_INTERVAL = 2
 
@@ -3440,7 +3835,7 @@ local function reportMouseFocus()
     lastFocusKey, lastFocusAt = key, now
     if focus and focus ~= WorldFrame then
         local name = (focus.GetName and focus:GetName()) or "an unnamed frame"
-        debugPrint(("cursor is inside a plate, but |cffff4040%s|r is over it and takes the mouse — that frame is eating the click.")
+        debugPrint(("this unit is your mouseover, but |cffff4040%s|r is over its plate and takes the mouse — that frame is eating the click.")
             :format(name))
     end
 end
@@ -3460,6 +3855,15 @@ local function safeNumber(v)
     return n
 end
 
+-- The same restricted-region wall the hover test hits: measuring a base plate can
+-- throw outright rather than return a number. nil means "the client won't say",
+-- which is a different answer from 0 and has to stay tellable apart from it.
+local function safeSize(frame)
+    local ok, w, h = pcall(function() return frame:GetWidth(), frame:GetHeight() end)
+    if not ok then return nil end
+    return safeNumber(w), safeNumber(h)
+end
+
 local function hitInsetsFor(base)
     local mgr = C_NamePlateManager
     if not (mgr and mgr.GetNamePlateHitTestInsets and Enum and Enum.NamePlateType) then
@@ -3475,6 +3879,25 @@ local function hitInsetsFor(base)
     local l, r, t, b = safeNumber(rl), safeNumber(rr), safeNumber(rt), safeNumber(rb)
     if not (l and r and t and b) then return nil end
     return l, r, t, b, hostile and "enemy" or "friendly"
+end
+
+-- Keyed off the "mouseover" unit token for exactly the reason spelled out above
+-- updateHover: the overlay is parented to the restricted base plate, where every
+-- position-measurement API is blocked. `parent:IsMouseOver()` threw "Can't
+-- measure restricted regions" once per plate per frame and took /denp click down
+-- with it — and asking our own overlay instead fails the same way, since its rect
+-- is anchored to the base.
+--
+-- So yellow means "the client considers this unit moused over", NOT "the cursor
+-- is geometrically inside the outline". Weaker, but for a click box arguably the
+-- more useful of the two: it says whether the client agrees your cursor is on the
+-- unit at that spot, which is the question being asked. The token also lights up
+-- when you point at the unit's 3D model, so it's the reading NEAR THE PLATE that
+-- means anything.
+local function unitIsHovered(base)
+    if not UnitExists("mouseover") then return false end
+    local f = plates[base]
+    return (f and f.unit and UnitIsUnit(f.unit, "mouseover")) and true or false
 end
 
 local function clickBoxOverlay(base)
@@ -3513,7 +3936,7 @@ local function clickBoxOverlay(base)
             self:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -r,  b)
         end
 
-        local over = parent:IsMouseOver()
+        local over = unitIsHovered(parent)
         local cr, cg = over and 1 or 0, over and 0.85 or 1
         self.fill:SetVertexColor(cr, cg, 0, over and 0.20 or 0.08)
         paintBorder(self.edge, cr, cg, 0, 1)
@@ -3535,8 +3958,126 @@ local function setClickDebug(shown)
     end
 end
 
+-- ── Click pad overlay ────────────────────────────────────────────────────────
+-- Different question from /denp click, so a different overlay: that one asks
+-- "where does the client take a click", this one asks "how much of the plate rect
+-- is padding rather than bar" — which is the number that also sets how far apart
+-- stacked plates sit, and the one you're tuning on the settings page.
+--
+-- Four textures covering exactly plate rect MINUS bar, once each: top and bottom
+-- run the full width (so they own the corners), left and right only the bar's
+-- height. Anchored rather than sized — the bar lives in a scaled frame and the
+-- plate rect doesn't, and a cross-frame anchor resolves in screen space across
+-- that difference, the same thing `deco` relies on. That also means the bands
+-- re-fit themselves when the pad, the bar size or the scale changes, with nothing
+-- to recompute.
+local function padOverlay(base)
+    local o = base.drievPadBox
+    if o then return o end
+
+    -- No bar to measure the pad against: a plate that has never held a unit has
+    -- no frame of ours yet, and NAME_PLATE_UNIT_ADDED will come back through here.
+    local f = plates[base]
+    if not (f and f.health) then return nil end
+
+    o = CreateFrame("Frame", nil, base)
+    o:SetAllPoints(base)   -- the RAW plate rect, uncropped: what the pad produces
+    -- One under the click box overlay, so running both at once layers the same way
+    -- every time: the hit-area outline reads over the shaded pad, not through it.
+    o:SetFrameLevel((base:GetFrameLevel() or 0) + TARGET_RAISE + 19)
+
+    local h = f.health
+
+    local function band()
+        local t = o:CreateTexture(nil, "OVERLAY", nil, 5)
+        t:SetTexture(WHITE)
+        -- Cyan, so it can't be confused with /denp click's green/yellow if both
+        -- are up at once.
+        t:SetVertexColor(0.2, 0.8, 1, 0.30)
+        return t
+    end
+
+    local top = band()
+    top:SetPoint("TOPLEFT",  o, "TOPLEFT")
+    top:SetPoint("TOPRIGHT", o, "TOPRIGHT")
+    top:SetPoint("BOTTOM",   h, "TOP")
+
+    local bottom = band()
+    bottom:SetPoint("BOTTOMLEFT",  o, "BOTTOMLEFT")
+    bottom:SetPoint("BOTTOMRIGHT", o, "BOTTOMRIGHT")
+    bottom:SetPoint("TOP",         h, "BOTTOM")
+
+    local left = band()
+    left:SetPoint("LEFT",   o, "LEFT")
+    left:SetPoint("RIGHT",  h, "LEFT")
+    left:SetPoint("TOP",    h, "TOP")
+    left:SetPoint("BOTTOM", h, "BOTTOM")
+
+    local right = band()
+    right:SetPoint("RIGHT",  o, "RIGHT")
+    right:SetPoint("LEFT",   h, "RIGHT")
+    right:SetPoint("TOP",    h, "TOP")
+    right:SetPoint("BOTTOM", h, "BOTTOM")
+
+    -- The plate rect's own edge, so the outer boundary of the pad is a line rather
+    -- than wherever the tint fades out against the world behind it.
+    o.edge = createBorder(o, 7)
+    layoutBorder(o.edge, o, 1, 0)
+    paintBorder(o.edge, 0.2, 0.8, 1, 1)
+
+    base.drievPadBox = o
+    return o
+end
+
+-- 0 is off, otherwise the time it comes down at. One value rather than a shown
+-- flag alongside a deadline, so the two can't disagree about whether it's up.
+local padDebugUntil = 0
+
+local function setPadDebug(until_)
+    padDebugUntil = until_ or 0
+    local on = padDebugUntil > GetTime()
+    for base in pairs(plates) do
+        if on then
+            local o = padOverlay(base)
+            if o then o:Show() end
+        elseif base.drievPadBox then
+            base.drievPadBox:Hide()
+        end
+    end
+
+    if on then
+        local deadline = padDebugUntil
+        C_Timer.After(padDebugUntil - GetTime(), function()
+            -- Only the run that scheduled this may take it down. Pressing the
+            -- button again mid-window moves the deadline, and every plate that
+            -- appears while it's up schedules one of these too — all of them fire,
+            -- and this is what makes the stale ones no-ops instead of cutting the
+            -- window short.
+            if padDebugUntil == deadline then setPadDebug(0) end
+        end)
+    end
+end
+
 refreshClickDebug = function()
     if clickDebugShown then setClickDebug(true) end
+    -- Re-run through setPadDebug rather than shown-checked here: a plate that
+    -- entered the pool mid-window needs its overlay built, and the deadline is
+    -- already carried in padDebugUntil.
+    if padDebugUntil > GetTime() then setPadDebug(padDebugUntil) end
+end
+
+-- Seconds the settings page's button runs for, and the default for the command.
+local PAD_SHOW_SECONDS = 10
+
+-- Returns the seconds it will run for, so the caller can say so without the two
+-- of them carrying separate copies of the number.
+function NP.ShowClickPadArea(seconds)
+    -- Clamped rather than trusted: a "show it for N seconds" call that was handed
+    -- 0 or a negative would hide the thing it was asked to show, and the caller
+    -- would still be told it was up.
+    seconds = math.min(300, math.max(1, tonumber(seconds) or PAD_SHOW_SECONDS))
+    setPadDebug(GetTime() + seconds)
+    return seconds
 end
 
 local function cvarStr(name)
@@ -3748,6 +4289,58 @@ local function setHitInset(raw)
     debugPrint("Now try clicking the far left and right ends of a health bar.")
 end
 
+-- The pad is invisible, in WorldFrame's coordinate space rather than the bar's,
+-- and it decides two things at once: how far off a thin bar a click still lands,
+-- and — through the plate height — how far apart stacked plates sit. Printing it
+-- alongside the rect it produces and the resulting stacking gap is what makes
+-- those two separable.
+--
+-- Reads and writes general.clickPadX/Y, the same keys the settings page drives:
+-- one source of truth, so dialling it in here and then opening the page doesn't
+-- show two different answers.
+local function showClickPad(rawX, rawY)
+    local d = cfg()
+    local g = d and d.general
+    if not g then
+        debugPrint("no profile loaded yet — try again once you're in the world.")
+        return
+    end
+
+    local x, y = tonumber(rawX), tonumber(rawY)
+    if x or y then
+        if InCombatLockdown() then
+            debugPrint("|cffff4040In combat|r — the client refuses plate geometry writes.")
+            return
+        end
+        -- Written raw; clickPad() is what floors and clamps, so the slash command
+        -- and the settings page can't disagree about what a stored value means.
+        if x then g.clickPadX = x end
+        if y then g.clickPadY = y end
+        applyPlateSizes()
+    end
+
+    local padX, padY = clickPad(g)
+    debugPrint(("click pad is |cffffff00%d|r x |cffffff00%d|r (default %d x %d)")
+        :format(padX, padY, CLICK_PAD_X_DEFAULT, CLICK_PAD_Y_DEFAULT))
+
+    local w, h, barW, barH = computePlateSize()
+    if w then
+        debugPrint(("widest bar %.1f x %.1f  ->  plate rect %d x %d"):format(barW, barH, w, h))
+
+        if g.stacking then
+            local overlap = (tonumber(g.overlapV) or 110) / 100
+            debugPrint(("stacking: %d x %.0f%% vertical spacing = |cffffff00%.1f|r apart, of which %d is pad and %.1f is bar")
+                :format(h, overlap * 100, h * overlap, padY, barH))
+        else
+            debugPrint("stacking is off, so the height only sets the click box.")
+        end
+    else
+        debugPrint("no plate size to report — the module is off, or no unit type has a width.")
+    end
+
+    debugPrint("Usage: /denp clickpad <x> <y> — saved to the profile, same as General > Engine > Click box padding. Lower Y stacks plates tighter; too low and clicks just off a thin bar stop landing.")
+end
+
 -- The decisive test the dump alone can't do: measure, re-apply, measure again.
 -- If the rect doesn't move, the setters aren't being honoured on this client. If
 -- it moves and then drifts back, something is overwriting us afterwards.
@@ -3763,14 +4356,27 @@ local function testApply()
         return
     end
 
+    -- Probed once up front rather than per plate: they're all the same kind of
+    -- frame, so if one refuses to be measured they all will, and the whole point
+    -- of this command is the before/after comparison. Better to say it can't be
+    -- done than to print a confident 0 x 0 -> 0 x 0.
+    if not safeSize(list[1]) then
+        debugPrint("this client won't let an addon measure a base plate (restricted region), so before/after can't be compared. |cffdddddd/denp clickpad|r still shows the size being ASKED for — whether it landed can't be read back.")
+        return
+    end
+
     local before = {}
-    for i, base in ipairs(list) do before[i] = { base:GetWidth() or 0, base:GetHeight() or 0 } end
+    for i, base in ipairs(list) do
+        local bw, bh = safeSize(base)
+        before[i] = { bw or 0, bh or 0 }
+    end
 
     applyPlateSizes()
 
     local w, h = computePlateSize()
     for i, base in ipairs(list) do
-        local aw, ah = base:GetWidth() or 0, base:GetHeight() or 0
+        local aw, ah = safeSize(base)
+        aw, ah = aw or 0, ah or 0
         local moved    = math.abs(aw - before[i][1]) > 0.5 or math.abs(ah - before[i][2]) > 0.5
         local atTarget = math.abs(aw - (w or 0)) <= 0.5 and math.abs(ah - (h or 0)) <= 0.5
 
@@ -3792,6 +4398,20 @@ local function testApply()
     debugPrint("Run this again in a few seconds: if it drifts back, something re-sizes plates after us.")
 end
 
+-- Guarded: a module folder updated ahead of core would otherwise error at load
+-- over a listing, which is the least important thing this file does.
+if addon.RegisterSlash then
+    addon.RegisterSlash("Nameplates", {
+        { "/denp help",             "this list (also /drievnameplates)" },
+        { "/denp click",            "outline the hit area on every nameplate" },
+        { "/denp dump",             "print the click box measurements and API surface" },
+        { "/denp apply",            "re-apply the plate size and report whether it moved" },
+        { "/denp inset <n>",        "set the hit-test inset live (negative expands)" },
+        { "/denp clickpad [x] [y]", "show or set the click padding around the bar, and what it does to stacking" },
+        { "/denp padbox [secs]",    "shade that padding on every nameplate on screen for 10 seconds" },
+    })
+end
+
 SLASH_DRIEVNAMEPLATES1 = "/denp"
 SLASH_DRIEVNAMEPLATES2 = "/drievnameplates"
 SlashCmdList["DRIEVNAMEPLATES"] = function(msg)
@@ -3800,19 +4420,30 @@ SlashCmdList["DRIEVNAMEPLATES"] = function(msg)
     cmd = strlower(cmd or "")
     if cmd == "inset" then
         setHitInset(arg)
+    elseif cmd == "clickpad" or cmd == "pad" then
+        -- Both optional and independent: "/denp clickpad" reports, and a lone
+        -- number sets X only, which is the shape `inset` already taught.
+        local x, y = arg:match("^(%S*)%s*(%S*)")
+        showClickPad(x, y)
+    elseif cmd == "padbox" or cmd == "showpad" then
+        local secs = NP.ShowClickPadArea(arg)
+        debugPrint(("Click pad shaded on every plate for %.0f seconds — cyan is the padding, the clear gap inside it is the bar. The top and bottom bands are what stacking measures.")
+            :format(secs))
     elseif cmd == "click" or cmd == "clickbox" then
         setClickDebug(not clickDebugShown)
         debugPrint(clickDebugShown
-            and "Overlay ON. The outline is the hit area as the client reports it, falling back to the raw plate rect when the insets can't be read — so where clicks actually land falling short of the outline is itself the finding. Yellow while the cursor is inside it."
+            and "Overlay ON. The outline is the hit area as the client reports it, falling back to the raw plate rect when the insets can't be read — so where clicks actually land falling short of the outline is itself the finding. Yellow means the client agrees you're on that unit: drag the cursor in from outside and the edge where it turns yellow is the real one, wherever the outline is."
             or  "Overlay off.")
     elseif cmd == "dump" then
         dumpClickArea()
     elseif cmd == "apply" then
         testApply()
     else
-        debugPrint("/denp click     : outline the hit area on every nameplate")
-        debugPrint("/denp dump      : print the click box measurements and API surface")
-        debugPrint("/denp apply     : re-apply the plate size and report whether it moved")
-        debugPrint("/denp inset <n> : set the hit-test inset live (negative expands)")
+        debugPrint("/denp click            : outline the hit area on every nameplate")
+        debugPrint("/denp dump             : print the click box measurements and API surface")
+        debugPrint("/denp apply            : re-apply the plate size and report whether it moved")
+        debugPrint("/denp inset <n>        : set the hit-test inset live (negative expands)")
+        debugPrint("/denp clickpad [x] [y] : show or set the click padding around the bar, and what it does to stacking")
+        debugPrint("/denp padbox [secs]    : shade that padding on every nameplate on screen for 10 seconds")
     end
 end

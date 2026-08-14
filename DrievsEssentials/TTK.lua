@@ -8,6 +8,21 @@ local function ttkSettings()
     return addon.db and addon.db.settings and addon.db.settings.ttk
 end
 
+-- The counter's own font block, and the shape it had before Font.lua: a bare
+-- fontName/fontSize pair with the outline hardcoded. Adopt folds those into the
+-- block once, and neither key is declared in the defaults any more, so nothing
+-- refills them at the next login.
+local FONT_DEFAULT = addon.Font.New({ size = 24 })
+local FONT_LEGACY  = { font = "fontName", size = "fontSize" }
+
+addon.Font.MigrateBlock(function(s) return s.ttk end, "font", FONT_LEGACY)
+
+local function ttkFont()
+    local s = ttkSettings()
+    if not s then return nil end
+    return addon.Font.Adopt(s, "font", FONT_LEGACY)
+end
+
 -- Cached after first check — addon load state doesn't change mid-session,
 -- and this is queried on every UNIT_HEALTH tick during combat.
 local weakAurasLoaded
@@ -59,11 +74,15 @@ end
 
 local function applyFont()
     local f = getOrCreate()
-    local s = ttkSettings()
-    local name = (s and s.fontName) or "Friz Quadrata TT"
-    local size = (s and s.fontSize) or 24
-    local path = addon.FetchMedia("font", name) or "Fonts\\FRIZQT__.TTF"
-    f.text:SetFont(path, size, "OUTLINE")
+    local cfg = ttkFont()
+    -- Pinned to the frame rather than anchored by one edge: the frame is sized to
+    -- the text below, so a drop shadow (which counts as part of an edge-anchored
+    -- string's content) must not be able to shove the glyphs sideways.
+    addon.Font.ApplyAt(f.text, cfg, FONT_DEFAULT,
+        { fill = f, justifyH = "CENTER", justifyV = "MIDDLE" })
+    -- Nothing recolours this string as the count runs down, so it is white
+    -- unless the block's custom colour is ticked.
+    addon.Font.ApplyColor(f.text, cfg, FONT_DEFAULT, 1, 1, 1)
 
     -- Size the frame (and so the edit-mode box, since the text fills it) to this
     -- font, measured against a worst-case "00:00" rather than the live text — else

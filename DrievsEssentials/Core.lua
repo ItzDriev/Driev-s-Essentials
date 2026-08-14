@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.2.4"
+addon.version = "1.3.0"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras (TTK.lua uses
@@ -33,8 +33,11 @@ local defaults = {
         ttk = {
             enabled  = false,
             bossOnly = false,
-            fontSize = 24,
-            fontName = "Friz Quadrata TT",
+            -- The shared font block (Font.lua): face, size, outline, offsets and
+            -- shadow, the same eight settings every other text in the addon has.
+            -- The old fontName/fontSize pair is folded into it on first load and
+            -- is deliberately no longer declared here — see addon.Font.Adopt.
+            font     = addon.Font.New({ size = 24 }),
         },
         tooltip = {
             enabled        = false, -- master toggle for the whole skin
@@ -393,6 +396,37 @@ local function applyDefaults(src, dst)
     return dst
 end
 
+-- ── Shape migrations ─────────────────────────────────────────────────────────
+-- A setting that changed SHAPE — the font blocks are the reason this exists —
+-- has to be rewritten BEFORE applyDefaults, never after. Two things go wrong
+-- afterwards: the merge has already filled every missing key from the defaults,
+-- so a value the user chose is indistinguishable from one just installed; and
+-- where the default is now a table over a saved scalar, the merge discards the
+-- scalar outright (it starts a fresh table for anything that isn't one).
+--
+-- Modules register at load time, which is before PLAYER_LOGIN merges anything.
+-- A migration takes the raw stored profile, must tolerate every key being
+-- absent, and must be safe to run again — profile switch, copy and import all
+-- come back through here.
+local migrations = {}
+
+function addon.RegisterMigration(fn)
+    migrations[#migrations + 1] = fn
+end
+
+local function normalizeProfile(prof)
+    if type(prof) ~= "table" then prof = {} end
+    for _, fn in ipairs(migrations) do
+        -- pcall: a module's migration is not worth a broken login, and the
+        -- merge below still produces a usable profile without it.
+        local ok, err = pcall(fn, prof)
+        if not ok then
+            print("|cfffb2c36Driev's Essentials|r: a settings migration failed — " .. tostring(err))
+        end
+    end
+    return applyDefaults(defaults, prof)
+end
+
 -- ── Profiles ───────────────────────────────────────────────────────────────
 -- DrievSettingsDB is one ACCOUNT-WIDE SavedVariable, so per-character profiles
 -- aren't automatic — we keep our own character-key -> profile-name map inside it.
@@ -555,7 +589,7 @@ function addon.SetActiveProfile(name)
     if not DrievSettingsDB.profiles[name] then return false, "Profile not found." end
     local oldSettings = addon.db and addon.db.settings
 
-    DrievSettingsDB.profiles[name] = applyDefaults(defaults, DrievSettingsDB.profiles[name])
+    DrievSettingsDB.profiles[name] = normalizeProfile(DrievSettingsDB.profiles[name])
     addon.db = DrievSettingsDB.profiles[name]
     addon.activeProfileName = name
     DrievSettingsDB.profileAssignments[getCharKey()] = name
@@ -570,7 +604,7 @@ function addon.CreateProfile(name)
     name = name and name:match("^%s*(.-)%s*$") or ""
     if name == "" then return nil, "Enter a profile name." end
     if DrievSettingsDB.profiles[name] then return nil, "A profile with that name already exists." end
-    DrievSettingsDB.profiles[name] = applyDefaults(defaults, {})
+    DrievSettingsDB.profiles[name] = normalizeProfile({})
     return name
 end
 
@@ -605,7 +639,7 @@ function addon.CopyProfile(fromName, toName)
     if not src then return false, "Source profile not found." end
     if not DrievSettingsDB.profiles[toName] then return false, "Destination profile not found." end
 
-    local copy = applyDefaults(defaults, deepCopy(src))
+    local copy = normalizeProfile(deepCopy(src))
     DrievSettingsDB.profiles[toName] = copy
     if addon.GetActiveProfileName() == toName then
         addon.db = copy
@@ -860,7 +894,7 @@ function addon.ImportProfile(name, str)
         return nil, err or "That doesn't look like a valid profile string."
     end
 
-    local prof = applyDefaults(defaults, data)
+    local prof = normalizeProfile(data)
     -- After the merge, so a filler is handed a complete block rather than
     -- whatever subset the string happened to carry.
     for key, fill in pairs(importFillers) do
@@ -889,7 +923,7 @@ boot:SetScript("OnEvent", function(self, event, name)
             profileName = "Default"
             DrievSettingsDB.profileAssignments[charKey] = profileName
         end
-        DrievSettingsDB.profiles[profileName] = applyDefaults(defaults, DrievSettingsDB.profiles[profileName])
+        DrievSettingsDB.profiles[profileName] = normalizeProfile(DrievSettingsDB.profiles[profileName])
         addon.db = DrievSettingsDB.profiles[profileName]
         addon.activeProfileName = profileName
 
@@ -912,13 +946,58 @@ boot:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
+-- ── Slash commands ───────────────────────────────────────────────────────────
+-- Every module ships a command of its own and nothing listed them, so a user who
+-- forgot `/denp` had no way back to it short of reading the source. Modules
+-- register here at load time exactly as they register their defaults, which is
+-- what makes `/driev help` list what is actually loaded rather than everything
+-- that could be.
+--
+-- `entries` is an ordered list of { command, description } pairs, or a function
+-- returning one — Item Rack's aliases aren't known until it has seen which of
+-- them another addon already owns.
+local slashGroups = {}
+
+function addon.RegisterSlash(label, entries)
+    slashGroups[#slashGroups + 1] = { label = label, entries = entries }
+end
+
+local function printSlashHelp()
+    print("|cfffb2c36Driev's Essentials|r — slash commands:")
+    for _, group in ipairs(slashGroups) do
+        local entries = group.entries
+        if type(entries) == "function" then
+            -- pcall: one module's listing going wrong must not swallow the rest
+            -- of the help, which is the only way to find the others.
+            local ok, result = pcall(entries)
+            entries = ok and result or nil
+        end
+        if type(entries) == "table" and #entries > 0 then
+            print("  |cffffd100" .. group.label .. "|r")
+            for _, entry in ipairs(entries) do
+                print(("    |cffdddddd%s|r — %s"):format(entry[1], entry[2]))
+            end
+        end
+    end
+end
+
+addon.RegisterSlash("Core", {
+    { "/driev",              "open the settings window (also /dv, /dre)" },
+    { "/driev help",         "this list" },
+    { "/driev debug on|off", "start or stop logging API events to SavedVariables" },
+    { "/driev debug print",  "dump the saved log to chat" },
+    { "/driev debug clear",  "wipe the saved log" },
+})
+
 SLASH_DRIEVSETTINGS1 = "/driev"
 SLASH_DRIEVSETTINGS2 = "/dv"
 SLASH_DRIEVSETTINGS3 = "/dre"
 SlashCmdList["DRIEVSETTINGS"] = function(msg)
     local cmd = msg and msg:lower():match("^%s*(%S*)") or ""
 
-    if cmd == "debug" then
+    if cmd == "help" or cmd == "?" or cmd == "commands" then
+        printSlashHelp()
+    elseif cmd == "debug" then
         local sub = msg:lower():match("%S+%s+(%S*)") or ""
         if sub == "on" then
             if addon.State then addon.State.setDebug(true) end
@@ -929,11 +1008,13 @@ SlashCmdList["DRIEVSETTINGS"] = function(msg)
         elseif sub == "clear" then
             if addon.State then addon.State.clearLog() end
         else
+            -- /de was never one of the registered commands (they are /driev, /dv
+            -- and /dre), so following this listing did nothing.
             print("|cfffb2c36Driev's Essentials|r debug commands:")
-            print("  |cffdddddd/de debug on|r    — start logging API events to SavedVariables")
-            print("  |cffdddddd/de debug off|r   — stop logging")
-            print("  |cffdddddd/de debug print|r — dump saved log to chat")
-            print("  |cffdddddd/de debug clear|r — wipe the saved log")
+            print("  |cffdddddd/driev debug on|r    — start logging API events to SavedVariables")
+            print("  |cffdddddd/driev debug off|r   — stop logging")
+            print("  |cffdddddd/driev debug print|r — dump saved log to chat")
+            print("  |cffdddddd/driev debug clear|r — wipe the saved log")
         end
     else
         if addon.ToggleUI then addon.ToggleUI() end

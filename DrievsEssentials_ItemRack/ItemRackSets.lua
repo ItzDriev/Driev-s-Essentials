@@ -14,6 +14,8 @@ local WHITE = UI.WHITE
 
 local applyBackdrop        = W.applyBackdrop
 local flatButton           = W.flatButton
+local createTab            = W.createTab
+local activateTab          = W.activateTab
 local createCheckbox       = W.createCheckbox
 local createScrollDropdown = W.createScrollDropdown
 local showConfirmPopup     = W.showConfirmPopup
@@ -36,14 +38,19 @@ local COL_STEP  = 40
 local CENTER_W  = 244
 local TOPBAR_H  = 26
 local HEADER_H  = 32 -- title line + "Select Set" label, above the picker row
+-- The tab strip, between the title and the "Select Set" label. Sits in the
+-- vertical stack like the rows below it, so everything under it moves as one.
+local TABROW_H  = 28
 -- The one row below the picker. Everything below it hangs off this, and the
 -- window's height includes it, so the whole layout follows the constant.
 local BINDROW_H = 24
--- Shorter grid than before so the options block and save row can sit level with
--- the bottom of the side columns; the extra columns keep the icon count similar.
+-- The grid's height is what the window's spare height goes into: EXTRA_H below
+-- is one more row of icons, so the options block and save row keep the space
+-- they had.
 local ICON_COLS = 8
-local ICON_ROWS = 5
+local ICON_ROWS = 6
 local ICON_CELL = 28
+local EXTRA_H   = ICON_CELL
 local AMMO_SCALE = 0.75
 -- Slide-out set list on the left edge.
 local SIDE_W    = 190
@@ -60,10 +67,16 @@ local frame            -- the window, built on first open
 local slotButtons = {}
 local iconButtons = {}
 
--- Working copy of the set being edited. `selected` is what makes a slot part of
--- the set; `id` is the item chosen for it. `filter` is nil for "show everything"
--- or an array of indices into the virtual list when searching.
-local editor = { inv = {}, headIcons = {}, filter = nil, selectedIcon = nil, iconOffset = 0, iconSearch = "" }
+-- Working copy of whatever is being edited. `selected` is what makes a slot part
+-- of it; `id` is the item chosen for that slot. `filter` is nil for "show
+-- everything" or an array of indices into the virtual list when searching.
+--
+-- `cond` is what the two tabs come down to: nil while the Set Editor tab is
+-- editing the set's own equip list, or a conditional's key while the Set
+-- Conditionals tab is editing that conditional's overrides. Both are slot → item
+-- id tables, so the slot buttons, the pop-out item menus and everything else
+-- below serve either without knowing which is loaded.
+local editor = { inv = {}, headIcons = {}, filter = nil, selectedIcon = nil, iconOffset = 0, iconSearch = "", cond = nil }
 for i = 0, 19 do editor.inv[i] = {} end
 
 -- ── Icon list ────────────────────────────────────────────────────────────────
@@ -301,13 +314,24 @@ local function syncHideCheckbox()
     frame.hide:SetChecked(DB().sets[setname] and IR.IsHidden(setname) and true or false)
 end
 
--- Loads a saved set into the working copy. Slots the set doesn't cover fall back
--- to whatever is worn, shown darkened, so they're easy to add.
+-- The slot → item table the working copy is filled from: the set's own equip
+-- list, or the selected conditional's overrides while that tab is up.
+local function editedSource(set)
+    if not set then return nil end
+    if editor.cond then
+        return set.conditionals and set.conditionals[editor.cond]
+    end
+    return set.equip
+end
+
+-- Loads a saved set into the working copy. Slots it doesn't cover fall back to
+-- whatever is worn, shown darkened, so they're easy to add.
 local function loadSet(setname)
-    local set = setname and DB().sets[setname]
+    local set    = setname and DB().sets[setname]
+    local source = editedSource(set)
     for i = 0, 19 do
-        if set and set.equip[i] then
-            editor.inv[i].id = set.equip[i]
+        if source and source[i] then
+            editor.inv[i].id = source[i]
             editor.inv[i].selected = true
         else
             editor.inv[i].id = GetID(i)
@@ -327,8 +351,18 @@ local function loadSet(setname)
     refreshInv()
 end
 
+-- Re-reads whatever the editor is pointed at without changing which set that is.
+-- What changed is the tab, or the conditional inside it.
+local function reloadEditor()
+    local setname = currentName()
+    loadSet(setname ~= "" and setname or nil)
+end
+
 function IR.SaveSet()
     if not frame then return end
+    -- The working copy holds a conditional's overrides while that tab is up, and
+    -- writing those over the set's own gear is the one way this could go wrong.
+    if editor.cond then return end
     frame.nameBox:ClearFocus()
     local setname = currentName()
     if setname == "" or IR.SetnameBlacklist[setname] then return end
@@ -362,6 +396,51 @@ function IR.SaveSet()
     if frame.sideList then frame.sideList:Refresh() end
     validateButtons()
     IR.Print("Saved set \"" .. setname .. "\".")
+end
+
+-- ── Conditionals ─────────────────────────────────────────────────────────────
+-- The overrides for one conditional on one set: the slots ticked in the editor,
+-- with the item each should carry while that conditional holds. Nothing else
+-- about the set is touched, so saving a conditional can't disturb its base gear.
+
+function IR.SaveConditional()
+    if not (frame and editor.cond) then return end
+    local setname = currentName()
+    local set     = DB().sets[setname]
+    if not set then return end
+
+    local overrides, any = {}, nil
+    for i = 0, 19 do
+        if editor.inv[i].selected then
+            overrides[i] = editor.inv[i].id
+            any = true
+        end
+    end
+
+    set.conditionals = set.conditionals or {}
+    -- An empty conditional is stored as nothing at all rather than an empty
+    -- table: the resolve pass tests `next(overrides)` anyway, and this keeps a
+    -- set that has never used conditionals from carrying the bookkeeping.
+    set.conditionals[editor.cond] = any and overrides or nil
+    if not next(set.conditionals) then set.conditionals = nil end
+
+    local def = IR.GetConditional(editor.cond)
+    IR.Print(any
+        and ("Saved " .. (def and def.label or editor.cond) .. " for \"" .. setname .. "\".")
+        or  ("Cleared " .. (def and def.label or editor.cond) .. " for \"" .. setname .. "\"."))
+    validateButtons()
+end
+
+-- Drops the overrides and reloads, which drops the ticks with them — the same
+-- thing the Save button would do from an empty selection, said out loud.
+function IR.ClearConditional()
+    if not (frame and editor.cond) then return end
+    local set = DB().sets[currentName()]
+    if not (set and set.conditionals and set.conditionals[editor.cond]) then return end
+    set.conditionals[editor.cond] = nil
+    if not next(set.conditionals) then set.conditionals = nil end
+    reloadEditor()
+    validateButtons()
 end
 
 function IR.DeleteSet()
@@ -729,8 +808,27 @@ local function buildSideList(parent, onPick)
     end)
     importOldBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- Binds sets by hovering them in the list below, so it belongs on this panel
+    -- rather than in the bind row, which only ever addresses the loaded set.
+    local quickBindBtn = flatButton(panel, "Quick Keybind", SIDE_BTN_W * 2 + 6, 18)
+    quickBindBtn:SetPoint("TOPLEFT", importOldBtn, "BOTTOMLEFT", 0, -6)
+    quickBindBtn:SetScript("OnClick", function()
+        if IR.SetBindModeActive() then
+            IR.StopSetBindMode()
+        else
+            IR.StartSetBindMode()
+        end
+    end)
+    quickBindBtn:HookScript("OnEnter", function(self)
+        IR.OnTooltip(self, "Quick Keybind",
+            "Bind keys to sets without loading them: hover a set in the list below and press the key "
+            .. "you want.\n\n"
+            .. "Escape finishes. Delete clears the hovered set's binding.")
+    end)
+    quickBindBtn:HookScript("OnLeave", function() GameTooltip:Hide() end)
+
     local header = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    header:SetPoint("TOPLEFT", importOldBtn, "BOTTOMLEFT", 0, -8)
+    header:SetPoint("TOPLEFT", quickBindBtn, "BOTTOMLEFT", 0, -8)
     header:SetText("Sets")
     UI.tint(header, C.red)
 
@@ -833,6 +931,7 @@ local function buildSideList(parent, onPick)
     local function createRow(index)
         local row = CreateFrame("Button", nil, sc, "BackdropTemplate")
         row:SetHeight(SIDE_ROW - 2)
+        row.isSetRow = true   -- how the quick keybind mode recognises one
         -- Both horizontal edges pinned to the scroll child, which tracks the
         -- scroll frame's width, so rows can't overhang the scrollbar.
         row:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -(index - 1) * SIDE_ROW)
@@ -921,6 +1020,19 @@ local function buildSideList(parent, onPick)
         updateThumb()
     end
 
+    -- Which set the pointer is over, for the quick keybind mode. Walks up from
+    -- mouse focus for the same reason the slot buttons do: the focus can be a
+    -- child region of the row rather than the row itself.
+    function panel:HoveredSetName()
+        local focus = addon.GetMouseFocusFrame()
+        while focus do
+            if focus.isSetRow then
+                return focus:IsShown() and focus.setName or nil
+            end
+            focus = focus.GetParent and focus:GetParent() or nil
+        end
+    end
+
     -- Re-reads the saved order. Called whenever sets are saved, deleted or the
     -- window opens; skipped mid-drag so it can't yank the list out from under
     -- the cursor.
@@ -934,6 +1046,8 @@ local function buildSideList(parent, onPick)
     -- A drag interrupted by the panel closing would otherwise leave dragName set,
     -- and Refresh() bails while a drag is live — the list would never update again.
     panel:SetScript("OnHide", function()
+        -- Nothing left to hover, so the prompt goes with the list it points at.
+        IR.StopSetBindMode()
         if not dragName then return end
         dragName = nil
         IR.SetSetOrder(list)
@@ -982,6 +1096,11 @@ function validateButtons()
     if not frame then return end
     local setname = currentName()
     local exists  = DB().sets[setname] ~= nil
+
+    -- Built with the rest of the window, so it's always there by the time
+    -- anything can call this; guarded only against the very first load, which
+    -- runs while buildFrame is still on its way down the file.
+    if frame.RefreshConditionals then frame.RefreshConditionals() end
 
     local anySelected
     for i = 0, 19 do
@@ -1144,6 +1263,8 @@ function IR.StartSlotBindMode()
         IR.Print("No Item Rack buttons on screen to bind — Alt+click a slot on your character sheet to make one.")
         return
     end
+    -- Two things listening for the same keypress is one too many.
+    IR.StopSetBindMode()
     -- A focused edit box swallows the keyboard before any frame sees it, so the
     -- prompt would sit there looking ready while the set name quietly gained an
     -- "f" for every key pressed.
@@ -1157,6 +1278,187 @@ end
 function IR.StopSlotBindMode()
     slotBindPaused = nil
     if slotBindPrompt then slotBindPrompt:Hide() end
+end
+
+-- ── Quick set key binding ────────────────────────────────────────────────────
+-- Slot binding's shape aimed at the side list: hover a set row and press a key,
+-- without having to load each set to bind it. Same reasoning throughout — the
+-- rows underneath must stay hoverable, so the prompt takes the keyboard only.
+
+local setBindPrompt
+local setBindPaused
+
+local function bindableSideList()
+    local list = frame and frame:IsShown() and frame.sideList
+    return (list and list:IsShown()) and list or nil
+end
+
+local function hoveredSetName()
+    local list = bindableSideList()
+    return list and list:HoveredSetName() or nil
+end
+
+-- Both places a binding lands: the readout beside "Bind Key" is about the loaded
+-- set, which may or may not be the one just bound, and the list carries the key
+-- column for all of them.
+local function afterSetBindChange()
+    if not frame then return end
+    validateButtons()
+    if frame.sideList then frame.sideList:Refresh() end
+end
+
+local function getSetBindPrompt()
+    if setBindPrompt then return setBindPrompt end
+
+    local p = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    p:SetSize(440, 86)
+    p:SetPoint("TOP", UIParent, "TOP", 0, -160)
+    p:SetFrameStrata("FULLSCREEN_DIALOG")
+    applyBackdrop(p, 2, C.panelBG, C.red)
+    p:EnableMouse(false)   -- see above: the rows being bound sit underneath
+    p:EnableKeyboard(true)
+    p:SetPropagateKeyboardInput(false)
+    p:Hide()
+
+    local title = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", 0, -10)
+    title:SetText("|cfffb2c36Quick Keybind|r")
+
+    local help = p:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    help:SetPoint("TOP", title, "BOTTOM", 0, -6)
+    help:SetWidth(410)
+    help:SetJustifyH("CENTER")
+    UI.tint(help, C.textGrey)
+    help:SetText("Hover a set in the list and press a key.\n"
+        .. "Escape finishes. Delete clears the hovered set's binding.")
+
+    local status = p:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    status:SetPoint("BOTTOM", 0, 10)
+    status:SetWidth(410)
+    status:SetJustifyH("CENTER")
+    p.status = status
+
+    p:SetScript("OnUpdate", function(self, elapsed)
+        self.throttle = (self.throttle or 0) + elapsed
+        if self.throttle < 0.1 then return end
+        self.throttle = 0
+        -- Nothing can be bound in combat, so don't sit there swallowing the
+        -- keyboard through a pull.
+        if InCombatLockdown() then
+            IR.StopSetBindMode()
+            IR.Print("Key bindings can't be changed in combat.")
+            return
+        end
+        -- The list can be folded away (or the window closed) from under the
+        -- prompt, which would leave it holding the keyboard over nothing.
+        if not bindableSideList() then
+            IR.StopSetBindMode()
+            return
+        end
+        local setname = hoveredSetName()
+        if not setname then
+            self.status:SetText("|cff9aa0aaNo set under the pointer.|r")
+            return
+        end
+        local set = DB().sets[setname]
+        local key = set and set.key
+        self.status:SetText("Over \"" .. setname .. "\" — "
+            .. (key and ("bound to |cfffb2c36" .. GetBindingText(key, nil, false) .. "|r")
+                     or "|cff9aa0aanot bound|r"))
+    end)
+
+    p:SetScript("OnKeyDown", function(self, key)
+        -- Keys are still swallowed while the question is up (this frame has the
+        -- keyboard either way), so Escape has to be routed to the dialog by
+        -- hand — hiding it runs its onCancel, which unpauses us.
+        if setBindPaused then
+            if key == "ESCAPE" and UI.confirmPopup then UI.confirmPopup:Hide() end
+            return
+        end
+        if IR.IsModifierKey(key) then return end
+        if key == "ESCAPE" then
+            IR.StopSetBindMode()
+            return
+        end
+
+        local setname = hoveredSetName()
+        if not setname then
+            IR.Print("Hover a set in the list first, then press the key you want.")
+            return
+        end
+        local set = DB().sets[setname]
+        if not set then return end
+
+        if key == "DELETE" or key == "BACKSPACE" then
+            if set.key then
+                set.key = nil
+                -- Has to run even with nothing left bound, or the binding we
+                -- already handed the client stays live after the set stops
+                -- claiming it.
+                IR.SetSetBindings()
+                afterSetBindChange()
+                IR.Print("Cleared the key binding for \"" .. setname .. "\".")
+            end
+            return
+        end
+
+        key = IR.ChordFromKey(key)
+        if set.key == key then return end
+
+        -- Suspended rather than closed while the question is up: the answer lands
+        -- back here, and the user is most likely part way down the list.
+        setBindPaused = true
+        IR.ConfirmBinding(key, "the set \"" .. setname .. "\"", nil, function()
+            setBindPaused = nil
+            -- Re-read: the set could have been deleted or renamed under the
+            -- dialog, which is modal to nothing at all.
+            local target = DB().sets[setname]
+            if not target then return end
+            target.key = key
+            IR.SetSetBindings()
+            afterSetBindChange()
+            IR.Print("Bound \"" .. setname .. "\" to " .. GetBindingText(key, nil, false) .. ".")
+        end, function()
+            setBindPaused = nil
+        end)
+    end)
+
+    setBindPrompt = p
+    return p
+end
+
+function IR.SetBindModeActive()
+    return setBindPrompt and setBindPrompt:IsShown() and true or false
+end
+
+function IR.StartSetBindMode()
+    if InCombatLockdown() then
+        IR.Print("Key bindings can't be changed in combat.")
+        return
+    end
+    if not bindableSideList() then
+        IR.Print("Open the set list first — quick keybinding works by hovering the sets in it.")
+        return
+    end
+    if not next(DB().sets) then
+        IR.Print("No sets to bind yet — save one first.")
+        return
+    end
+    -- Two things listening for the same keypress is one too many.
+    IR.StopSlotBindMode()
+    -- A focused edit box swallows the keyboard before any frame sees it, so the
+    -- prompt would sit there looking ready while the set name quietly gained an
+    -- "f" for every key pressed.
+    if frame then
+        if frame.nameBox   then frame.nameBox:ClearFocus()   end
+        if frame.searchBox then frame.searchBox:ClearFocus() end
+    end
+    getSetBindPrompt():Show()
+end
+
+function IR.StopSetBindMode()
+    setBindPaused = nil
+    if setBindPrompt then setBindPrompt:Hide() end
 end
 
 -- ── Build the window ─────────────────────────────────────────────────────────
@@ -1315,13 +1617,15 @@ end
 
 local function buildFrame()
     local colH    = #LEFT_COL * COL_STEP
-    -- The centre column ends level with the bottom edge of the last slot button
-    -- in each side column (wrist / lower trinket), not level with the column's
-    -- notional row height — that's what makes the save row line up with them.
-    local centerH  = (#LEFT_COL - 1) * COL_STEP + BTN
+    -- The centre column used to end level with the bottom edge of the last slot
+    -- button in each side column (wrist / lower trinket). EXTRA_H is the height
+    -- the window gained on top of that, all of it the extra icon row, so the
+    -- centre now runs that much past the side columns.
+    local centerH  = (#LEFT_COL - 1) * COL_STEP + BTN + EXTRA_H
     local contentH = math.max(colH, centerH)
     local width   = PAD * 2 + COL_STEP * 2 + CENTER_W + 12
-    local height  = HEADER_H + TOPBAR_H + BINDROW_H + PAD + contentH + 8 + COL_STEP + PAD
+    local height  = HEADER_H + TABROW_H + TOPBAR_H + BINDROW_H + PAD
+                  + contentH + 8 + COL_STEP + PAD
 
     local f = CreateFrame("Frame", "DrievItemRackSetFrame", UIParent, "BackdropTemplate")
     f:SetSize(width, height)
@@ -1350,12 +1654,25 @@ local function buildFrame()
     close:SetPoint("TOPRIGHT", -3, -3)
     close:SetScript("OnClick", function() f:Hide() end)
 
+    -- ── Tabs ─────────────────────────────────────────────────────────────────
+    -- Split evenly across the window: there are only two of them, and sized to
+    -- their labels they'd huddle in the corner looking like an afterthought.
+    local tabW = math.floor((width - PAD * 2 - 4) / 2)
+
+    local createTabBtn = createTab(f, "Set Editor", tabW)
+    createTabBtn:SetHeight(TABROW_H - 6)
+    createTabBtn:SetPoint("TOPLEFT", PAD, -(HEADER_H - 4))
+
+    local condTabBtn = createTab(f, "Set Conditionals", tabW)
+    condTabBtn:SetHeight(TABROW_H - 6)
+    condTabBtn:SetPoint("LEFT", createTabBtn, "RIGHT", 4, 0)
+
     -- ── Top bar: set picker and lock ─────────────────────────────────────────
     -- Bare container: the controls inside carry their own framing, and a second
     -- box around them just added noise.
     local top = CreateFrame("Frame", nil, f)
-    top:SetPoint("TOPLEFT", PAD, -(HEADER_H + PAD - 2))
-    top:SetPoint("TOPRIGHT", -PAD, -(HEADER_H + PAD - 2))
+    top:SetPoint("TOPLEFT", PAD, -(HEADER_H + TABROW_H + PAD - 2))
+    top:SetPoint("TOPRIGHT", -PAD, -(HEADER_H + TABROW_H + PAD - 2))
     top:SetHeight(TOPBAR_H - 4)
 
     -- Sits just above the picker, explaining what it's for.
@@ -1449,7 +1766,8 @@ local function buildFrame()
                 btn:SetPoint("TOP", prev, "BOTTOM", 0, -(COL_STEP - BTN))
             else
                 btn:SetPoint("TOP" .. side, f, "TOP" .. side,
-                    side == "LEFT" and PAD or -PAD, -(HEADER_H + TOPBAR_H + BINDROW_H + PAD))
+                    side == "LEFT" and PAD or -PAD,
+                    -(HEADER_H + TABROW_H + TOPBAR_H + BINDROW_H + PAD))
             end
             prev = btn
         end
@@ -1510,7 +1828,7 @@ local function buildFrame()
     -- ── Centre column ────────────────────────────────────────────────────────
     local center = CreateFrame("Frame", nil, f)
     center:SetPoint("TOPLEFT", f, "TOPLEFT", PAD + COL_STEP + 6,
-        -(HEADER_H + TOPBAR_H + BINDROW_H + PAD))
+        -(HEADER_H + TABROW_H + TOPBAR_H + BINDROW_H + PAD))
     center:SetSize(CENTER_W, centerH)
 
     local nameBox = CreateFrame("EditBox", nil, center, "BackdropTemplate")
@@ -1621,6 +1939,163 @@ local function buildFrame()
         })
     end)
 
+    -- ── Set Conditionals page ────────────────────────────────────────────────
+    -- Everything the two tabs have in common — the slot columns, their pop-out
+    -- item menus, the set list, the set picker — stays exactly where it is. This
+    -- page is only what differs: which conditional is being edited, whether it
+    -- holds right now, and where the ticked slots get written.
+
+    -- The dropdown sits in the bind row's place, directly under "Select Set", so
+    -- the page reads top-down: which set, which conditional, then the slots.
+    local condRow = CreateFrame("Frame", nil, f)
+    condRow:SetPoint("TOPLEFT", top, "BOTTOMLEFT", 0, -6)
+    condRow:SetPoint("TOPRIGHT", top, "BOTTOMRIGHT", 0, -6)
+    condRow:SetHeight(18)
+    condRow:Hide()
+
+    local condLabel = condRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condLabel:SetPoint("LEFT", 4, 0)
+    condLabel:SetText("Conditional")
+    UI.tint(condLabel, C.textDim)
+
+    local function conditionalLabels()
+        local out = {}
+        for i, def in ipairs(IR.Conditionals) do out[i] = def.label end
+        return out
+    end
+
+    local condPicker = createScrollDropdown(condRow, 200, conditionalLabels, function(label)
+        for _, def in ipairs(IR.Conditionals) do
+            if def.label == label then
+                editor.cond = def.key
+                break
+            end
+        end
+        reloadEditor()
+        validateButtons()
+    end)
+    condPicker:SetPoint("LEFT", condLabel, "RIGHT", 8, 0)
+    condPicker:SetPoint("RIGHT", -4, 0)
+    condPicker:SetHeight(18)
+
+    -- Fills the centre column's footprint, so the slot columns either side keep
+    -- their meaning and only the middle changes with the tab.
+    local condPanel = CreateFrame("Frame", nil, f)
+    condPanel:SetPoint("TOPLEFT", center, "TOPLEFT")
+    condPanel:SetSize(CENTER_W, centerH)
+    condPanel:Hide()
+
+    local condSaveBtn = flatButton(condPanel, "Save", 118, 22)
+    condSaveBtn:SetPoint("BOTTOMRIGHT", condPanel, "BOTTOMRIGHT", 0, 0)
+    condSaveBtn:SetScript("OnClick", function() IR.SaveConditional() end)
+
+    local condClearBtn = flatButton(condPanel, "Clear", 118, 22)
+    condClearBtn:SetPoint("BOTTOMLEFT", condPanel, "BOTTOMLEFT", 0, 0)
+    condClearBtn:SetScript("OnClick", function()
+        local def = IR.GetConditional(editor.cond)
+        showConfirmPopup({
+            title       = "Clear Conditional",
+            message     = "Forget the slots \"" .. currentName() .. "\" swaps for "
+                        .. (def and def.label or "this conditional") .. "?",
+            confirmText = "Clear",
+            onConfirm   = function() IR.ClearConditional() end,
+        })
+    end)
+
+    local condBody = CreateFrame("Frame", nil, condPanel, "BackdropTemplate")
+    condBody:SetPoint("TOPLEFT")
+    condBody:SetPoint("TOPRIGHT")
+    condBody:SetPoint("BOTTOM", condSaveBtn, "TOP", 0, 6)
+    applyBackdrop(condBody, 1, C.panelDark, C.tabBorder)
+
+    local condTitle = condBody:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    condTitle:SetPoint("TOPLEFT", 10, -10)
+    condTitle:SetPoint("RIGHT", -10, 0)
+    condTitle:SetJustifyH("LEFT")
+    UI.tint(condTitle, C.red)
+
+    local condDesc = condBody:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condDesc:SetPoint("TOPLEFT", condTitle, "BOTTOMLEFT", 0, -6)
+    condDesc:SetPoint("RIGHT", -10, 0)
+    condDesc:SetJustifyH("LEFT")
+    UI.tint(condDesc, C.textGrey)
+
+    -- Reads live rather than on a refresh: applying a stone is exactly the moment
+    -- someone wants to see this flip, and there's no event that says so.
+    local condState = condBody:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condState:SetPoint("TOPLEFT", condDesc, "BOTTOMLEFT", 0, -10)
+    condState:SetPoint("RIGHT", -10, 0)
+    condState:SetJustifyH("LEFT")
+
+    -- What the check is actually reading off your weapons. Shown whether or not
+    -- the conditional holds: "not holding" with the right stone on is otherwise a
+    -- dead end, and this turns it into a name that can be compared.
+    local condEnchants = condBody:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    condEnchants:SetPoint("TOPLEFT", condState, "BOTTOMLEFT", 0, -4)
+    condEnchants:SetPoint("RIGHT", -10, 0)
+    condEnchants:SetJustifyH("LEFT")
+
+    local condCount = condBody:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    condCount:SetPoint("TOPLEFT", condEnchants, "BOTTOMLEFT", 0, -10)
+    condCount:SetPoint("RIGHT", -10, 0)
+    condCount:SetJustifyH("LEFT")
+    UI.tint(condCount, C.textWhite)
+
+    local condHint = condBody:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    condHint:SetPoint("BOTTOMLEFT", 10, 10)
+    condHint:SetPoint("RIGHT", -10, 0)
+    condHint:SetJustifyH("LEFT")
+    condHint:SetText("Click a slot to include it, then hover it and pick the item to swap in. "
+        .. "Slots left out keep whatever the set itself equips.")
+
+    -- Whether the conditional currently holds is asked once a second while the
+    -- page is up: cheap (two tooltip scans), and it makes the readout answer the
+    -- question the user is standing there asking.
+    condPanel:SetScript("OnUpdate", function(self, elapsed)
+        self.throttle = (self.throttle or 0) + elapsed
+        if self.throttle < 1 then return end
+        self.throttle = 0
+        local holds = editor.cond and IR.ConditionalHolds(editor.cond)
+        condState:SetText(holds and "Right now: |cff4ade80holding|r — this set's swaps apply."
+                                or  "Right now: |cff9aa0aanot holding|r — the set equips normally.")
+        condEnchants:SetText("Weapon enchants: "
+            .. (IR.WeaponEnchantName(16) or "none")
+            .. "  |  " .. (IR.WeaponEnchantName(17) or "none"))
+    end)
+
+    -- Everything on the page that follows from which set and which conditional
+    -- are selected. validateButtons calls it, so it runs on every load and save.
+    function f.RefreshConditionals()
+        local def = IR.GetConditional(editor.cond)
+        condPicker:setValue(def and def.label or nil)
+        condTitle:SetText(def and def.label or "No conditional selected")
+        condDesc:SetText(def and def.desc or "")
+
+        local setname = currentName()
+        local set     = DB().sets[setname]
+        local saved   = set and set.conditionals and set.conditionals[editor.cond]
+
+        local count = 0
+        for _ in pairs(saved or {}) do count = count + 1 end
+        if not set then
+            condCount:SetText("Save the set on the Set Editor tab first.")
+            UI.tint(condCount, C.textDim)
+        elseif count == 0 then
+            condCount:SetText("\"" .. setname .. "\" swaps nothing for this conditional yet.")
+            UI.tint(condCount, C.textDim)
+        else
+            condCount:SetText("\"" .. setname .. "\" swaps " .. count
+                .. (count == 1 and " slot" or " slots") .. " while this holds.")
+            UI.tint(condCount, C.textWhite)
+        end
+
+        setButtonEnabled(condSaveBtn, (set and def) and true or false)
+        setButtonEnabled(condClearBtn, (saved and next(saved)) and true or false)
+        -- Forces the readout rather than leaving the last conditional's answer up
+        -- until the next tick.
+        condPanel.throttle = 1
+    end
+
     -- ── Key binding capture ──────────────────────────────────────────────────
     -- The next key pressed while this overlay is up becomes the set's hotkey.
     local bindOverlay = CreateFrame("Frame", nil, f, "BackdropTemplate")
@@ -1673,16 +2148,80 @@ local function buildFrame()
 
     bind:SetScript("OnClick", function()
         if not DB().sets[currentName()] then return end
-        -- Two things listening for the same keypress is one too many.
+        -- Anything else listening for the same keypress is one thing too many.
         IR.StopSlotBindMode()
+        IR.StopSetBindMode()
         bindOverlay:Show()
     end)
+
+    -- ── Tab switching ────────────────────────────────────────────────────────
+    -- Only the middle of the window belongs to a tab. The set picker, the slot
+    -- columns and the set list are the editing surface for both, and stay put —
+    -- what changes is what the ticked slots mean, which is `editor.cond`.
+    --
+    -- The pieces are parented straight to the window rather than to a page frame
+    -- of their own, so each page is a list of them. activateTab only ever asks a
+    -- page for Show/Hide, which a list can answer to, and it keeps the tab
+    -- styling in one place.
+    local createRegions = { bindRow, center }
+    local condRegions   = { condRow, condPanel }
+
+    local function showRegions(list, shown)
+        for _, region in ipairs(list) do region:SetShown(shown) end
+    end
+
+    local function showCreatePage(shown)
+        showRegions(createRegions, shown)
+        if shown then
+            editor.cond = nil
+            reloadEditor()
+        else
+            -- The overlay binds the loaded set's key, which is this page's
+            -- business; the item menu hangs off the slot buttons it was opened
+            -- from, and neither should outlive the tab.
+            bindOverlay:Hide()
+            IR.StopSlotBindMode()
+            IR.HideMenu()
+        end
+    end
+
+    local function showCondPage(shown)
+        showRegions(condRegions, shown)
+        if shown then
+            -- Lands on something the moment the tab opens: a page whose dropdown
+            -- reads "select a conditional" before anything can be edited is a
+            -- click nobody needs to make.
+            editor.cond = editor.cond or (IR.Conditionals[1] and IR.Conditionals[1].key)
+            reloadEditor()
+        else
+            IR.HideMenu()
+        end
+    end
+
+    local tabs  = { create = createTabBtn, conditionals = condTabBtn }
+    local pages = {
+        create       = { Show = function() showCreatePage(true)  end,
+                         Hide = function() showCreatePage(false) end },
+        conditionals = { Show = function() showCondPage(true)  end,
+                         Hide = function() showCondPage(false) end },
+    }
+
+    local function selectPage(key)
+        f.activeTab = key
+        activateTab(tabs, pages, key)
+        validateButtons()
+    end
+    createTabBtn:SetScript("OnClick", function() selectPage("create")       end)
+    condTabBtn:SetScript("OnClick",   function() selectPage("conditionals") end)
 
     f:SetScript("OnShow", function()
         editor.iconSearch = ""
         editor.iconOffset = 0
         searchBox:SetText("")
         applySideList(getData().setListOpen ~= false)
+        -- Before the load below: it decides whether that load reads the set's own
+        -- gear or a conditional's overrides.
+        selectPage(f.activeTab or "create")
         populateInitialIcons()
         editor.selectedIcon = editor.selectedIcon or IR.DEFAULT_SET_ICON
         lock:SetChecked(getData().locked and true or false)
@@ -1694,6 +2233,7 @@ local function buildFrame()
     f:SetScript("OnHide", function()
         IR.HideMenu()
         IR.StopSlotBindMode()
+        IR.StopSetBindMode()
     end)
 
     return f

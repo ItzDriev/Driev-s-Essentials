@@ -5,6 +5,7 @@ local UI = addon.UI
 local C  = UI.colors
 local W  = UI.widgets
 
+local buildFontOptions = W.buildFontOptions
 local createCheckbox  = W.createCheckbox
 local colorSwatch     = W.createColorSwatch
 local createDropdown  = W.createDropdown
@@ -153,10 +154,11 @@ local function addColorRow(panel, anchorAbove, label, getRGB, setRGB, onChange, 
 end
 
 -- ── Chat sub-tab ──────────────────────────────────────────────────
--- LSM font list with a leading "Default" (= Blizzard's chat font).
-local function chatFontList()
-    return addon.MediaList("font", { lead = "Default" })
-end
+-- One font block for chat text, tab names and the DataText bars. Two of its
+-- settings mean "leave it alone" here, because these strings belong to Blizzard:
+-- the face "Default", and size 0 — shown as "Auto", which is what keeps
+-- Blizzard's per-window chat font size working.
+local CHAT_FONT_DEFAULT = addon.Font.New({ font = "Default", size = 0, outline = "NONE" })
 
 local function buildChatSettingsPanel(parent)
     local shell, panel = makeScrollPanel(parent)
@@ -188,29 +190,29 @@ local function buildChatSettingsPanel(parent)
         UI.RefreshTabDots()
     end
 
-    -- One font for chat text, tab names and the DataText bars.
-    local fontRow = CreateFrame("Frame", nil, panel)
-    fontRow:SetSize(420, 24)
-    fontRow:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -12)
-
-    local fontLbl = fontRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    fontLbl:SetPoint("LEFT", 0, 0); fontLbl:SetWidth(50); fontLbl:SetJustifyH("LEFT")
-    fontLbl:SetText("Font:"); UI.tint(fontLbl, C.textGrey)
-
-    local fontDD = createScrollDropdown(fontRow, 200, chatFontList, function(name)
-        getChatData().font = (name ~= "Default") and name or false
-        if addon.Chat      then addon.Chat.refresh() end
-        if addon.DataTexts then addon.DataTexts.refresh() end
-    end, {
-        preview = "font",
-        tipTitle = "Font",
-        tipBody  = "Font for chat message text, tab names and the DataText bars. \"Default\" keeps Blizzard's.",
+    -- One font block for chat text, tab names and the DataText bars, and the one
+    -- place in the addon where part of the block is left out: a chat frame lays
+    -- out its own lines, so there is nothing to nudge, and every line already
+    -- carries its channel's colour, which the tab colours below sit alongside.
+    local fontBox = buildFontOptions(panel, {
+        defaults   = CHAT_FONT_DEFAULT,
+        lead       = "Default",
+        autoSize   = true,
+        skip       = { x = true, y = true, color = true },
+        labelWidth = 110,
+        get        = function() return addon.Font.Adopt(getChatData(), "font") end,
+        onChange   = function()
+            if addon.Chat      then addon.Chat.refresh() end
+            if addon.DataTexts then addon.DataTexts.refresh() end
+        end,
+        fontDesc = "Font for chat message text, tab names and the DataText bars. "
+            .. "\"Default\" keeps whatever face each of them already had.",
     })
-    fontDD:SetPoint("LEFT", fontLbl, "RIGHT", 6, 0)
+    fontBox:SetPoint("TOPLEFT", enableCB, "BOTTOMLEFT", 0, -12)
 
     local buttonsCB = createCheckbox(panel, "Hide chat buttons", 300,
         "Hides the scroll arrows, chat menu button and the voice / text-to-speech buttons around the chat. Unticking needs a /reload to bring them back.")
-    buttonsCB:SetPoint("TOPLEFT", fontRow, "BOTTOMLEFT", 0, -10)
+    buttonsCB:SetPoint("TOPLEFT", fontBox, "BOTTOMLEFT", 0, -10)
     buttonsCB.OnChange = function(_, checked)
         getChatData().hideButtons = checked
         if addon.Chat then addon.Chat.refresh() end
@@ -461,7 +463,7 @@ local function buildChatSettingsPanel(parent)
     local function refreshPanel()
         local d = getChatData()
         enableCB:SetChecked(d.enabled ~= false)
-        fontDD:setValue(d.font or "Default")
+        fontBox:Refresh()
         buttonsCB:SetChecked(d.hideButtons ~= false)
         moveCB:SetChecked(d.freeMovement ~= false)
         fadeCB:SetChecked(d.noHoverFade ~= false)
