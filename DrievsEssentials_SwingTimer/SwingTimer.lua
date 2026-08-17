@@ -17,7 +17,13 @@ local DEFAULT_BAR  = "Interface\\TargetingFrame\\UI-StatusBar"
 -- box, so positive always means "further right" for both of them.
 local LABEL_INSET  = 4
 local SPARK_TEXTURE = "Interface\\AddOns\\DrievsEssentials_SwingTimer\\Square_AlphaGradient.tga"
-local UPDATE_STEP  = 0.02   -- render throttle, ~50fps
+-- The fill is redrawn every frame. A throttle on the geometry is what makes a
+-- swing timer step instead of slide: a 20ms one skips every other frame at 60fps,
+-- so the bar moves at 30 — and wobbles between one- and two-frame gaps whenever
+-- the frametime crosses the threshold. Only the genuinely expensive work is
+-- throttled, and moving SetText and SetMinMaxValues behind change checks makes
+-- the every-frame path cheaper than the old throttled one was.
+local SLOW_STEP    = 0.1    -- queue poll, ~10Hz
 
 -- ── Spell tables ─────────────────────────────────────────────────────────────
 -- Only the reset list is user-editable (see resetSpells below); the rest describe
@@ -102,7 +108,7 @@ local AUTO_ATTACK_SPELL = 6603
 local DEFAULTS = {
     enabled      = false,
     width        = 255,
-    height       = 15,
+    height       = 13,
     spacing      = 0,      -- px between the mainhand and offhand bars' fills
     showTimer       = true,  -- seconds until the next attack, right of each bar
     timerCombatOnly = false, -- ...and only while in combat
@@ -112,8 +118,8 @@ local DEFAULTS = {
     -- face, size, outline, x/y nudge and drop shadow. These two predate the block
     -- and stored the face under `name`; addon.Font.Adopt renames it in place on
     -- first read, which is why `name` is no longer declared here.
-    timerFont = addon.Font.New({ size = 11 }),
-    labelFont = addon.Font.New({ size = 11 }),
+    timerFont = addon.Font.New({ size = 9 }),
+    labelFont = addon.Font.New({ size = 9 }),
     color        = { 0, 0.118, 1 },       -- 0, 30, 255
     texture      = "Blizzard",
     -- The container's fill: sits behind both bars and shows through the padding
@@ -121,11 +127,11 @@ local DEFAULTS = {
     -- multiplies with the combat-state opacity below.
     backdropColor   = { 0.04, 0.04, 0.06 },
     backdropOpacity = 85,
-    outline      = true,
+    outline      = false,
     outlineMode  = "around",   -- "around" the pair, or "each" bar separately
     outlineColor = { 0, 0, 0 },
     spark        = true,
-    sparkWidth   = 2,
+    sparkWidth   = 1,
     -- Opacity is per combat state, so the bars can sit quietly out of combat
     -- without being turned off. Percentages, matching every other opacity in
     -- this addon.
@@ -504,8 +510,15 @@ local function onAttackSpeedChanged(now)
     end
     st.offSpeed = off
 
-    -- An offhand appearing or disappearing changes how many bars there are.
-    applyLayout()
+    -- An offhand appearing or disappearing changes how many bars there are — but
+    -- this event also fires on every haste change, which in combat is a Flurry or
+    -- Windfury proc several times a swing. An unconditional relayout there re-fetches
+    -- the bar texture and re-applies four fonts mid-swing, so it only runs for the
+    -- case it's actually here for. Edit Mode forces the offhand bar visible, which
+    -- would otherwise read as a change on every event.
+    if not editing and (off > 0) ~= getOrCreate().off:IsShown() then
+        applyLayout()
+    end
 end
 
 -- Parry haste: the remaining swing is cut by 40% of the weapon speed, but never
@@ -650,28 +663,54 @@ local function queueColor(kind)
 end
 
 -- ── Rendering ────────────────────────────────────────────────────────────────
+-- Both caches are invalidated wherever the widgets are written past renderBar
+-- (edit mode), so the next draw can't be skipped as a no-op against a value the
+-- bar no longer holds.
+local function invalidateBarCache(bar)
+    bar._max, bar._text = nil, nil
+end
+
 local function renderBar(bar, speed, expires, now, sparkOn, hideZero)
     if speed <= 0 then
-        bar.fill:SetMinMaxValues(0, 1)
+        if bar._max ~= 1 then
+            bar._max = 1
+            bar.fill:SetMinMaxValues(0, 1)
+        end
         bar.fill:SetValue(0)
-        bar.timer:SetText("")
+        if bar._text ~= "" then
+            bar._text = ""
+            bar.timer:SetText("")
+        end
         bar.spark:Hide()
         return
     end
     local left = expires - now
     if left < 0 then left = 0 end
-    bar.fill:SetMinMaxValues(0, speed)
+    -- Re-derives the fill's texture coordinates, so it's called when the weapon
+    -- speed actually changes rather than on every frame of every swing.
+    if bar._max ~= speed then
+        bar._max = speed
+        bar.fill:SetMinMaxValues(0, speed)
+    end
     bar.fill:SetValue(speed - left)
 
     -- Compared against the formatted text rather than against `left`, so what's
     -- hidden is exactly what would have read "0.0" — anything under 0.05 rounds
     -- down to it and looks just as idle.
     local text = string.format("%.1f", left)
-    bar.timer:SetText((hideZero and text == "0.0") and "" or text)
+    if hideZero and text == "0.0" then text = "" end
+    -- SetText re-lays out the string, which is the most expensive call in here by
+    -- some way; at one decimal the text only changes ten times a second, so most
+    -- frames it's the same string being handed back.
+    if bar._text ~= text then
+        bar._text = text
+        bar.timer:SetText(text)
+    end
 
     local frac = (speed - left) / speed
     if sparkOn and frac > 0.001 then
-        bar.spark:ClearAllPoints()
+        -- CENTER is the spark's only anchor and re-pointing it replaces that
+        -- point, so there's nothing for ClearAllPoints to do but churn.
         bar.spark:SetPoint("CENTER", bar.fill, "LEFT", frac * (bar._innerW or 0), 0)
         bar.spark:Show()
     else
@@ -679,7 +718,7 @@ local function renderBar(bar, speed, expires, now, sparkOn, hideZero)
     end
 end
 
-local elapsedSinceDraw = 0
+local slowAccum = 0
 local lastQueued
 
 -- Right after a loading screen UnitAttackSpeed reports no offhand until the
@@ -712,32 +751,39 @@ local function onUpdate(self, elapsed)
         return
     end
 
+    -- Both accumulators carry their remainder rather than zeroing it, so a tick
+    -- that lands mid-frame keeps its own cadence instead of being pushed out to
+    -- wherever the next whole frame falls.
     offCheckAccum = offCheckAccum + elapsed
     if offCheckAccum >= OFF_CHECK_STEP then
-        offCheckAccum = 0
+        offCheckAccum = offCheckAccum % OFF_CHECK_STEP
         if hasOffhand() ~= self.off:IsShown() then applyLayout() end
     end
-
-    elapsedSinceDraw = elapsedSinceDraw + elapsed
-    if elapsedSinceDraw < UPDATE_STEP then return end
-    elapsedSinceDraw = 0
 
     local now = GetTime()
     local s = stSettings() or DEFAULTS
     local sparkOn  = (s.spark ~= false)
     local hideZero = (s.timerHideZero == true) and not isPreviewing()
 
-    -- Skipped outright when the feature is off, so the poll costs nothing.
-    local kind = (s.queueColors ~= false) and queuedKind() or nil
-    if queueDirty or kind ~= lastQueued then
-        lastQueued, queueDirty = kind, false
-        local c = queueColor(kind)
-        self.main.fill:SetStatusBarColor(c[1] or 1, c[2] or 1, c[3] or 1)
-        -- The offhand doesn't swing the queued ability, but the two bars read as
-        -- one element, so by default it follows along. queueBothBars = false
-        -- leaves it on the normal colour.
-        local o = (s.queueBothBars ~= false) and c or (s.color or DEFAULTS.color)
-        self.off.fill:SetStatusBarColor(o[1] or 1, o[2] or 1, o[3] or 1)
+    -- The poll costs an IsCurrentSpell call per known rank, and the colour it
+    -- decides can't change faster than the player can press a button — so it gets
+    -- the slow tick rather than a place on the every-frame path. queueDirty is a
+    -- settings edit and jumps the queue; it can't wait out a tick it didn't start.
+    slowAccum = slowAccum + elapsed
+    if slowAccum >= SLOW_STEP or queueDirty then
+        slowAccum = slowAccum % SLOW_STEP
+        -- Skipped outright when the feature is off, so the poll costs nothing.
+        local kind = (s.queueColors ~= false) and queuedKind() or nil
+        if queueDirty or kind ~= lastQueued then
+            lastQueued, queueDirty = kind, false
+            local c = queueColor(kind)
+            self.main.fill:SetStatusBarColor(c[1] or 1, c[2] or 1, c[3] or 1)
+            -- The offhand doesn't swing the queued ability, but the two bars read
+            -- as one element, so by default it follows along. queueBothBars =
+            -- false leaves it on the normal colour.
+            local o = (s.queueBothBars ~= false) and c or (s.color or DEFAULTS.color)
+            self.off.fill:SetStatusBarColor(o[1] or 1, o[2] or 1, o[3] or 1)
+        end
     end
 
     -- Safety valve: the pause is lifted by the cast finishing or failing, and a
@@ -900,6 +946,7 @@ local function enterMoveMode()
     applyLayout()   -- forces the offhand bar visible, so both are draggable
 
     for _, bar in ipairs({ f.main, f.off }) do
+        invalidateBarCache(bar)
         bar.fill:SetMinMaxValues(0, 1)
         bar.fill:SetValue(0.6)
         bar.timer:SetText("1.4")
@@ -946,6 +993,7 @@ local function leaveMoveMode()
     f:SetScript("OnMouseDown", nil)
     f:SetScript("OnMouseUp",   nil)
     for _, bar in ipairs({ f.main, f.off }) do
+        invalidateBarCache(bar)
         bar.timer:SetText("")
         bar.spark:Hide()
     end

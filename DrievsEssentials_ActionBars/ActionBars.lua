@@ -70,9 +70,36 @@ BARS[#BARS + 1] = { key = "stance", label = "Stance Bar", kind = "stance", defau
 BARS[#BARS + 1] = { key = "pet",    label = "Pet Bar",    kind = "pet",    defaultEnabled = true }
 BARS[#BARS + 1] = { key = "micro",  label = "Micro Menu", kind = "micro",  defaultEnabled = true }
 BARS[#BARS + 1] = { key = "bag",    label = "Bag Bar",    kind = "bag",    defaultEnabled = true }
-BARS[#BARS + 1] = { key = "status1", label = "Status Bar 1", kind = "status", defaultEnabled = true }
-BARS[#BARS + 1] = { key = "status2", label = "Status Bar 2", kind = "status", defaultEnabled = true }
+-- The status bars ship at half scale: they are the two widest elements here (the
+-- full width of the experience/reputation bar), and at 1.0 a pair of them across
+-- the bottom of the screen is the loudest thing in the UI.
+BARS[#BARS + 1] = { key = "status1", label = "Status Bar 1", kind = "status", defaultEnabled = true, defaultScale = 0.5 }
+BARS[#BARS + 1] = { key = "status2", label = "Status Bar 2", kind = "status", defaultEnabled = true, defaultScale = 0.5 }
 for _, def in ipairs(BARS) do BAR_BY_KEY[def.key] = def end
+
+-- Out of the box the Main bar pages with the game's own stance bars: pages 7-9
+-- are the bonus-bar pages (slots 73-108) the client puts a warrior's stance, a
+-- druid's form and a rogue's stealth actions on, and Bars 6, 7 and 8 own exactly
+-- those pages. Indexed by bonus-bar offset, which is also why the driver spells
+-- this as [bonusbar:N] and not [stance:N]: it fires only where the client itself
+-- swaps the slots, leaving a form that shares the normal bar (a priest's
+-- Shadowform, a shaman's Ghost Wolf) on the bar the player is looking at.
+local BUILTIN_STANCE_PAGES = { BAR_PAGE[6], BAR_PAGE[7], BAR_PAGE[8] }   -- 7, 8, 9
+
+-- Whether a stored per-stance table is just the Battle/Defensive/Berserker set
+-- this used to ship to warriors — i.e. a copy of what the built-in now does on
+-- its own. Used by the migration below; an absent or empty table counts, a table
+-- with anything else in it (an explicit "No paging" included) does not.
+local function isBuiltinPaging(t)
+    if type(t) ~= "table" or next(t) == nil then return true end
+    for k, v in pairs(t) do
+        if BUILTIN_STANCE_PAGES[k] ~= v then return false end
+    end
+    for k, v in pairs(BUILTIN_STANCE_PAGES) do
+        if t[k] ~= v then return false end
+    end
+    return true
+end
 
 -- ── Blizzard keybind linkage ─────────────────────────────────────────────────
 -- Keyed by the action page a bar owns, mapping it 1:1 onto the Blizzard binding
@@ -111,7 +138,7 @@ local function barDefault(def)
     local d = {
         enabled       = def.defaultEnabled,
         rows          = 1,
-        scale         = 1.0,
+        scale         = def.defaultScale or 1.0,
         padding       = 4,
         alpha         = 1.0,
         orientation   = "HORIZONTAL", -- HORIZONTAL (fill →, wrap into rows) | VERTICAL (fill ↓, wrap into columns)
@@ -127,15 +154,30 @@ local function barDefault(def)
         d.buttonSize = DEFAULT_SIZE
         d.flyout     = "UP"      -- UP | DOWN | LEFT | RIGHT
         d.useGeneral = true      -- apply the General tab's keybind-text settings
-        -- Stance paging is on only for the Main bar out of the box; every other
-        -- bar starts with it off (toggle in the Paging tab).
-        d.pagingEnabled = (def.paged == true)
-        -- Warrior Main bar ships with a default: Battle → Bar 6's page, Defensive → Bar
-        -- 7's, Berserker → Bar 8's. Stored as the real action pages those bars own,
-        -- matching the "Page N" dropdown. Other classes start unconfigured — their
-        -- stance indices don't map to Battle/Defensive/Berserker.
-        if def.paged and select(2, UnitClass("player")) == "WARRIOR" then
-            d.paging = { [1] = BAR_PAGE[6], [2] = BAR_PAGE[7], [3] = BAR_PAGE[8] }
+        -- Drops the keybind string off this bar's buttons. Display only: the keys
+        -- themselves keep working, which is the point — a bar you know by heart
+        -- doesn't need labelling, and the text is the noisiest thing on an icon.
+        d.hideKeybind = false
+        if def.paged then
+            -- The Main bar pages with the game's own stance bars out of the box
+            -- (BUILTIN_STANCE_PAGES), so its flag OVERRIDES that with the
+            -- per-stance table rather than switching the table on. Off = built-in.
+            -- No `paging` default to go with it: an override starts empty, which
+            -- is also how "stop this bar paging at all" is expressed.
+            d.pagingOverride = false
+            -- Blizzard's "Next / Previous Action Bar" keys. Only the Main bar
+            -- offers it (that's the bar those keys page in Blizzard's UI), so only
+            -- it carries the default. On, so a setup that already binds those keys
+            -- keeps working the moment the module is switched on.
+            d.pageSwap = true
+            -- What those keys swap the bar to, as a raw action page. Bar 9's page
+            -- by default: pages 2 and 10 are the two with no Blizzard binding
+            -- (see BLIZZ_BINDING), so Bar 9 is the spare nothing else claims.
+            d.swapPage = BAR_PAGE[9]
+        else
+            -- Every other bar has no built-in paging: its flag switches the
+            -- per-stance table on, and starts off.
+            d.pagingEnabled = false
         end
     end
     return d
@@ -189,6 +231,31 @@ end
 addon.Font.MigrateBlock(function(s) return s.actionBars end, "keybindFont", {
     size = "keybindFontSize", x = "keybindOffsetX", y = "keybindOffsetY",
 })
+
+-- The Main bar's "Enable stance paging" became "Override stance paging": the bar
+-- now follows the game's own stance bars out of the box, and the flag replaces
+-- that with the per-stance table instead of switching the table on. The stored
+-- flag means something different under the new name, so it is rewritten rather
+-- than dropped — and it has to happen here, before applyDefaults, or a profile
+-- that predates the change is indistinguishable from a fresh one:
+--   off → the player had asked for no stance paging on this bar. Kept, as an
+--         override with an empty table, which pages nowhere.
+--   on  → their per-stance table becomes the override, unless it is exactly the
+--         Battle/Defensive/Berserker set this used to ship to warriors. That is
+--         what the built-in now does anyway, so those profiles are left on the
+--         built-in instead of being pinned to a private copy of it.
+addon.RegisterMigration(function(prof)
+    local s = type(prof.settings) == "table" and prof.settings.actionBars or nil
+    local d = type(s) == "table" and s.bar1 or nil
+    if type(d) ~= "table" or d.pagingEnabled == nil then return end
+    if d.pagingEnabled == false then
+        d.pagingOverride, d.paging = true, {}
+    else
+        d.pagingOverride = not isBuiltinPaging(d.paging)
+    end
+    -- Safe to clear: bar1 no longer declares it, so applyDefaults can't refill it.
+    d.pagingEnabled = nil
+end)
 
 local function isReady()
     return addon.db ~= nil and addon.db.settings ~= nil
@@ -348,11 +415,12 @@ end
 -- the left mouse button, which stays free for pickup/drag while unlocked.
 local function buildButtonConfig(bar)
     local d = getData(bar.def.key)
+    local hideHotkey = (d.hideKeybind == true)
     local cfg = {
         tooltip             = "enabled",
         showGrid            = true,   -- show empty slots so you can drag spells onto them
         colors              = { range = { 0.8, 0.1, 0.1 }, mana = { 0.5, 0.5, 1.0 } },
-        hideElements        = { macro = false, hotkey = false, equipped = false, border = false },
+        hideElements        = { macro = false, hotkey = hideHotkey, equipped = false, border = false },
         keyBoundTarget      = false,
         keyBoundClickButton = "Keybind",
         -- No clickOnDown on purpose: LibActionButton registers both phases and lets the
@@ -369,7 +437,11 @@ local function buildButtonConfig(bar)
         local g   = getGlobalData()
         local cf  = keybindFont()
         local dx, dy = addon.Font.Offsets(cf, KEYBIND_FONT_DEFAULT)
-        cfg.outOfRangeColoring = g.outOfRangeHotkey and "hotkey" or "button"
+        -- Hotkey colouring is off the table where the string is hidden: LAB shows
+        -- the hidden hotkey again to draw its out-of-range dot (UpdateHotkeys
+        -- leaves RANGE_INDICATOR in the string), so the bar would sprout a dot on
+        -- every out-of-range button. Fall back to reddening the whole icon.
+        cfg.outOfRangeColoring = (g.outOfRangeHotkey and not hideHotkey) and "hotkey" or "button"
         -- LibActionButton's own hotkey grey unless the block's colour override is
         -- ticked, so a bar that never touches this looks exactly as it did.
         local tr, tg, tb = addon.Font.ColorOr(cf, KEYBIND_FONT_DEFAULT, 0.75, 0.75, 0.75)
@@ -425,6 +497,61 @@ local function applyButtonConfig(bar)
     end
 end
 
+-- ── "Next / Previous Action Bar" ─────────────────────────────────────────────
+-- Blizzard's NEXTACTIONPAGE / PREVIOUSACTIONPAGE keys page the *native* main bar
+-- via ChangeActionBarPage, which is no use here: that bar is parked on the hidden
+-- frame, and the call is protected, so nothing an insecure handler does could
+-- follow it in combat. Instead the two keys are override-bound onto a secure
+-- handler of our own that drives this bar's page state directly, which works in
+-- combat like the rest of the paging.
+--
+-- Not a 1-6 cycle: the press swaps the bar between the page it is showing (with
+-- the built-in stance paging, that's Bar 6, 7 or 8) and one configured swap page,
+-- then back again. Both keys do the same swap, so either one alone gets you there
+-- and back.
+--
+-- The press only flips a mode flag — it does NOT write the page. Writing the page
+-- here is what the first attempt did, and the state driver undid it moments later
+-- (it re-parses and re-writes state-page on a broad set of events). The flag is
+-- read by the header's own state handler, so the driver re-asserting its value
+-- resolves to the swapped page as well; see POSSESS_SNIPPET. That also makes the
+-- swap a mode rather than a one-shot: a stance change while swapped moves the
+-- page the bar returns to, not the bar.
+local PAGE_SWAP_BINDINGS = { "NEXTACTIONPAGE", "PREVIOUSACTIONPAGE" }
+local PAGE_SWAP_CLICK    = "SwapPage"
+
+local PAGE_SWAP_SNIPPET = [[
+    local header = self:GetFrameRef("header")
+    -- A vehicle / possess / override bar owns the buttons — leave it alone.
+    if header:GetAttribute("pagelock") then return end
+    if not tonumber(header:GetAttribute("swappage")) then return end
+
+    -- state-swap runs the header's _onstate-swap handler, which re-resolves the
+    -- page exactly as the state driver's own handler would. The value alternates
+    -- true/false, so the write always changes the attribute and the handler
+    -- always runs.
+    local swapped = not header:GetAttribute("swapped")
+    header:SetAttribute("swapped", swapped)
+    header:SetAttribute("state-swap", swapped)
+]]
+
+-- Deliberately not Hide()n: it exists only as a binding target, and a hidden
+-- button can't be clicked. 1x1, mouse-disabled and drawing nothing, so it is
+-- invisible in practice.
+local function getPageSwapper(bar)
+    if bar.pager then return bar.pager end
+    local p = CreateFrame("Button", "DrievABarPager_" .. bar.def.key, bar.header,
+                          "SecureHandlerClickTemplate")
+    p:SetSize(1, 1)
+    p:SetPoint("TOPLEFT", bar.header, "TOPLEFT", 0, 0)
+    p:EnableMouse(false)
+    p:RegisterForClicks("AnyDown")   -- one swap per press, not one per press+release
+    p:SetFrameRef("header", bar.header)
+    p:SetAttribute("_onclick", PAGE_SWAP_SNIPPET)
+    bar.pager = p
+    return p
+end
+
 -- ── Blizzard keybind pass-through ────────────────────────────────────────────
 -- Mirroring the key in the hotkey text isn't enough: pressing it would still run
 -- Blizzard's hidden button on Blizzard's page. Override bindings on the bar's
@@ -438,6 +565,21 @@ local function reassignActionBindings(bar)
 
     local d = getData(bar.def.key)
     if d.enabled == false then return end   -- disabled bar: leave the keys to Blizzard
+
+    -- Next / Previous Action Bar. Its own opt-in, independent of the per-button
+    -- Blizzard link below — hence bound before that early return.
+    if d.pageSwap then
+        local pager = getPageSwapper(bar)
+        for _, cmd in ipairs(PAGE_SWAP_BINDINGS) do
+            for k = 1, select("#", GetBindingKey(cmd)) do
+                local key = select(k, GetBindingKey(cmd))
+                if key and key ~= "" then
+                    SetOverrideBindingClick(bar.header, false, key, pager:GetName(), PAGE_SWAP_CLICK)
+                end
+            end
+        end
+    end
+
     local fmt = BLIZZ_BINDING[bar.def.page]
     if not fmt or getGlobalData().blizzBindings == false then return end
 
@@ -459,9 +601,16 @@ end
 -- page's slot up front (state p → slot (p-1)*12 + i) and a secure state driver
 -- flips the header's state. A stance on "No paging" contributes no condition and
 -- falls through to the bar's own page. Bar 1 also keeps the possess/vehicle
--- override and Blizzard's [bar:*] conditions — but NOT [bonusbar:*] auto-paging,
--- so "No paging" reliably means own page.
+-- override and Blizzard's [bar:*] conditions.
+--
+-- Everything the bar's page depends on is resolved HERE, in the state handler,
+-- including the Next/Previous Action Bar swap. That isn't a stylistic choice:
+-- the state driver re-parses its conditional and re-writes state-page on a broad
+-- set of events (modifier keys and cursor changes among them), so anything that
+-- writes the page from outside is undone moments later. Folding the swap in
+-- means every one of those re-assertions lands on the swapped page too.
 local POSSESS_SNIPPET = [[
+    local locked = false
     if newstate == "possess" then
         if HasVehicleActionBar and HasVehicleActionBar() then
             newstate = GetVehicleBarIndex()
@@ -474,28 +623,64 @@ local POSSESS_SNIPPET = [[
         else
             newstate = 12
         end
+        -- One of those bars owns the buttons: neither the swap below nor the key
+        -- press itself (PAGE_SWAP_SNIPPET reads pagelock) may page away from it.
+        locked = true
+    end
+    self:SetAttribute("pagelock", locked)
+    -- What the driver itself resolved, before the swap is folded in — what the
+    -- bar returns to when the swap is turned back off.
+    self:SetAttribute("rawpage", newstate)
+    if not locked and self:GetAttribute("swapped") then
+        local swap = tonumber(self:GetAttribute("swappage"))
+        if swap then newstate = swap end
     end
     self:SetAttribute("state", newstate)
     control:ChildUpdate("state", newstate)
 ]]
 
 local SIMPLE_SNIPPET = [[
+    self:SetAttribute("rawpage", newstate)
+    if self:GetAttribute("swapped") then
+        local swap = tonumber(self:GetAttribute("swappage"))
+        if swap then newstate = swap end
+    end
     self:SetAttribute("state", newstate)
     control:ChildUpdate("state", newstate)
 ]]
 
--- Whether stance paging is active for a bar. Defaults to the paged (Main) bar
--- only; every other bar is off until switched on in the Paging tab.
+-- Runs on our own "swap" state, which only the key press writes. Same mechanism
+-- as the _onstate-page handlers above, so it reaches the buttons the same way,
+-- and it makes the same choice they do — from the driver's last raw page rather
+-- than from the driver, which can't be re-run on demand. `newstate` is the new
+-- swapped flag.
+local SWAP_STATE_SNIPPET = [[
+    local page = tonumber(self:GetAttribute("rawpage"))
+                 or tonumber(self:GetAttribute("ownpage"))
+    if not page then return end
+    if newstate then
+        local swap = tonumber(self:GetAttribute("swappage"))
+        if swap then page = swap end
+    end
+    self:SetAttribute("state", page)
+    control:ChildUpdate("state", page)
+]]
+
+-- Whether a bar's own per-stance table drives it. The Main bar's flag overrides
+-- its built-in paging (off = built-in, on = the table); every other bar has no
+-- built-in, so its flag switches the table on and starts off.
 local function isPagingEnabled(bar)
-    local v = getData(bar.def.key).pagingEnabled
-    if v == nil then v = bar.def.paged end
-    return v and true or false
+    local d = getData(bar.def.key)
+    if bar.def.paged then return d.pagingOverride and true or false end
+    return d.pagingEnabled and true or false
 end
 
--- Paging is fully explicit: a stance with a page picked switches to it, one on
--- "No paging" falls through to the default at the end. Blizzard's [bonusbar:*]
--- auto-paging is deliberately absent — that was what made "No paging" still
--- page. The Main bar keeps [bar:*] so Blizzard's ACTIONPAGE keybinds still work.
+-- The Main bar follows the game's own stance bars unless overridden. Every other
+-- bar, and the Main bar once overridden, is fully explicit instead: a stance with
+-- a page picked switches to it, one on "No paging" falls through to the default at
+-- the end. That is why [bonusbar:*] lives in the built-in branch only — leaving it
+-- in the explicit one is what used to make "No paging" still page.
+-- The Main bar keeps [bar:*] either way so Blizzard's ACTIONPAGE keybinds work.
 local function buildPagingDriver(bar)
     local d = getData(bar.def.key)
     local conds = {}
@@ -506,10 +691,16 @@ local function buildPagingDriver(bar)
         conds[#conds + 1] = "[overridebar][possessbar][shapeshift]possess"
     end
 
-    -- Only stances set to an actual page; "No paging" is stored as false/absent and
-    -- contributes no condition. Stance conditions are mutually exclusive, so pairs()
-    -- order doesn't matter.
-    if isPagingEnabled(bar) and d.paging then
+    if bar.def.paged and not d.pagingOverride then
+        -- Built-in: whenever the client hands the player a bonus bar, show the
+        -- bar that owns those slots (Bars 6, 7 and 8).
+        for offset, page in ipairs(BUILTIN_STANCE_PAGES) do
+            conds[#conds + 1] = ("[bonusbar:%d]%d"):format(offset, page)
+        end
+    elseif isPagingEnabled(bar) and d.paging then
+        -- Only stances set to an actual page; "No paging" is stored as false/absent
+        -- and contributes no condition. Stance conditions are mutually exclusive, so
+        -- pairs() order doesn't matter.
         for stanceIdx, page in pairs(d.paging) do
             if type(page) == "number" and page >= 1 and page <= 10 then
                 conds[#conds + 1] = ("[stance:%d]%d"):format(stanceIdx, page)
@@ -533,6 +724,17 @@ end
 local function refreshPagingDriver(bar)
     if InCombatLockdown() then return end
     UnregisterStateDriver(bar.header, "page")
+
+    -- The Next/Previous Action Bar swap target, re-pushed from the config here
+    -- rather than at setup because it is a setting. Cleared when unset or out of
+    -- range, which parks PAGE_SWAP_SNIPPET (it returns on a missing swappage).
+    -- The swap itself is dropped with it: a settings change shouldn't leave the
+    -- bar parked on a page the new config doesn't produce.
+    local swap = getData(bar.def.key).swapPage
+    if type(swap) ~= "number" or swap < 1 or swap > 10 then swap = nil end
+    bar.header:SetAttribute("swappage", swap)
+    bar.header:SetAttribute("swapped", false)
+
     bar.header:SetAttribute("state-page", tostring(bar.def.page))
     RegisterStateDriver(bar.header, "page", buildPagingDriver(bar))
 end
@@ -546,7 +748,10 @@ local function setupPaging(bar)
         end
         btn:SetState(0, "action", (bar.def.page - 1) * NUM_BUTTONS + i)
     end
+    -- Read by the swap handlers as their fallback when nothing else is known.
+    bar.header:SetAttribute("ownpage", bar.def.page)
     bar.header:SetAttribute("_onstate-page", bar.def.paged and POSSESS_SNIPPET or SIMPLE_SNIPPET)
+    bar.header:SetAttribute("_onstate-swap", SWAP_STATE_SNIPPET)
     refreshPagingDriver(bar)
 end
 
@@ -1564,7 +1769,10 @@ addon.ActionBars = {
     -- re-derives the overrides as well.
     applyVisibility = guarded(function(b) applyVisibility(b); reassignActionBindings(b) end),
     applyPosition   = guarded(applyPosition),
-    applyPaging     = guarded(refreshPagingDriver),
+    -- Also re-derives the override bindings: the Next/Previous Action Bar keys
+    -- are claimed (or handed back) by the same pass. refreshPagingDriver resets
+    -- state-page too, so turning the option off drops any cycled page.
+    applyPaging     = guarded(function(b) refreshPagingDriver(b); reassignActionBindings(b) end),
     getMover        = function(key) return bars[key] and bars[key].mover end,
     -- Turning it on runs refreshAll() immediately; turning it off just saves the
     -- flag, since a /reload is needed to restore Blizzard's bars.

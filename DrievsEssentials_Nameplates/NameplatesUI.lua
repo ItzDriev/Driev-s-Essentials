@@ -501,6 +501,12 @@ local function generalContent(form)
     fontBlock(form, "Level", function() return elementFont("levelFont") end, genFont,
         { sizeMin = 6, sizeMax = 24, fontDesc = PER_TEXT_FONT_NOTE,
           colorDesc = PLATE_COLOR_NOTE })
+    form:check("Guild name uses its own font",
+        function() return gen().guildFontEnabled end,
+        function(v) gen().guildFontEnabled = v end, nil, PER_TEXT_FONT_NOTE)
+    fontBlock(form, "Guild name", function() return elementFont("guildFont") end, genFont,
+        { sizeMin = 6, sizeMax = 24, fontDesc = PER_TEXT_FONT_NOTE,
+          colorDesc = PLATE_COLOR_NOTE })
     form:stepper("Border thickness", 0, 5,
         function() return gen().borderSize end,
         function(v) gen().borderSize = v end, "px")
@@ -642,14 +648,16 @@ local function generalContent(form)
     form:stepper("Vertical spacing", 50, 250,
         function() return gen().overlapV end,
         function(v) gen().overlapV = v end, "%", 5)
-    form:stepper("Click box padding X", 0, 100,
+    form:stepper("Click box padding X", -100, 100,
         function() return gen().clickPadX end,
         function(v) gen().clickPadX = v end, "px", 1,
-        "Slack added either side of the widest bar to make the invisible click box, so clicks just off the end of a bar still land. Screen pixels, not bar pixels — it stays the same physical size whatever your interface scale.")
-    form:stepper("Click box padding Y", 0, 100,
+        { "Slack added either side of the widest bar to make the invisible click box, so clicks just off the end of a bar still land. Screen pixels, not bar pixels — it stays the same physical size whatever your interface scale.",
+          "Negative pulls the box in narrower than the bar instead, for plates packed side by side where the ends of one keep catching clicks meant for its neighbour." })
+    form:stepper("Click box padding Y", -100, 100,
         function() return gen().clickPadY end,
         function(v) gen().clickPadY = v end, "px", 1,
-        "The same above and below the bar — but this one also sets how far apart stacked nameplates sit, because the game spaces them by the click box rather than by the bar you see. At the default it's most of the gap: lower it to stack plates tighter, and the point where the name stops being clickable is roughly where to stop.")
+        { "The same above and below the bar — but this one also sets how far apart stacked nameplates sit, because the game spaces them by the click box rather than by the bar you see. At the default it's most of the gap: lower it to stack plates tighter, and the point where the name stops being clickable is roughly where to stop.",
+          "Negative carries on past that, taking the box inside the bar so plates stack closer than the bar is tall. Less and less of the bar takes clicks as it goes, and the box never collapses past 1px however far you take it." })
     form:button("Show Clickpad Area for 10s", function()
         local NP = addon.Nameplates
         if NP and NP.ShowClickPadArea then NP.ShowClickPadArea() end
@@ -793,7 +801,26 @@ end
 local function enemyNPCContent(form)
     unitContent(form, "enemyNPC", "Enemy NPC",
         "Everything you can attack that isn't a player — trash, bosses, neutral mobs. Friendly NPCs borrow this layout too, with a friendly reaction color.",
-        "Use custom nameplates for enemy NPCs")
+        "Use custom nameplates for enemy NPCs",
+        function(form, key)
+            -- Two switches under one header rather than a section each: they are
+            -- the same result reached over a different set of plates, and they
+            -- share the font size underneath.
+            form:header("Name only",
+                "Dropping the bar and keeping just the name. What goes with it: the bar's outline, the level, the health text, the cast bar, the target ornament and every icon on the Icons tab. The name stays where your Position setting puts it — centred, since there are no bar edges left to sit against.")
+            form:check("Always, for every NPC",
+                function() return grp(key).nameOnlyAlways end,
+                function(v) grp(key).nameOnlyAlways = v end, nil,
+                "Every NPC plate, whether or not you can attack it — a screen of names and nothing else. Threat coloring has no bar left to color, so what it reaches is the name.\n\nWorth knowing: if \"Hide them on players shown as a name only\" is ticked on the Auras page, this switches the NPC aura rows off along with the bars, since every NPC plate is now a name-only one.")
+            form:check("For NPCs I can't attack",
+                function() return grp(key).nameOnlyWhenSafe end,
+                function(v) grp(key).nameOnlyWhenSafe = v end, nil,
+                "Quest givers, vendors, guards — and everything belonging to a player you can't attack: their pet, their totems, their guardians. There is no health worth watching and no cast worth interrupting on any of them, and the moment one becomes attackable the full plate is back.")
+            form:stepper("Name font size without the bar", 6, 32,
+                function() return grp(key).nameOnlySize end,
+                function(v) grp(key).nameOnlySize = v end, nil, nil,
+                "A size of its own, because the one on the Name section above is sized to share the bar with the level and the health text. With those gone the name is the whole plate and can afford to be bigger.")
+        end)
 end
 
 local function enemyPlayerContent(form)
@@ -810,6 +837,26 @@ local function enemyPlayerContent(form)
             form:check("Color the name by class",
                 function() return grp(key).classColorName end,
                 function(v) grp(key).classColorName = v end, nil, CLASS_COLOR_NOTE)
+
+            form:header("Guild",
+                "Their guild name in angle brackets, on a line of its own. Only players have one, so nothing here reaches an NPC plate — and a player with no guild simply has no line rather than a blank one.")
+            form:check("Show guild name",
+                function() return grp(key).showGuild end,
+                function(v) grp(key).showGuild = v end, nil,
+                "Read straight off the unit, so it is there for anyone the client will answer about — it does not need them targeted or inspected.")
+            form:stepper("Guild font size", 6, 24,
+                function() return grp(key).guildSize end,
+                function(v) grp(key).guildSize = v end)
+            form:dropdown("Guild position", namePlacementOptions(),
+                function() return grp(key).guildPlacement or "belowCenter" end,
+                function(v) grp(key).guildPlacement = v end, 170,
+                "Anchored against the health bar exactly as the name is, and set independently of it — so the name can sit on the bar with the guild under it, which is where this starts. Below is also where the cast bar goes, so nudge one clear of the other if you use both.")
+            form:stepper("Guild nudge X", -150, 150,
+                function() return grp(key).guildX end,
+                function(v) grp(key).guildX = v end, "px")
+            form:stepper("Guild nudge Y", -100, 100,
+                function() return grp(key).guildY end,
+                function(v) grp(key).guildY = v end, "px")
 
             form:header("Players you can't attack",
                 "Anyone on your own side, and the other faction where PvP isn't live. There's no health worth watching and no cast worth interrupting on them.")
@@ -2474,7 +2521,10 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         if not scroll:IsMouseOver() then return nil end
 
         for _, head in ipairs(heads) do
-            if head:IsShown() and head:IsMouseOver() then
+            -- The Disabled band is skipped rather than treated as a target: it
+            -- carries no group id, so without this a drop on it would read as
+            -- `false` and quietly un-group the aura.
+            if head:IsShown() and not head.isDivider and head:IsMouseOver() then
                 return head.groupID or false
             end
         end
@@ -2491,6 +2541,7 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
     local function paintTargets()
         for _, head in ipairs(heads) do
             head.hit:SetShown(dragKey ~= nil and dropOn ~= nil
+                and not head.isDivider
                 and (head.groupID or false) == dropOn)
         end
         for _, row in ipairs(rows) do
@@ -2585,6 +2636,7 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         head.twisty = flatButton(head, "-", 16, 16, "GameFontNormalSmall")
         head.twisty:SetPoint("LEFT", 3, 0)
         head.twisty:SetScript("OnClick", function()
+            if head.isDivider then return end
             Data.ToggleAuraGroup(unitKey, which, head.groupID)
             rebuild()
         end)
@@ -2655,6 +2707,25 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
             apply()
         end)
 
+        -- ── Tracking the group at all ────────────────────────────────────────
+        -- Reads its own state rather than saying what it will do: a heading is
+        -- either being watched for or it isn't, and a band of buttons all
+        -- labelled "Disable" tells you nothing about which of them are.
+        head.power = flatButton(head, "On", 32, 14, "GameFontNormalSmall")
+        head.power:SetScript("OnClick", function()
+            if not head.groupID then return end
+            Data.SetAuraGroupEnabled(unitKey, which, head.groupID, head.groupOff and true or false)
+            rebuild()
+            -- Reaches the plates, not just the list: this is the whole point of
+            -- the button.
+            apply()
+        end)
+        attachTooltip(head.power, "Track this group", {
+            "Switches the whole heading off. Its auras stop being matched — nothing under it draws on a plate, and nothing under it is recorded from the combat log either.",
+            "Nothing is lost: the rows keep their art, their typed durations and their frame assignments, and the group keeps them. It is the switch for a list that matters on raid night and is noise the rest of the week.",
+            "A switched-off group drops to the bottom of this list, under Disabled.",
+        })
+
         head.limitCB = createCheckbox(head, "", 16)
         head.limitCB.OnChange = function(_, checked)
             if not head.groupID then return end
@@ -2677,12 +2748,15 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         head.count:SetPoint("RIGHT", head.remove, "LEFT", -6, 0)
         head.limitMode:SetPoint("RIGHT", head.count, "LEFT", -8, 0)
         head.limitCB:SetPoint("RIGHT", head.limitMode, "LEFT", -4, 0)
-        head.nameBox:SetPoint("RIGHT", head.limitCB, "LEFT", -6, 0)
+        head.power:SetPoint("RIGHT", head.limitCB, "LEFT", -6, 0)
+        head.nameBox:SetPoint("RIGHT", head.power, "LEFT", -6, 0)
         head.label:SetPoint("RIGHT", head.count, "LEFT", -6, 0)
 
         -- The whole band toggles, not just the twisty: it is a heading, and
-        -- collapsing is the only thing a heading does.
+        -- collapsing is the only thing a heading does. The Disabled band is not a
+        -- heading and has nothing to fold, hence the guard here and on the twisty.
         head:SetScript("OnClick", function()
+            if head.isDivider then return end
             Data.ToggleAuraGroup(unitKey, which, head.groupID)
             rebuild()
         end)
@@ -2691,10 +2765,17 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         -- headings but not worked out how to fill them.
         head:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if self.isDivider then
+                GameTooltip:AddLine("Disabled", 1, 1, 1)
+                GameTooltip:AddLine("Everything below this line is switched off: not drawn on any plate, and not recorded from the combat log either. Nothing about it has been deleted — press On to bring a group back up.",
+                    0.75, 0.75, 0.75, true)
+                GameTooltip:Show()
+                return
+            end
             GameTooltip:AddLine(self.groupID and "Group" or "Ungrouped", 1, 1, 1)
             GameTooltip:AddLine("Drag an aura's row onto this band to put it here.",
                 0.75, 0.75, 0.75, true)
-            GameTooltip:AddLine("Click the band to fold it away. A heading changes nothing about what is drawn — groups are for finding things in a long list — unless you tick the box on it, which keeps only one of them.",
+            GameTooltip:AddLine("Click the band to fold it away. A heading changes nothing about what is drawn — groups are for finding things in a long list — unless you tick the box on it, which keeps only one of them, or switch the whole heading off with the On button.",
                 0.75, 0.75, 0.75, true)
             if not self.groupID then
                 GameTooltip:AddLine("This is everything that isn't in a group, and where a drag out of one lands.",
@@ -2717,6 +2798,8 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         head.groupID   = item.id
         head.editingID = item.id
         head.limitValue = item.limit
+        head.isDivider = item.divider and true or false
+        head.groupOff  = item.disabled and true or false
 
         local real = item.id ~= nil
         head.nameBox:SetShown(real)
@@ -2731,11 +2814,28 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         head.limitMode:SetShown(real and item.limit and true or false)
         head.limitMode.label:SetText(item.limit == "shortest" and "Shortest" or "Longest")
 
+        head.power:SetShown(real)
+        head.power.label:SetText(head.groupOff and "Off" or "On")
+        UI.tint(head.power.label, head.groupOff and C.red or C.textWhite)
+
+        -- The Disabled band: furniture, not a heading. Everything that acts on a
+        -- group goes, including the twisty and the count — there is nothing here
+        -- to fold and nothing to count, and a control that does nothing is worse
+        -- than no control.
+        head.twisty:SetShown(not head.isDivider)
+        head.count:SetShown(not head.isDivider)
+
         if real then
             head.nameBox.box:SetText(item.name or "")
         else
             head.label:SetText(item.name or "Ungrouped")
+            -- Red, so the one band that is a statement about everything under it
+            -- doesn't read as just another section.
+            UI.tint(head.label, head.isDivider and C.red or C.textGrey)
         end
+        -- No re-anchoring for the divider: the label is pinned to the twisty,
+        -- and a hidden frame keeps its geometry — so "Disabled" lines up with the
+        -- group names rather than sliding left into the gap it left.
 
         head.twisty.label:SetText(item.collapsed and "+" or "-")
         head.count:SetText(item.count > 0 and tostring(item.count) or "empty")
@@ -3071,6 +3171,7 @@ local function buildAuraTrackColumn(parent, unitKey, which, label)
         for j = nHeads + 1, #heads do
             heads[j]:Hide()
             heads[j].groupID, heads[j].editingID = nil, nil
+            heads[j].isDivider = nil
         end
 
         -- A drag in flight has just had the rows move under it.
@@ -4129,9 +4230,26 @@ local function buildAuraLookPage(parent, def)
     shell:SetAllPoints()
     shell:Hide()
 
-    local left, right = splitAuraColumns(shell, def, buildAuraLookColumn, nil)
+    -- Heads this page rather than the tracking one because it changes where the
+    -- icons GO, not what gets found — and it spans the pair, so it belongs above
+    -- both columns rather than inside either.
+    local function u() return auraUnit(def.key) end
+
+    local combineCB = createCheckbox(shell, "Put buffs and debuffs on one row", 400)
+    combineCB:SetPoint("TOPLEFT", 10, -8)
+    combineCB.OnChange = function(_, checked) u().combine = checked; apply() end
+    attachTooltip(combineCB, "Put buffs and debuffs on one row", {
+        "One strip above the health bar instead of two stacked ones. Debuffs take their places first, so where the cap cuts the row off it is a buff that is dropped rather than the CC you were watching for.",
+        "The single row is the DEBUFFS row: everything about how it looks — size, gap, cap, growth, position, borders, countdown — comes from the Debuffs column, and the Buffs column's own look settings stop being used.",
+        "What each column still decides for itself is what it TRACKS: its \"Show these above the health bar\" tick and its \"Only mine\". Untick Show on one and the row is simply the other kind.",
+        "The Magic border still comes from Buffs and still only marks buffs — a debuff's own school is not what that setting is about.",
+        "Special buff frames are unaffected: an aura moved onto one is drawn there either way.",
+    })
+
+    local left, right = splitAuraColumns(shell, def, buildAuraLookColumn, combineCB)
 
     shell:HookScript("OnShow", function()
+        combineCB:SetChecked(u().combine and true or false)
         left.Refresh()
         right.Refresh()
     end)
@@ -4293,14 +4411,27 @@ local function buildAurasPanel(parent)
     master:SetPoint("TOPLEFT", 12, -6)
     master.OnChange = function(_, checked) auraRoot().enabled = checked; apply() end
 
+    -- Sits with the master rather than on either unit tab: the plates it is about
+    -- are friendly players, and those borrow the Enemy Players lists rather than
+    -- having a tab of their own — a switch about them filed under "Enemy Players"
+    -- would read as a mistake.
+    local nameOnly = createCheckbox(panel, "Hide them on players shown as a name only", 320,
+        { "Anyone you can't attack, where \"Show only their name, with no bar\" on the Enemy Players styling tab has taken their health bar away. The icons are the last thing left stacked over a bar that isn't there.",
+          "Only the icons go. What they were watching stays tracked the whole time, so the moment he flags for PvP and the bar comes back, everything he is already wearing comes back with it — rather than being pieced together from whatever lands next." })
+    nameOnly:SetPoint("TOPLEFT", master, "BOTTOMLEFT", 0, -2)
+    nameOnly.OnChange = function(_, checked) auraRoot().hideNameOnly = checked; apply() end
+
     -- Synced both here and on OnShow: this panel is built already visible (it's
     -- resolved on the way into being shown), so the OnShow that re-syncs it on
     -- every later visit never fires for the first one.
-    local function syncMaster() master:SetChecked(auraRoot().enabled ~= false) end
+    local function syncMaster()
+        master:SetChecked(auraRoot().enabled ~= false)
+        nameOnly:SetChecked(auraRoot().hideNameOnly ~= false)
+    end
 
     local bar = CreateFrame("Frame", nil, panel, "BackdropTemplate")
     bar:SetHeight(24)
-    bar:SetPoint("TOPLEFT", master, "BOTTOMLEFT", -6, -6)
+    bar:SetPoint("TOPLEFT", nameOnly, "BOTTOMLEFT", -6, -6)
     bar:SetPoint("RIGHT", panel, "RIGHT", -6, 0)
     applyBackdrop(bar, 1, C.panelDark)
 

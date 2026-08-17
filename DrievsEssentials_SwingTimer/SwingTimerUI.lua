@@ -91,7 +91,7 @@ end
 -- The timer and the hand labels are configured identically — and identically to
 -- every other font in the addon, so both are the shared block from
 -- UI.widgets.buildFontOptions rather than a set of controls of their own.
-local FONT_DEFAULT = addon.Font.New({ size = 11 })
+local FONT_DEFAULT = addon.Font.New({ size = 9 })
 
 -- Renames the pre-block `name` key to `font` the first time each is read; see
 -- addon.Font.Adopt.

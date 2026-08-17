@@ -1414,8 +1414,9 @@ local function getSetBindPrompt()
             -- dialog, which is modal to nothing at all.
             local target = DB().sets[setname]
             if not target then return end
+            IR.ReleaseKeyElsewhere(key)
             target.key = key
-            IR.SetSetBindings()
+            IR.SetSetBindings(key)
             afterSetBindChange()
             IR.Print("Bound \"" .. setname .. "\" to " .. GetBindingText(key, nil, false) .. ".")
         end, function()
@@ -2138,8 +2139,9 @@ local function buildFrame()
             -- dialog, which is modal to nothing at all.
             local target = DB().sets[setname]
             if not target then return end
+            IR.ReleaseKeyElsewhere(key)
             target.key = key
-            IR.SetSetBindings()
+            IR.SetSetBindings(key)
             validateButtons()
             sideList:Refresh()
             IR.Print("Bound \"" .. setname .. "\" to " .. GetBindingText(key, nil, false) .. ".")

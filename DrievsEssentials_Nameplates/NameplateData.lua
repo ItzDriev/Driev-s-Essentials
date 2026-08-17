@@ -121,11 +121,11 @@ local function auraRowDefaults(opts)
 end
 
 local DEFAULTS = {
-    -- On: this module is the reason to install the addon for most of the people
-    -- who install it, and a nameplate module that does nothing until it is found
-    -- in a settings tree is one nobody ever sees. Everything below is set up to
+    -- Off, like every other module's master toggle: taking the nameplates over is
+    -- the most visible thing this addon does, and it is not something to do to
+    -- somebody's UI before they have asked for it. Everything below is set up to
     -- be usable the moment it comes on.
-    enabled = true,
+    enabled = false,
 
     general = {
         -- Shared media for every plate. "Clean" and "Expressway" come from
@@ -151,6 +151,8 @@ local DEFAULTS = {
         healthFont        = { font = "Friz Quadrata TT" },
         levelFontEnabled  = false,
         levelFont         = { font = "Friz Quadrata TT" },
+        guildFontEnabled  = false,
+        guildFont         = { font = "Friz Quadrata TT" },
         borderSize   = 1,
         borderColor  = { 0.00, 0.00, 0.00 },
         bgColor      = { 0.08, 0.08, 0.10 },
@@ -274,6 +276,18 @@ local DEFAULTS = {
         width         = 180,
         height        = 22,
         scale         = 100,   -- %
+        -- Anything you can't attack loses the bar and keeps just a name — the same
+        -- setting the enemyPlayer block has, and on for the same reason. This block
+        -- takes every plate that isn't a player, which includes the ones standing
+        -- next to an unflagged enemy: their pet, their totems, their guardians.
+        -- Without this those kept a full health bar beside an owner already down to
+        -- a name.
+        nameOnlyWhenSafe = true,
+        -- The same, for every NPC plate rather than only the ones you can't touch.
+        -- OFF: it throws away the health bar, which is what a nameplate is mostly
+        -- for, and that is a decision nobody should arrive at by default.
+        nameOnlyAlways   = false,
+        nameOnlySize     = 12,
         showName      = true,
         nameSize      = 8,
         -- On the bar rather than above it, which is what the 22px height and the
@@ -309,6 +323,20 @@ local DEFAULTS = {
         scale         = 100,
         classColor    = true,   -- health bar takes the class color
         classColorName = true,  -- so does the name text
+        -- Their guild, drawn as <Guild Name> on a line of its own. Placed with the
+        -- same nine-way anchor the name uses and INDEPENDENTLY of it, since the
+        -- name is on the bar by default and this is the thing below it.
+        --
+        -- Only on this block: a guild is a player's, and the enemyNPC block reads
+        -- nil here and draws nothing.
+        showGuild      = true,
+        -- Bigger than the name's 10, deliberately: this one is on a line of its
+        -- own below the plate rather than sharing the bar with the level and the
+        -- health text, so nothing is competing with it for the room.
+        guildSize      = 16,
+        guildPlacement = "belowCenter",  -- a value from Data.NAME_PLACEMENTS
+        guildX         = 0,
+        guildY         = 0,
         -- Players you can't attack lose the bar entirely and keep just a name.
         nameOnlyWhenSafe = true,
         -- Its own size here, because the one above is sized to share the bar with the
@@ -430,6 +458,17 @@ local DEFAULTS = {
     auras = {
         enabled = true,
 
+        -- A player you can't attack is drawn as a bare name (see
+        -- nameOnlyWhenSafe), and a strip of icons stacked over a hidden health
+        -- bar is the one thing on that plate still taking up the room the mode
+        -- exists to give back.
+        --
+        -- Hides them only. The store behind them keeps filling — the combat log
+        -- doesn't care what is on screen — so the moment he flags and the bar
+        -- comes back, what he is wearing is already known rather than learned
+        -- from whatever happens to land next.
+        hideNameOnly = true,
+
         -- Which starting setup this profile has had, in the same shape (and for
         -- the same reason) as npcSeed and special.seed.
         seed = 0,
@@ -468,14 +507,20 @@ local DEFAULTS = {
             -- are bigger and there are never forty players on screen at once, so
             -- the room is there — and at a glance a gap is what separates two
             -- icons from one wide one.
+            -- `combine` folds the pair into ONE strip, hosted on the debuffs row
+            -- and taking that row's size, spacing, growth, position and cap. Off
+            -- for both: two rows is what the y offsets above are chosen for, and a
+            -- setting that rearranges a plate has no business doing it uninvited.
             enemyPlayer = {
                 fromEvents = true,
+                combine    = false,
                 buffs      = auraRowDefaults({ y = 40, size = 32, gap = 4, magic = true }),
                 debuffs    = auraRowDefaults({ y =  5, size = 32, gap = 4 }),
                 special    = { bars = {}, nextID = 0, seed = 0 },
             },
             enemyNPC = {
                 fromEvents = false,
+                combine    = false,
                 buffs      = auraRowDefaults({ y = 36, size = 28, magic = false }),
                 debuffs    = auraRowDefaults({ y =  4, size = 28 }),
                 special    = { bars = {}, nextID = 0, seed = 0 },
@@ -549,6 +594,7 @@ addon.Font.MigrateBlock(nameplateGeneral, "font",
 addon.Font.MigrateBlock(nameplateGeneral, "nameFont")
 addon.Font.MigrateBlock(nameplateGeneral, "healthFont")
 addon.Font.MigrateBlock(nameplateGeneral, "levelFont")
+addon.Font.MigrateBlock(nameplateGeneral, "guildFont")
 addon.Font.MigrateBlock(nameplateGeneral, "totFont",
     { size = "totSize", outline = "totOutline", x = "totX", y = "totY" })
 
@@ -948,6 +994,57 @@ function Data.IsMagicAura(spellID, dispel)
     local D = addon.Durations
     local opts = D and D.spells and D.spells[spellID]
     return (opts and opts.buffType == "Magic") and true or false
+end
+
+-- ── Linked auras ─────────────────────────────────────────────────────────────
+-- The auras that replace one another: stances, forms, aspects and paladin auras.
+-- A warrior who presses Berserker Stance has, by that fact alone, lost Battle
+-- Stance — and out of range nothing ever says so out loud, which is the hole the
+-- engine's inferred store fills with this.
+--
+-- One representative spell ID per aura so the names come out in the client's own
+-- language, with the English name as the fallback for anything it won't resolve
+-- (Aspect of the Viper isn't on every build this runs on). Rank doesn't come into
+-- it: every rank shares the one name.
+local LINKED_AURAS = {
+    -- Warrior stances
+    { { 2457, "Battle Stance" }, { 71, "Defensive Stance" }, { 2458, "Berserker Stance" } },
+    -- Druid forms
+    { { 1066, "Aquatic Form" }, { 5487, "Bear Form" }, { 768, "Cat Form" },
+      { 9634, "Dire Bear Form" }, { 24858, "Moonkin Form" }, { 783, "Travel Form" } },
+    -- Hunter aspects
+    { { 13161, "Aspect of the Beast" }, { 5118, "Aspect of the Cheetah" },
+      { 13165, "Aspect of the Hawk" }, { 13163, "Aspect of the Monkey" },
+      { 13159, "Aspect of the Pack" }, { 34074, "Aspect of the Viper" },
+      { 20043, "Aspect of the Wild" } },
+    -- Paladin auras
+    { { 19746, "Concentration Aura" }, { 465, "Devotion Aura" },
+      { 19891, "Fire Resistance Aura" }, { 19897, "Frost Resistance Aura" },
+      { 7294, "Retribution Aura" }, { 19876, "Shadow Resistance Aura" } },
+}
+
+-- [lowercased name] = the list of lowercased names it is exclusive with, every
+-- member of a set sharing the one list.
+local linkedByName
+
+-- What `key` (a lowercased spell name) replaces, or nil where it replaces
+-- nothing — which is almost everything, so this is one hash lookup in the hot
+-- path. The list it returns INCLUDES the key itself; callers skip their own.
+--
+-- Resolved on first ask rather than at load, so the client has had a chance to
+-- answer for the IDs. Spell names don't change under us, so it is never rebuilt.
+function Data.LinkedAuras(key)
+    if not linkedByName then
+        linkedByName = {}
+        for _, set in ipairs(LINKED_AURAS) do
+            local names = {}
+            for _, member in ipairs(set) do
+                names[#names + 1] = ((Data.SpellInfo(member[1])) or member[2]):lower()
+            end
+            for _, name in ipairs(names) do linkedByName[name] = names end
+        end
+    end
+    return key and linkedByName[key] or nil
 end
 
 -- The unit-type block ("enemyPlayer" / "enemyNPC"), created on demand so a
@@ -1430,6 +1527,25 @@ function Data.SetAuraGroupLimit(unitKey, which, id, mode)
     return group.limit
 end
 
+-- Switches a whole heading's worth of tracking off without deleting anything or
+-- unticking a row: the entries keep their art, their durations, their frame
+-- assignments and their place in the group, and simply stop being matched.
+--
+-- What it is for is the seasonal half of a whitelist — a group of world buffs
+-- that matters on raid night and is noise the rest of the week. The alternative
+-- is deleting eleven rows and typing them back in.
+--
+-- Stored as the NEGATIVE so a group that predates this, and every group nobody
+-- has touched, reads as on without needing a migration. Invalidates for the same
+-- reason SetAuraGroupLimit does: this is a group field the match maps carry.
+function Data.SetAuraGroupEnabled(unitKey, which, id, enabled)
+    local group = Data.AuraGroup(unitKey, which, id)
+    if not group then return nil end
+    group.disabled = (not enabled) or nil
+    Data.InvalidateAuras()
+    return not group.disabled
+end
+
 function Data.RenameAuraGroup(unitKey, which, id, text)
     local group = Data.AuraGroup(unitKey, which, id)
     if not group then return nil end
@@ -1600,7 +1716,7 @@ function Data.GroupedAuras(unitKey, which, filter)
     end
 
     local out = {}
-    local function section(id, name, held, collapsed, limit)
+    local function section(id, name, held, collapsed, limit, disabled)
         -- A group with nothing in it still gets its heading: it is the thing you
         -- drag onto, and one you cannot see is one you cannot fill. Under a
         -- search it goes, since a search is asking to be shown less.
@@ -1613,23 +1729,55 @@ function Data.GroupedAuras(unitKey, which, filter)
         out[#out + 1] = {
             kind = "group", id = id, name = name,
             count = #held, collapsed = shut and true or false,
-            -- The heading's own copy of the one setting that reaches a plate, so
+            -- The heading's own copy of the two settings that reach a plate, so
             -- the settings list can draw its state without going back to the
             -- group table it just walked.
             limit = limit,
+            disabled = disabled and true or false,
         }
         if shut then return end
         for _, item in ipairs(held) do out[#out + 1] = item end
     end
 
     for _, g in ipairs(groups) do
-        section(g.id, g.name or "", bucket[g.id], g.collapsed, Data.AuraGroupLimit(g.limit))
+        if not g.disabled then
+            section(g.id, g.name or "", bucket[g.id], g.collapsed, Data.AuraGroupLimit(g.limit))
+        end
     end
 
-    -- Last, and always present while there are groups at all: it is where a drag
-    -- back OUT of a group has to land.
+    -- Last of the live sections, and always present while there are groups at
+    -- all: it is where a drag back OUT of a group has to land.
     local o = Data.AuraOpts(unitKey, which)
     section(nil, "Ungrouped", loose, o and o.looseCollapsed)
+
+    -- Then the switched-off ones, under a band saying so, so the top of the list
+    -- is only what is actually being watched for.
+    --
+    -- The band is emitted only where something will really land beneath it —
+    -- tested with section's own rule, since under a search a switched-off group
+    -- holding no matches doesn't draw either. A "Disabled" heading with nothing
+    -- under it is a line of furniture explaining nothing.
+    local anyOff = false
+    for _, g in ipairs(groups) do
+        if g.disabled and not (searching and #bucket[g.id] == 0) then
+            anyOff = true
+            break
+        end
+    end
+
+    if anyOff then
+        -- A group item, because that is the shape the list is virtualised over,
+        -- but `divider` says it is furniture: no id, nothing to fold, nothing to
+        -- drop onto, nothing to switch.
+        out[#out + 1] = { kind = "group", divider = true, name = "Disabled",
+                          count = 0, collapsed = false }
+        for _, g in ipairs(groups) do
+            if g.disabled then
+                section(g.id, g.name or "", bucket[g.id], g.collapsed,
+                        Data.AuraGroupLimit(g.limit), true)
+            end
+        end
+    end
 
     return out
 end
@@ -2306,7 +2454,13 @@ function Data.AuraLookup(unitKey, which)
     -- Only the groups that are LIMITED, so `limits` being empty is the engine's
     -- one-lookup answer to "can I draw straight down the scan the way I always
     -- have". A plain heading never appears here at all.
+    -- `off` is the switched-off headings, and nil while there are none — so the
+    -- test below costs nothing at all on the profiles that never use the feature.
+    -- Building it in the same walk as the limits: both are per-group facts the
+    -- entry loop needs, and the list of groups is short but the list of entries
+    -- is not.
     local limits = {}
+    local off = nil
     local anyLimit = false
     for _, g in ipairs(Data.AuraGroups(unitKey, which)) do
         local mode = Data.AuraGroupLimit(g.limit)
@@ -2314,12 +2468,21 @@ function Data.AuraLookup(unitKey, which)
             limits[g.id] = mode
             anyLimit = true
         end
+        if g.disabled then
+            off = off or {}
+            off[g.id] = true
+        end
     end
 
     local out = { byID = {}, byName = {}, count = 0, main = 0, bars = {}, barFor = {},
                   limits = anyLimit and limits or nil, groupFor = {} }
     for key, entry in pairs(Data.AuraList(unitKey, which) or {}) do
-        if entry.enabled ~= false then
+        -- A switched-off heading drops out HERE, which is the one gate both the
+        -- unit scan and the event-inferred store read through — so its entries
+        -- stop being drawn and stop being recorded in the same move, and nothing
+        -- downstream needs to know the feature exists.
+        if entry.enabled ~= false
+           and not (off and entry.group and off[entry.group]) then
             if entry.id then
                 out.byID[entry.id] = entry
             else

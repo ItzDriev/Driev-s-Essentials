@@ -368,6 +368,14 @@ local function buildPlate(base)
     f.level:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", 0, 3)
     f.level:SetJustifyH("RIGHT")
 
+    -- The guild tag. Word wrap OFF because it is given a width: guild names run to
+    -- 24 characters and a wrapped one would silently become two lines, pushing
+    -- whatever is under the plate out of place. Anchored in updateStyle.
+    f.guild = overlay:CreateFontString(nil, "OVERLAY")
+    f.guild:SetJustifyH("CENTER")
+    f.guild:SetWordWrap(false)
+    f.guild:Hide()
+
     f.healthText = overlay:CreateFontString(nil, "OVERLAY")
     f.healthText:SetPoint("RIGHT", health, "RIGHT", -2, 0)
     f.healthText:SetJustifyH("RIGHT")
@@ -631,8 +639,22 @@ local function updateStyle(f)
 
     -- Recomputed here rather than cached at attach: flagging for PvP changes the
     -- answer mid-session.
-    local nameOnly = grp.nameOnlyWhenSafe and UnitIsPlayer(f.unit)
-        and not UnitCanAttack("player", f.unit) and true or false
+    --
+    -- Deliberately NOT gated on UnitIsPlayer. Which family of unit this is has
+    -- already been decided — `grp` is the enemyPlayer block for player plates and
+    -- the enemyNPC block for everything else — so asking again here only excluded
+    -- the units that fall between the two: an unflagged enemy's PET, their totems,
+    -- their guardians. Those are not players, so they took the NPC block and kept a
+    -- health bar you cannot touch, standing beside an owner who had already gone
+    -- down to a name.
+    --
+    -- `nameOnlyAlways` is the same end state reached without asking the question at
+    -- all — every plate of this kind, attackable or not. Read off `grp` like the
+    -- rest, so it is per unit type; only the NPC block ships the key and only the
+    -- NPC tab offers it, which is where wanting it is imaginable.
+    local nameOnly = (grp.nameOnlyAlways
+            or (grp.nameOnlyWhenSafe and not UnitCanAttack("player", f.unit)))
+        and true or false
     f.nameOnly = nameOnly
     -- The general block is the fallback behind every per-element one below, so a
     -- setting an element doesn't carry comes from here.
@@ -692,6 +714,26 @@ local function updateStyle(f)
         place.dx + (tonumber(grp.nameX) or 0) + nameDX,
         place.dy + (tonumber(grp.nameY) or 0) + nameDY)
     f.name:SetJustifyH(place.justify)
+    -- The guild tag gets its own placement rather than following the name's: the
+    -- name sits ON the bar by default and this is the line under it, so tying the
+    -- two together would make the pair impossible to arrange. Anchored against the
+    -- health bar like the name, so it holds its place on a name-only plate too —
+    -- the bar keeps its geometry while hidden.
+    local guildCfg  = elementFont(g, "guildFont")
+    local guildSize = tonumber(grp.guildSize) or addon.Font.Size(guildCfg, base)
+    local guildDX, guildDY = addon.Font.Apply(f.guild, guildCfg, base, guildSize)
+    local gplace = Data.NamePlacement(grp.guildPlacement or "belowCenter")
+    f.guild:ClearAllPoints()
+    f.guild:SetPoint(gplace.point, f.health, gplace.rel,
+        gplace.dx + (tonumber(grp.guildX) or 0) + guildDX,
+        gplace.dy + (tonumber(grp.guildY) or 0) + guildDY)
+    f.guild:SetJustifyH(gplace.justify)
+    -- Bounded by the plate so a long guild name doesn't run off both sides of it.
+    f.guild:SetWidth(math.max(10, f:GetWidth() or 0))
+    -- Nothing recolours this as the fight goes on — no class colour, no threat —
+    -- so its block colour is applied here with the styling rather than per update.
+    addon.Font.ApplyColor(f.guild, guildCfg, base, 0.75, 0.75, 0.75)
+
     -- Re-anchored rather than left on its creation point, so the level's own font
     -- offsets aren't a pair of controls that quietly do nothing.
     local levelDX, levelDY = addon.Font.Apply(f.level, levelCfg, base, nameSize)
@@ -992,6 +1034,37 @@ local function levelText(unit)
     return "??"
 end
 
+-- <Guild Name>, or nothing at all. Its own function rather than a block inside
+-- updateName because it is also re-read on the slow tick: the client will hand
+-- out a player's NAME before it can answer for their guild, and no event fires
+-- when the second one lands — so a plate that appeared a frame too early would
+-- otherwise wear a blank line for as long as the unit was on screen.
+--
+-- Costs one table lookup on every plate that isn't a player's, since only the
+-- enemyPlayer block carries showGuild at all.
+local function updateGuild(f)
+    local fs = f.guild
+    if not fs then return end
+
+    local grp = f.group
+    if not (grp and grp.showGuild and f.unit and UnitIsPlayer(f.unit)) then
+        fs:Hide()
+        return
+    end
+
+    local guild = GetGuildInfo(f.unit)
+    if guild and guild ~= "" then
+        fs:SetText("<" .. guild .. ">")
+        fs:Show()
+    else
+        -- Hidden rather than left empty: an empty string still reserves its line
+        -- height, and anything placed under the plate would sit low for a
+        -- guildless player and not for anyone else.
+        fs:SetText("")
+        fs:Hide()
+    end
+end
+
 local function updateName(f)
     local unit = f.unit
     if not unit then return end
@@ -1027,6 +1100,8 @@ local function updateName(f)
             addon.Font.ApplyColor(f.name, elementFont(g, "nameFont"), generalFont(g), 1, 1, 1)
         end
     end
+
+    updateGuild(f)
 
     if grp.showLevel ~= false then
         local level = UnitLevel(unit)
@@ -1679,18 +1754,28 @@ local AURA_SUBEVENTS = {
 
 local AURA_TYPE_ROW = { BUFF = "buffs", DEBUFF = "debuffs" }
 
--- With no duration to expire on, an inferred aura rides until the log says it's
--- gone — which needs the unit in range. Five minutes is the backstop.
-local INFER_TTL = 300
--- How often the store is walked for records nothing is looking at any more.
-local INFER_SWEEP = 10
-
--- [destGUID] = { [lowercased spell name] = record }. Keyed on name, not ID, so
--- ranks collapse into one icon and a real and an inferred Battle Shout don't
--- both draw.
-local inferred = {}
-local inferredGUIDs = 0
-local sinceInferSweep = 0
+-- The store itself, as one table rather than six file locals: this file is at
+-- Lua's 200-local ceiling for a chunk, and six of them for one subsystem is the
+-- easiest six to give back.
+--
+--   bags    [destGUID] = { [lowercased spell name] = record }. Keyed on name,
+--           not ID, so ranks collapse into one icon and a real and an inferred
+--           Battle Shout don't both draw.
+--   guids   how many GUIDs `bags` holds, so the idle case costs one compare.
+--   TTL     with no duration to expire on, an inferred aura rides until the log
+--           says it's gone — which needs the unit in range. Five minutes is the
+--           backstop.
+--   SWEEP   how often the store is walked for records nothing is looking at any
+--           more, and `since` is the clock against it.
+--   scratch the sort buffer collectInferred fills, reused per call.
+local Infer = {
+    bags    = {},
+    guids   = 0,
+    TTL     = 300,
+    SWEEP   = 10,
+    since   = 0,
+    scratch = {},
+}
 
 -- The combat log deals only in GUIDs — no unit token, so no UnitIsPlayer — but
 -- player GUIDs are the only ones beginning "Player". Hostility doesn't come into
@@ -1702,11 +1787,12 @@ end
 
 -- The filter that keeps the store to a handful of records: almost everything the
 -- combat log shouts about is rejected here.
-local function trackedEntry(unitKey, which, spellID, name)
+-- `key` is the lowercased name, which the caller has already had to make.
+local function trackedEntry(unitKey, which, spellID, key)
     local lookup = Data.AuraLookup(unitKey, which)
     if lookup.count == 0 then return nil end
     return (spellID and lookup.byID[spellID])
-        or (name and lookup.byName[name:lower()])
+        or (key and lookup.byName[key])
         or nil
 end
 
@@ -1719,7 +1805,7 @@ local function markInferredDirty(guid)
 end
 
 local function forgetInferred(guid, name)
-    local bag = guid and inferred[guid]
+    local bag = guid and Infer.bags[guid]
     if not bag then return end
     if name then
         if bag[name:lower()] == nil then return end
@@ -1729,25 +1815,63 @@ local function forgetInferred(guid, name)
     else
         markInferredDirty(guid)
     end
-    inferred[guid] = nil
-    inferredGUIDs = inferredGUIDs - 1
+    Infer.bags[guid] = nil
+    Infer.guids = Infer.guids - 1
+end
+
+-- ── Linked auras ─────────────────────────────────────────────────────────────
+-- Stances, forms, aspects and paladin auras replace one another: what a warrior
+-- gains by pressing Berserker Stance is a Battle Stance he no longer has. The
+-- combat log carries both halves of that — but only while it can see him.
+--
+-- Out of range there is no removal event, so a swap made out of combat is a
+-- stance that arrives and never leaves: he walks back in, swaps again, and the
+-- plate wears two of them until the TTL backstop. Applying any member of a set
+-- therefore drops the rest of that set off the same GUID, which is the removal
+-- the log never sent. Data.LinkedAuras holds the sets.
+--
+-- Called BEFORE the whitelist gate below, deliberately: the aura arriving does
+-- not have to be tracked for the one it replaces to be gone, and a list holding
+-- only Battle Stance still has to lose it when he presses Berserker.
+local function forgetLinked(guid, key)
+    local names = Data.LinkedAuras(key)
+    local bag = names and Infer.bags[guid]
+    if not bag then return end
+
+    local dropped = false
+    for _, other in ipairs(names) do
+        if other ~= key and bag[other] ~= nil then
+            bag[other] = nil
+            dropped = true
+        end
+    end
+    if not dropped then return end
+
+    markInferredDirty(guid)
+    if next(bag) == nil then
+        Infer.bags[guid] = nil
+        Infer.guids = Infer.guids - 1
+    end
 end
 
 local function rememberInferred(guid, which, spellID, name, icon, count, srcGUID)
     if not (guid and name) then return end
     local unitKey = unitKeyForGUID(guid)
     if not unitKey then return end
-    local entry = trackedEntry(unitKey, which, spellID, name)
-    if not entry then return end
-
-    local bag = inferred[guid]
-    if not bag then
-        bag = {}
-        inferred[guid] = bag
-        inferredGUIDs = inferredGUIDs + 1
-    end
 
     local key = name:lower()
+    forgetLinked(guid, key)
+
+    local entry = trackedEntry(unitKey, which, spellID, key)
+    if not entry then return end
+
+    local bag = Infer.bags[guid]
+    if not bag then
+        bag = {}
+        Infer.bags[guid] = bag
+        Infer.guids = Infer.guids + 1
+    end
+
     local rec = bag[key]
     if not rec then
         rec = {}
@@ -1783,7 +1907,7 @@ local function rememberInferred(guid, which, spellID, name, icon, count, srcGUID
     end
     rec.duration = (dur and dur > 0) and dur or nil
     rec.applied  = GetTime()
-    rec.expires  = rec.applied + (rec.duration or INFER_TTL)
+    rec.expires  = rec.applied + (rec.duration or Infer.TTL)
     -- A number from either source earns the swipe and countdown; with neither,
     -- the icon rides untimed rather than counting down from an invention.
     rec.timed    = rec.duration and true or false
@@ -1792,30 +1916,30 @@ local function rememberInferred(guid, which, spellID, name, icon, count, srcGUID
 end
 
 local function wipeInferred()
-    if inferredGUIDs == 0 then return end
-    for guid in pairs(inferred) do markInferredDirty(guid) end
-    wipe(inferred)
-    inferredGUIDs = 0
+    if Infer.guids == 0 then return end
+    for guid in pairs(Infer.bags) do markInferredDirty(guid) end
+    wipe(Infer.bags)
+    Infer.guids = 0
 end
 
 -- Records outlive the plate that showed them (the unit walks away and comes
 -- back), so nothing else prunes them.
 local function sweepInferred(elapsed)
-    if inferredGUIDs == 0 then return end
-    sinceInferSweep = sinceInferSweep + elapsed
-    if sinceInferSweep < INFER_SWEEP then return end
-    sinceInferSweep = 0
+    if Infer.guids == 0 then return end
+    Infer.since = Infer.since + elapsed
+    if Infer.since < Infer.SWEEP then return end
+    Infer.since = 0
 
     local now = GetTime()
-    for guid, bag in pairs(inferred) do
+    for guid, bag in pairs(Infer.bags) do
         local live, pruned = false, false
         for key, rec in pairs(bag) do
             if now >= rec.expires then bag[key] = nil; pruned = true else live = true end
         end
         if pruned then markInferredDirty(guid) end
         if not live then
-            inferred[guid] = nil
-            inferredGUIDs = inferredGUIDs - 1
+            Infer.bags[guid] = nil
+            Infer.guids = Infer.guids - 1
         end
     end
 end
@@ -1889,8 +2013,8 @@ end
 -- Sorted before drawing so the strip doesn't reshuffle every scan — pairs() has
 -- no order, and an icon swapping places twice a second is worse than no icon.
 -- Oldest first, so a new aura joins the end rather than shoving the others along.
-local inferScratch = {}
-
+-- Infer.scratch is the buffer that sort runs over, reused rather than rebuilt.
+--
 -- `wantBar` is the special buff frame being filled, or nil for the row above the
 -- health bar. The record itself doesn't carry one — the assignment lives on the
 -- whitelist entry and can be changed while the record is still riding — so it's
@@ -1898,9 +2022,10 @@ local inferScratch = {}
 -- from the whitelist resolves to nothing and is dropped, which is right: the
 -- record only exists because it was tracked.
 local function collectInferred(f, which, seen, now, lookup, wantBar)
-    wipe(inferScratch)
-    local bag = f.guid and inferred[f.guid]
-    if not bag then return inferScratch end
+    local out = Infer.scratch
+    wipe(out)
+    local bag = f.guid and Infer.bags[f.guid]
+    if not bag then return out end
 
     for key, rec in pairs(bag) do
         if now >= rec.expires then
@@ -1908,12 +2033,12 @@ local function collectInferred(f, which, seen, now, lookup, wantBar)
         elseif rec.which == which and not seen[key] then
             local entry = (rec.spellID and lookup.byID[rec.spellID]) or lookup.byName[key]
             if entry and lookup.barFor[entry] == wantBar then
-                inferScratch[#inferScratch + 1] = rec
+                out[#out + 1] = rec
             end
         end
     end
-    table.sort(inferScratch, function(a, b) return a.applied < b.applied end)
-    return inferScratch
+    table.sort(out, function(a, b) return a.applied < b.applied end)
+    return out
 end
 
 -- ── Preview ──────────────────────────────────────────────────────────────────
@@ -1960,10 +2085,17 @@ local function previewArt(unitKey, which)
     end
     if byUnit[which] then return byUnit[which] end
 
+    -- Filtered through the match maps rather than off the sorted list alone: an
+    -- entry under a switched-off heading has already been dropped from those, and
+    -- a preview that advertised art the row would never draw would be telling you
+    -- about a list you had just turned off.
+    local lookup = Data.AuraLookup(unitKey, which)
     local out = {}
     for _, item in ipairs(Data.SortedAuras(unitKey, which)) do
-        if item.entry.enabled ~= false then
-            local _, icon = Data.AuraDisplay(item.entry)
+        local entry = item.entry
+        local tracked = entry.id and lookup.byID[entry.id] or lookup.byName[item.key]
+        if entry.enabled ~= false and tracked then
+            local _, icon = Data.AuraDisplay(entry)
             out[#out + 1] = icon or QUESTION_MARK
         end
     end
@@ -2025,6 +2157,13 @@ end
 -- always has and none of the queueing runs.
 local Scan = {
     seen  = {},
+    -- The order a COMBINED row reads its two kinds in, and so the order they take
+    -- places on it. Debuffs first deliberately: where the cap cuts the strip off,
+    -- what should survive is the CC and the DoTs rather than whatever buff the
+    -- unit happens to be carrying. Its own table rather than AURA_KINDS reversed,
+    -- because "the order a combined row draws in" is a decision and reading it
+    -- backwards out of another list would hide that.
+    bothKinds = { "debuffs", "buffs" },
     -- Ordered records awaiting Scan.draw.
     queue = {},
     n     = 0,
@@ -2123,12 +2262,66 @@ local function updateAuraRow(f, which)
     local uKey = f.kind and Data.AURA_UNIT_FOR_KIND[f.kind]
     local u    = uKey and a and a.units and a.units[uKey]
     local o    = u and u[which]
-    if not (f.unit and a and a.enabled ~= false and o and o.enabled ~= false) then
+    if not (f.unit and a and a.enabled ~= false and o) then
+        hideAuraRow(row)
+        return
+    end
+
+    -- ── Combined ─────────────────────────────────────────────────────────────
+    -- One strip carrying both kinds instead of two stacked rows. The DEBUFFS row
+    -- hosts it and the buffs row is put away: the debuff row is the one that sits
+    -- directly above the health bar, where a single strip belongs, while the buff
+    -- row is only placed a row higher to clear the debuffs beneath it — a gap with
+    -- nothing left to clear.
+    --
+    -- The host block governs everything about the LOOK: size, spacing, growth,
+    -- position, cap, borders, countdown. What stays per kind is what is TRACKED —
+    -- each keeps its own "Show these above the health bar" and "Only mine", so
+    -- combining two rows never quietly starts drawing a kind that was switched
+    -- off, and never widens an "only mine" the other half never agreed to.
+    local combined = u.combine and true or false
+    if combined and which ~= "debuffs" then
+        hideAuraRow(row)
+        return
+    end
+
+    -- A combined row draws while EITHER kind on it is switched on; on its own it
+    -- is the one question it has always been.
+    local live = o.enabled ~= false
+    if combined then
+        live = false
+        for _, kind in ipairs(Scan.bothKinds) do
+            local ko = u[kind]
+            if ko and ko.enabled ~= false then live = true; break end
+        end
+    end
+    if not live then
+        hideAuraRow(row)
+        return
+    end
+
+    -- A name-only plate has no bar for the row to sit above, and the setting says
+    -- not to float one there. Ahead of the preview below as well as the scan: the
+    -- preview is for judging a row against real plates, and a plate this row will
+    -- never draw on is not one of them.
+    if f.nameOnly and a.hideNameOnly ~= false then
         hideAuraRow(row)
         return
     end
 
     local st  = readAuraStyle(o, d.general)
+    -- The Magic border stays the buffs half's, whichever block is hosting the row:
+    -- it is set on the buffs page and it means "purgeable", which is a question
+    -- about a buff. Lifted across exactly as a special frame lifts it, since a
+    -- combined row has the same problem — it draws from both lists and the setting
+    -- lives on one of them.
+    if combined then
+        local b = u.buffs
+        if b and b.magicBorder then
+            st.magicR, st.magicG, st.magicB = rgb(b.magicBorderColor, 0.25, 0.45, 1)
+            st.magicSize = math.max(0, math.floor((tonumber(b.magicBorderSize) or 2) + 0.5))
+        end
+    end
     local now = GetTime()
 
     -- Ahead of the whitelist check below, not behind it: the preview is showing
@@ -2147,87 +2340,116 @@ local function updateAuraRow(f, which)
     -- `main` rather than `count`: an entry ticked onto a special buff frame is
     -- drawn there INSTEAD, so a list every one of whose entries has been moved
     -- leaves this row with nothing to do.
-    local lookup = Data.AuraLookup(uKey, which)
-    if lookup.main == 0 then
+    local anyMain = false
+    for k = 1, (combined and #Scan.bothKinds or 1) do
+        local kind = combined and Scan.bothKinds[k] or which
+        if Data.AuraLookup(uKey, kind).main > 0 then anyMain = true; break end
+    end
+    if not anyMain then
         hideAuraRow(row)
         return
     end
 
-    -- "Only mine" is a filter flag rather than a check on the caster afterwards:
-    -- the game does the matching, and a scan that discards most of what it reads
-    -- would still have paid to read it.
-    local filter = AURA_FILTER[which]
-    if o.onlyMine then filter = filter .. "|PLAYER" end
-
-    -- Nil on all but the rows somebody has actually set a group limit on, and
-    -- that nil is what keeps the loop below the loop it has always been.
-    local limits = lookup.limits
-    if limits then Scan.reset() end
+    -- Queued rather than drawn where ANY kind on this row has a limited group, for
+    -- the reason a special frame queues: the aura that wins can be the last one
+    -- read. One queue spanning both halves, so a combined row fed by a limited buff
+    -- group and a plain debuff list still comes out in one order.
+    --
+    -- Nil on all but the rows somebody has actually set a limit on, and that nil is
+    -- what keeps the loop below the loop it has always been.
+    local limited = Data.AuraLookup(uKey, which).limits
+    if combined then
+        limited = Data.AuraLookup(uKey, "debuffs").limits
+            or Data.AuraLookup(uKey, "buffs").limits
+    end
+    if limited then Scan.reset() end
 
     local shown = 0
-    wipe(Scan.seen)
-    for i = 1, MAX_AURA_SCAN do
-        local name, icon, count, duration, expires, spellID, magic = readAura(f.unit, i, filter)
-        if not name then break end
+    for k = 1, (combined and #Scan.bothKinds or 1) do
+        local kind   = combined and Scan.bothKinds[k] or which
+        -- Tracking settings come from the KIND being read, look settings from the
+        -- host block resolved above. On an uncombined row they are the same block.
+        local ko     = combined and u[kind] or o
+        local lookup = Data.AuraLookup(uKey, kind)
+        local limits = lookup.limits
+        -- The Magic mark is a buff's, whichever half of the row is being read: a
+        -- debuff has a school too, and it is not what the setting was ticked about.
+        local marks  = (kind == "buffs")
 
-        local key = name:lower()
-        local hit = (spellID and lookup.byID[spellID]) or lookup.byName[key]
-        if hit then
-            -- The one moment a by-name entry can be told what it matches: the
-            -- name that found it and the ID and art that came with it are all
-            -- in hand right here, and nowhere else. Done for an entry bound to a
-            -- special frame too — it is the same entry, and the frame's own pass
-            -- has no better claim on teaching it.
-            learnAura(hit, spellID, icon)
-            if lookup.barFor[hit] == nil then
-                -- Marked seen only where it was drawn, so the inferred pass for
-                -- the frame it went to can still fill it in over there.
-                Scan.seen[key] = true
-                if limits then
-                    -- No early break: the aura that wins a limited group can be
-                    -- the last one on the unit, so the whole list has to be read.
-                    local group = lookup.groupFor[hit]
-                    Scan.push(group, group and limits[group], icon, count,
-                              duration, expires, magic, now)
-                else
-                    shown = shown + 1
-                    drawAuraIcon(row, shown, st, icon, count, duration, expires, now, magic)
-                    if shown >= st.max then break end
+        if ko and ko.enabled ~= false and lookup.main > 0 and (limited or shown < st.max) then
+            -- "Only mine" is a filter flag rather than a check on the caster
+            -- afterwards: the game does the matching, and a scan that discards most
+            -- of what it reads would still have paid to read it.
+            local filter = AURA_FILTER[kind]
+            if ko.onlyMine then filter = filter .. "|PLAYER" end
+
+            wipe(Scan.seen)
+            for i = 1, MAX_AURA_SCAN do
+                local name, icon, count, duration, expires, spellID, magic = readAura(f.unit, i, filter)
+                if not name then break end
+                magic = magic and marks
+
+                local key = name:lower()
+                local hit = (spellID and lookup.byID[spellID]) or lookup.byName[key]
+                if hit then
+                    -- The one moment a by-name entry can be told what it matches:
+                    -- the name that found it and the ID and art that came with it
+                    -- are all in hand right here, and nowhere else. Done for an
+                    -- entry bound to a special frame too — it is the same entry,
+                    -- and the frame's own pass has no better claim on teaching it.
+                    learnAura(hit, spellID, icon)
+                    if lookup.barFor[hit] == nil then
+                        -- Marked seen only where it was drawn, so the inferred pass
+                        -- for the frame it went to can still fill it in over there.
+                        Scan.seen[key] = true
+                        if limited then
+                            -- No early break: the aura that wins a limited group
+                            -- can be the last one on the unit, so the whole list
+                            -- has to be read.
+                            local group = limits and lookup.groupFor[hit]
+                            Scan.push(group, group and limits[group], icon, count,
+                                      duration, expires, magic, now)
+                        else
+                            shown = shown + 1
+                            drawAuraIcon(row, shown, st, icon, count, duration, expires, now, magic)
+                            if shown >= st.max then break end
+                        end
+                    end
+                end
+            end
+
+            -- Then whatever the unit wouldn't own up to, filled in from the events.
+            -- Strictly second: a real aura carries the true duration and stack count
+            -- and an inferred one carries neither, so the real one wins.
+            --
+            -- Skipped entirely under "only ones I applied" — the events say who cast
+            -- what, but the store doesn't keep it, and quietly showing someone else's
+            -- aura under a filter that promises otherwise is worse than showing none.
+            if (limited or shown < st.max) and u.fromEvents and not ko.onlyMine then
+                for _, rec in ipairs(collectInferred(f, kind, Scan.seen, now, lookup, nil)) do
+                    local duration = rec.timed and rec.duration or 0
+                    local expires  = rec.timed and rec.expires  or 0
+                    -- The combat log carries no dispel school, so this is the
+                    -- duration library's table answering on its own. That is the
+                    -- whole reason the fallback exists: an enemy player's buffs ALL
+                    -- arrive down this path, so without it the Magic border would
+                    -- never light up on the plates it is most use on.
+                    local magic = marks and Data.IsMagicAura(rec.spellID)
+                    if limited then
+                        local group = limits and Scan.inferredGroup(rec, lookup)
+                        Scan.push(group, group and limits[group], rec.icon, rec.count,
+                                  duration, expires, magic, now)
+                    else
+                        shown = shown + 1
+                        drawAuraIcon(row, shown, st, rec.icon, rec.count, duration, expires, now, magic)
+                        if shown >= st.max then break end
+                    end
                 end
             end
         end
     end
 
-    -- Then whatever the unit wouldn't own up to, filled in from the events. Strictly
-    -- second: a real aura carries the true duration and stack count and an inferred
-    -- one carries neither, so the real one wins.
-    --
-    -- Skipped entirely under "only ones I applied" — the events say who cast what,
-    -- but the store doesn't keep it, and quietly showing someone else's aura under a
-    -- filter that promises otherwise is worse than showing none.
-    if (limits or shown < st.max) and u.fromEvents and not o.onlyMine then
-        for _, rec in ipairs(collectInferred(f, which, Scan.seen, now, lookup, nil)) do
-            local duration = rec.timed and rec.duration or 0
-            local expires  = rec.timed and rec.expires  or 0
-            -- The combat log carries no dispel school, so this is the duration
-            -- library's table answering on its own. That is the whole reason the
-            -- fallback exists: an enemy player's buffs ALL arrive down this path,
-            -- so without it the Magic border would never light up on the plates
-            -- it is most use on.
-            local magic = Data.IsMagicAura(rec.spellID)
-            if limits then
-                local group = Scan.inferredGroup(rec, lookup)
-                Scan.push(group, group and limits[group], rec.icon, rec.count,
-                          duration, expires, magic, now)
-            else
-                shown = shown + 1
-                drawAuraIcon(row, shown, st, rec.icon, rec.count, duration, expires, now, magic)
-                if shown >= st.max then break end
-            end
-        end
-    end
-
-    if limits then shown = Scan.draw(row, st, now) end
+    if limited then shown = Scan.draw(row, st, now) end
 
     finishAuraRow(f, row, shown, st)
 end
@@ -2416,7 +2638,11 @@ function Special.updateRows(f)
     local a = d and d.auras
     local uKey = f.kind and Data.AURA_UNIT_FOR_KIND[f.kind]
     local u    = uKey and a and a.units and a.units[uKey]
-    local live = (f.unit and a and a.enabled ~= false and u) and true or false
+    -- The side frames go with the rows above the bar on a name-only plate: they
+    -- hang off that same hidden bar, and half of the strips staying up would be a
+    -- stranger sight than all of them.
+    local live = (f.unit and a and a.enabled ~= false and u
+                  and not (f.nameOnly and a.hideNameOnly ~= false)) and true or false
 
     local now = live and GetTime() or 0
     -- Stamped rather than collected into a set of what drew: this runs per plate
@@ -3341,13 +3567,23 @@ end
 -- then act on it. These are only the fallbacks behind those keys.
 local CLICK_PAD_X_DEFAULT, CLICK_PAD_Y_DEFAULT = 10, 24
 
--- Floored and clamped at the read rather than the write, so a value that reached
--- the profile some other way (import, hand-edited SavedVariables) can't hand a
--- fractional or negative size to the plate API.
+-- Floored at the read rather than the write, so a value that reached the profile
+-- some other way (import, hand-edited SavedVariables) can't hand a fractional
+-- size to the plate API.
+--
+-- NEGATIVE is allowed, and for the Y half it is the whole point: the client
+-- stacks plates by this rect, so pulling the pad under the bar's own height is
+-- the only way to stack tighter than the bar is tall. The X half goes negative
+-- for the same reason in the other direction — a click box narrower than the bar,
+-- for plates packed side by side.
+--
+-- What must never go negative is the RECT this produces, and computePlateSize is
+-- where that is caught. A floor here couldn't do it anyway: how much of the pad
+-- the bar can afford to give back depends on the bar.
 local function clickPad(g)
     local x = math.floor(tonumber(g and g.clickPadX) or CLICK_PAD_X_DEFAULT)
     local y = math.floor(tonumber(g and g.clickPadY) or CLICK_PAD_Y_DEFAULT)
-    return math.max(0, x), math.max(0, y)
+    return x, y
 end
 
 local sizesPending = false
@@ -3453,9 +3689,13 @@ local function computePlateSize()
 
     -- Rounded: these end up as frame sizes, and a fractional one only invites the
     -- same per-side pixel rounding that made the borders uneven.
+    --
+    -- Floored at 1, which is the only clamp a negative pad needs: a rect smaller
+    -- than the bar is a legitimate ask (see clickPad), a rect of zero or less is
+    -- not a smaller click box but an argument the plate API has no answer for.
     local padX, padY = clickPad(g)
-    return math.floor(widest  + padX + 0.5),
-           math.floor(tallest + padY + 0.5),
+    return math.max(1, math.floor(widest  + padX + 0.5)),
+           math.max(1, math.floor(tallest + padY + 0.5)),
            widest, tallest
 end
 
@@ -3768,6 +4008,9 @@ driver:SetScript("OnUpdate", function(_, elapsed)
             -- No event says a mob has changed target, so this is the only way
             -- the line under the plate ever moves.
             updateTargetOfTarget(f)
+            -- Nor does anything announce that the client has finally worked out
+            -- whose guild this is — see updateGuild.
+            updateGuild(f)
             -- Whether something is fighting you changes on its own, with no event to hang it
             -- off — unlike the target dim, which updateTarget covers.
             updateAlpha(f)
@@ -4204,6 +4447,11 @@ local function padOverlay(base)
 
     local h = f.health
 
+    -- The four bands span from the plate rect's edge to the bar's, so a NEGATIVE
+    -- pad — rect inside the bar — collapses them to nothing and only the cyan
+    -- outline below is left. That reads correctly rather than wrongly: there is no
+    -- slack to shade, and the outline is then sitting inside the bar showing you
+    -- exactly that.
     local function band()
         local t = o:CreateTexture(nil, "OVERLAY", nil, 5)
         t:SetTexture(WHITE)
@@ -4554,7 +4802,7 @@ local function showClickPad(rawX, rawY)
         debugPrint("no plate size to report — the module is off, or no unit type has a width.")
     end
 
-    debugPrint("Usage: /denp clickpad <x> <y> — saved to the profile, same as General > Engine > Click box padding. Lower Y stacks plates tighter; too low and clicks just off a thin bar stop landing.")
+    debugPrint("Usage: /denp clickpad <x> <y> — saved to the profile, same as General > Engine > Click box padding. Lower Y stacks plates tighter; too low and clicks just off a thin bar stop landing. Negative is allowed and takes the box inside the bar; the rect itself stops at 1x1.")
 end
 
 -- The decisive test the dump alone can't do: measure, re-apply, measure again.

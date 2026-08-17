@@ -3572,7 +3572,7 @@ local function buildProfilesPanel(parent)
         -- push the "(active)" tag straight under them.
         local nameFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         nameFS:SetPoint("LEFT", 8, 0)
-        nameFS:SetWidth(140)
+        nameFS:SetWidth(120)
         nameFS:SetJustifyH("LEFT")
         if nameFS.SetWordWrap then nameFS:SetWordWrap(false) end
         UI.tint(nameFS, C.textWhite)
@@ -3595,7 +3595,7 @@ local function buildProfilesPanel(parent)
         row.deleteBtn, row.deleteLbl = deleteBtn, deleteLbl
 
         local switchBtn = CreateFrame("Button", nil, row, "BackdropTemplate")
-        switchBtn:SetSize(90, 20)
+        switchBtn:SetSize(60, 20)
         switchBtn:SetPoint("RIGHT", deleteBtn, "LEFT", -6, 0)
         applyBackdrop(switchBtn, 1, C.panelDark, C.tabBorder)
         local switchLbl = switchBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -3617,11 +3617,11 @@ local function buildProfilesPanel(parent)
         -- Per row rather than one button at the top: this import merges INTO an
         -- existing profile, so which one it lands in has to be unambiguous.
         local importRowBtn = CreateFrame("Button", nil, row, "BackdropTemplate")
-        importRowBtn:SetSize(70, 20)
+        importRowBtn:SetSize(110, 20)
         importRowBtn:SetPoint("RIGHT", exportBtn, "LEFT", -6, 0)
         applyBackdrop(importRowBtn, 1, C.panelDark, C.tabBorder)
         local importRowLbl = importRowBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        importRowLbl:SetPoint("CENTER"); importRowLbl:SetText("Import"); UI.tint(importRowLbl, C.textWhite)
+        importRowLbl:SetPoint("CENTER"); importRowLbl:SetText("Import Modules"); UI.tint(importRowLbl, C.textWhite)
         importRowBtn:SetScript("OnEnter", function() UI.tintBorder(importRowBtn, C.red) end)
         importRowBtn:SetScript("OnLeave", function() UI.tintBorder(importRowBtn, C.tabBorder) end)
         row.importBtn = importRowBtn

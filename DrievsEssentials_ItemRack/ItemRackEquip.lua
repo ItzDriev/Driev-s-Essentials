@@ -957,11 +957,79 @@ function IR.GetSlotBindingKey(id)
     return (GetBindingKey(IR.SlotBindingAction(id)))
 end
 
+-- Has this key been given to something that isn't ours? A binding is the
+-- client's to hand out: rebind one of our keys in Blizzard's key bindings window
+-- (or an action bar's binding mode) and the client drops our CLICK binding there
+-- and then. Nothing tells us, so the key sits on in our saved data and the next
+-- pass below takes it straight back — quietly mid-session, and unmissably on the
+-- reload that re-applies everything.
+--
+-- Base bindings only, deliberately: GetBindingAction without checkOverride
+-- ignores override bindings, which borrow a key for a vehicle or a possess bar
+-- and give it back. Those are no reason to give up a claim.
+local function keyTakenFromUs(key)
+    local action = GetBindingAction(key)
+    return action ~= nil and action ~= "" and not isOurBinding(action)
+end
+
+-- Drops our claim on every key that now answers to someone else, so the pass
+-- below stops re-asserting it and the rebind survives a reload.
+--
+-- `claiming` is the key the user is binding on *this* call, and it is exempt:
+-- it legitimately still points at whatever it's being taken from, because they
+-- were asked and said yes.
+local function releaseTakenKeys(claiming)
+    local lost = {}
+
+    for setname, set in pairs(DB().sets) do
+        if set.key and set.key ~= claiming and not string.match(setname, "^~")
+            and keyTakenFromUs(set.key) then
+            lost[#lost + 1] = { key = set.key, what = "the set \"" .. setname .. "\"" }
+            set.key = nil
+        end
+    end
+
+    local slotKeys = IR.SlotKeys()
+    for id, key in pairs(slotKeys) do
+        if key ~= claiming and keyTakenFromUs(key) then
+            lost[#lost + 1] = { key = key, what = IR.SlotButtonLabel(id) }
+            slotKeys[id] = nil
+        end
+    end
+
+    -- Said out loud, once: the binding disappearing is the user's own doing, but
+    -- nothing else on screen would explain where it went.
+    for _, item in ipairs(lost) do
+        local _, desc = IR.DescribeBoundKey(item.key)
+        IR.Print(GetBindingText(item.key, nil, false) .. " is bound to "
+            .. (desc or "something else") .. " now, so " .. item.what
+            .. " has given it up.")
+    end
+
+    return #lost > 0
+end
+
+-- Takes `key` off whatever else of ours already holds it, ahead of the caller
+-- storing it on something new. Two owners for one key would have the apply pass
+-- bind it twice and leave whichever ran last holding it — which set or button
+-- that turns out to be is down to table order, so the losing one would keep
+-- showing a hotkey it no longer answers to.
+function IR.ReleaseKeyElsewhere(key)
+    if not key then return end
+    for setname, set in pairs(DB().sets) do
+        if set.key == key and not string.match(setname, "^~") then set.key = nil end
+    end
+    local slotKeys = IR.SlotKeys()
+    for id, held in pairs(slotKeys) do
+        if held == key then slotKeys[id] = nil end
+    end
+end
+
 -- Applies every key binding Item Rack owns — the sets and the slot buttons
 -- alike. One pass for both because they share the stale-key bookkeeping below
 -- and, more to the point, SaveBindings: two passes would rewrite the player's
 -- binding file twice for one change.
-function IR.SetSetBindings()
+function IR.SetSetBindings(claiming)
     if InCombatLockdown() then return end
     -- SaveBindings() rewrites the player's binding file, so don't touch it until the
     -- user has bound something (or we have a stale binding to clear). A disabled
@@ -977,9 +1045,14 @@ function IR.SetSetBindings()
     if type(bindingSet) ~= "number" or bindingSet < 1 then
         if bindingRetries > 3 then return end
         bindingRetries = bindingRetries + 1
-        C_Timer.After(5, function() IR.SetSetBindings() end)
+        C_Timer.After(5, function() IR.SetSetBindings(claiming) end)
         return
     end
+
+    -- Only past the check above, where the binding data is known to be loaded: an
+    -- unloaded binding set answers "" for every key, which reads as free rather
+    -- than taken, so at worst nothing is released — never the other way round.
+    local released = releaseTakenKeys(claiming)
 
     local stale = appliedKeys
     appliedKeys = {}
@@ -1074,6 +1147,12 @@ function IR.SetSetBindings()
 
     SaveBindings(bindingSet)
     bindingRetries = 0
+
+    -- A key let go of leaves hotkey text on a button naming a key that button no
+    -- longer answers to. The set editor's key column is left alone on purpose —
+    -- it re-reads on open, and refreshing it here would reload the working copy
+    -- out from under whatever the user is part way through editing.
+    if released and IR.UpdateHotKeys then IR.UpdateHotKeys() end
 end
 
 function IR.RunSetBinding(setname)
@@ -1101,8 +1180,12 @@ function IR.SetSlotBinding(id, key)
         IR.Print("Key bindings can't be changed in combat.")
         return false
     end
+    IR.ReleaseKeyElsewhere(key)
     IR.SlotKeys()[id] = key
-    IR.SetSetBindings()
+    -- Named as the key being claimed, so the release pass doesn't read it as one
+    -- the user has just given away — it still points at whatever they agreed to
+    -- take it from until the apply below moves it.
+    IR.SetSetBindings(key)
     if IR.UpdateHotKeys then IR.UpdateHotKeys() end
     return true
 end

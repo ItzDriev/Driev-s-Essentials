@@ -324,6 +324,17 @@ local function buildGeneralPanel(parent, def)
             function(v) data().flyout = v end,
             function() if AB() then AB().applyButtonCfg(key) end end)
 
+        -- Per-bar keybind text, above the styling opt-in below: with this ticked
+        -- there is no text for those settings to style.
+        F.check("Hide keybind text",
+            function() return data().hideKeybind == true end,
+            function(c)
+                data().hideKeybind = c
+                if AB() then AB().applyButtonCfg(key) end
+            end,
+            "Hides the keybind label on this bar's buttons. The keys themselves "
+            .. "keep working — only the text is hidden.")
+
         -- Opt this bar into the keybind-text styling configured on the General tab.
         F.check("Use General settings (keybind text)",
             function() return data().useGeneral ~= false end,
@@ -446,21 +457,84 @@ local function buildPagingPanel(parent, def)
     end
     local F = makeForm(panel)
 
-    local PAGING_DESC =
-        "While in a stance/form, switch this bar to another bar's page. " ..
-        "\"No paging\" keeps this bar's own page in that stance."
+    -- The Main bar pages with the game's own stance bars out of the box, so its
+    -- checkbox overrides that; every other bar has no built-in paging, so its
+    -- checkbox switches the per-stance choices on.
+    local isMain = def.paged and true or false
 
-    -- Master toggle for this bar's stance paging (default on for the Main bar,
-    -- off for every other bar). While off, the bar ignores the per-stance choices
-    -- below and always shows its own page.
-    F.check("Enable stance paging",
+    local PAGING_DESC = isMain and
+        ("Replace this bar's built-in stance paging with the choices below. " ..
+         "Left off, a stance or form pages the bar to Bar 6, 7 or 8 — the pages " ..
+         "the game itself puts your stance / form / stealth actions on. Ticked, " ..
+         "only the choices below apply, so leaving them all on \"No paging\" " ..
+         "stops the bar paging entirely.")
+        or ("While in a stance/form, switch this bar to another bar's page. " ..
+            "\"No paging\" keeps this bar's own page in that stance.")
+
+    local STANCE_DESC = isMain and
+        ("While in this stance/form, switch this bar to another bar's page. " ..
+         "Only used while \"Override stance paging\" is ticked.")
+        or PAGING_DESC
+
+    -- "Page N" means "switch to Action Bar N's page". Our bars don't own pages in
+    -- numeric order (see BAR_PAGE in ActionBars.lua — Bar 2 owns page 6), so each
+    -- label maps to the real page Bar N shows, otherwise "Page 2" would page to the
+    -- wrong bar. The stored value stays a raw action page, which the driver wants.
+    local pageOptions = {}
+    for i = 1, 10 do
+        local bdef = AB().bars[i]
+        if bdef and bdef.kind == "action" then
+            pageOptions[#pageOptions + 1] = { value = bdef.page, label = "Page " .. i }
+        end
+    end
+    -- A stance can also be set back to the bar's own page; the swap target below
+    -- can't, so only the stance dropdowns get that entry.
+    local stanceOptions = { { value = false, label = "No paging" } }
+    for _, o in ipairs(pageOptions) do stanceOptions[#stanceOptions + 1] = o end
+
+    -- Blizzard's own page keys. Only offered on the Main bar — that's the bar those
+    -- keys page in Blizzard's UI, and the two keys can only drive one.
+    if def.paged then
+        F.check("Next / Previous Action Bar keybinds",
+            function() return data().pageSwap and true or false end,
+            function(c)
+                data().pageSwap = c
+                if AB() then AB().applyPaging(key) end
+            end,
+            "Lets the \"Next Action Bar\" and \"Previous Action Bar\" keys " ..
+            "(Escape → Key Bindings → Action Bar) swap this bar between the page " ..
+            "it is showing and the swap page below, then back again. Either key " ..
+            "does the same swap. It stays swapped until you press again — " ..
+            "changing stance while swapped changes the page you come back to, " ..
+            "not the page you are on. A vehicle bar still takes over while it " ..
+            "is up.")
+
+        F.dropdown("Swap to", pageOptions,
+            function()
+                local v = data().swapPage
+                if type(v) ~= "number" then
+                    local b9 = AB() and AB().bars[9]
+                    v = b9 and b9.page or nil
+                end
+                return v
+            end,
+            function(v) data().swapPage = v end,
+            function() if AB() then AB().applyPaging(key) end end,
+            "The page the two keys above swap this bar to. Bar 9 by default — its " ..
+            "page is one of the two no Blizzard keybind owns, so nothing else " ..
+            "claims those slots.")
+    end
+
+    -- Main bar: overrides the built-in paging with the per-stance choices below.
+    -- Every other bar: switches those choices on at all (off by default, in which
+    -- case the bar always shows its own page).
+    F.check(isMain and "Override stance paging" or "Enable stance paging",
         function()
-            local v = data().pagingEnabled
-            if v == nil then v = def.paged end
-            return v and true or false
+            if isMain then return data().pagingOverride and true or false end
+            return data().pagingEnabled and true or false
         end,
         function(c)
-            data().pagingEnabled = c
+            if isMain then data().pagingOverride = c else data().pagingEnabled = c end
             if AB() then AB().applyPaging(key) end
         end,
         PAGING_DESC)
@@ -472,28 +546,16 @@ local function buildPagingPanel(parent, def)
         return shell
     end
 
-    -- "Page N" means "switch to Action Bar N's page". Our bars don't own pages in
-    -- numeric order (see BAR_PAGE in ActionBars.lua — Bar 2 owns page 6), so each
-    -- label maps to the real page Bar N shows, otherwise "Page 2" would page to the
-    -- wrong bar. The stored value stays a raw action page, which the driver wants.
-    local pageOptions = { { value = false, label = "No paging" } }
-    for i = 1, 10 do
-        local bdef = AB().bars[i]
-        if bdef and bdef.kind == "action" then
-            pageOptions[#pageOptions + 1] = { value = bdef.page, label = "Page " .. i }
-        end
-    end
-
     for _, st in ipairs(stances) do
-        F.dropdown(st.name, pageOptions,
+        F.dropdown(st.name, stanceOptions,
             -- false / nil both display (and behave) as "No paging" = own page.
             function() return data().paging[st.index] or false end,
             -- Store "No paging" as an explicit false (not nil) so it survives the
-            -- default-merge — otherwise a warrior's saved "No paging" would be
-            -- re-filled by the Bar 1 stance defaults on next login.
+            -- default-merge, and so a table of nothing but "No paging" is still a
+            -- table — which is how the Main bar's override says "never page".
             function(v) data().paging[st.index] = v end,
             function() if AB() then AB().applyPaging(key) end end,
-            PAGING_DESC)
+            STANCE_DESC)
     end
 
     onShowRefresh(shell, F)

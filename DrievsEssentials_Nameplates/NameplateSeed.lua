@@ -143,31 +143,37 @@ local SEED = {
                 { "Defensive CDs", collapsed = true },
                 { "Offensive Cds", collapsed = true },
                 { "Consumables", collapsed = true },
+                { "Buffs >:)", collapsed = true },
             },
             list = {
-                { "Aquatic Form", group = 1 },
-                { "Aspect of the Beast", group = 1 },
-                { "Aspect of the Cheetah", group = 1, icon = 132242, seen = { 5118 } },
-                { "Aspect of the Hawk", group = 1, icon = 136076, seen = { 13165, 14318, 14319, 14320, 14321, 14322, 25296 } },
-                { "Aspect of the Monkey", group = 1, icon = 132159, seen = { 13163 } },
-                { "Aspect of the Pack", group = 1, icon = 132267, seen = { 13159 } },
-                { "Aspect of the Viper", group = 1 },
-                { "Aspect of the Wild", group = 1, icon = 136074, seen = { 20190 } },
+                -- Every one of these carries bar = 2, the Stance frame. They are
+                -- one question — "what is he in?" — and they answer it one at a
+                -- time, so the whole group belongs in a single fixed spot off the
+                -- side of the plate rather than shuffling along a shared row
+                -- behind whatever else he happens to be wearing.
+                { "Aquatic Form", group = 1, bar = 2 },
+                { "Aspect of the Beast", group = 1, bar = 2 },
+                { "Aspect of the Cheetah", group = 1, bar = 2, icon = 132242, seen = { 5118 } },
+                { "Aspect of the Hawk", group = 1, bar = 2, icon = 136076, seen = { 13165, 14318, 14319, 14320, 14321, 14322, 25296 } },
+                { "Aspect of the Monkey", group = 1, bar = 2, icon = 132159, seen = { 13163 } },
+                { "Aspect of the Pack", group = 1, bar = 2, icon = 132267, seen = { 13159 } },
+                { "Aspect of the Viper", group = 1, bar = 2 },
+                { "Aspect of the Wild", group = 1, bar = 2, icon = 136074, seen = { 20190 } },
                 { "Battle Stance", group = 1, bar = 2, icon = 132349, seen = { 2457, 7165 } },
-                { "Bear Form", group = 1, icon = 132276, seen = { 5487 } },
+                { "Bear Form", group = 1, bar = 2, icon = 132276, seen = { 5487 } },
                 { "Berserker Stance", group = 1, bar = 2, icon = 132275, seen = { 2458 } },
-                { "Cat Form", group = 1, icon = 132115, seen = { 768 } },
-                { "Concentration Aura", group = 1, icon = 135933, seen = { 19746 } },
+                { "Cat Form", group = 1, bar = 2, icon = 132115, seen = { 768 } },
+                { "Concentration Aura", group = 1, bar = 2, icon = 135933, seen = { 19746 } },
                 { "Defensive Stance", group = 1, bar = 2, icon = 132341, seen = { 71, 7164 } },
-                { "Devotion Aura", group = 1, icon = 135893, seen = { 465, 643, 1032, 10290, 10291, 10292, 10293 } },
-                { "Dire Bear Form", group = 1, icon = 132276, seen = { 9634 } },
-                { "Fire Resistance Aura", group = 1, icon = 135824, seen = { 19891, 19900 } },
-                { "Frost Resistance Aura", group = 1, icon = 135865, seen = { 19897, 19898 } },
-                { "Ghost Wolf", group = 1 },
-                { "Moonkin Form", group = 1, icon = 136036, seen = { 24858 } },
-                { "Retribution Aura", group = 1, icon = 135873, seen = { 7294, 10298, 10299, 10300, 10301 } },
-                { "Shadow Resistance Aura", group = 1, icon = 136192, seen = { 19876, 19896 } },
-                { "Travel Form", group = 1, icon = 132144, seen = { 783 } },
+                { "Devotion Aura", group = 1, bar = 2, icon = 135893, seen = { 465, 643, 1032, 10290, 10291, 10292, 10293 } },
+                { "Dire Bear Form", group = 1, bar = 2, icon = 132276, seen = { 9634 } },
+                { "Fire Resistance Aura", group = 1, bar = 2, icon = 135824, seen = { 19891, 19900 } },
+                { "Frost Resistance Aura", group = 1, bar = 2, icon = 135865, seen = { 19897, 19898 } },
+                { "Ghost Wolf", group = 1, bar = 2 },
+                { "Moonkin Form", group = 1, bar = 2, icon = 136036, seen = { 24858 } },
+                { "Retribution Aura", group = 1, bar = 2, icon = 135873, seen = { 7294, 10298, 10299, 10300, 10301 } },
+                { "Shadow Resistance Aura", group = 1, bar = 2, icon = 136192, seen = { 19876, 19896 } },
+                { "Travel Form", group = 1, bar = 2, icon = 132144, seen = { 783 } },
                 { "Aura of Protection", group = 2, icon = 135893, seen = { 23506 } },
                 { "Barkskin", group = 2 },
                 { "Blessing of Freedom", group = 2, icon = 135968, seen = { 1044 } },
@@ -208,6 +214,27 @@ local SEED = {
                 { "Invulnerability", group = 4, icon = 135896, seen = { 3169 } },
                 { "Living Free Action", group = 4, icon = 134718, seen = { 24364 } },
                 { "Nature Protection", group = 4 },
+                -- World buffs. Every one of them is an hour or two long and they
+                -- all stack, so unlike the group above this one can genuinely be
+                -- wearing all eleven at once — which is the point of seeing it on
+                -- an enemy plate at all.
+                --
+                -- No `icon` on any of them: `seen` is enough. Data.AuraDisplay
+                -- resolves art off the first seen ID it can, and every ID here is
+                -- one the client will answer for, so writing the file IDs out by
+                -- hand would only be a second place for them to be wrong. The
+                -- second ID, where there is one, is the newer build's.
+                { "Fengus' Ferocity", group = 5, seen = { 22817 } },
+                { "Mol'dar's Moxie", group = 5, seen = { 22818 } },
+                { "Rallying Cry of the Dragonslayer", group = 5, seen = { 22888, 355363 } },
+                { "Sayge's Dark Fortune of Damage", group = 5, seen = { 23768 } },
+                { "Sayge's Dark Fortune of Intelligence", group = 5, seen = { 23766 } },
+                { "Sayge's Dark Fortune of Resistance", group = 5, seen = { 23769 } },
+                { "Sayge's Dark Fortune of Spirit", group = 5, seen = { 23767 } },
+                { "Slip'kik's Savvy", group = 5, seen = { 22820 } },
+                { "Songflower Serenade", group = 5, seen = { 15366 } },
+                { "Spirit of Zandalar", group = 5, seen = { 24425, 355365 } },
+                { "Warchief's Blessing", group = 5, seen = { 16609, 355366 } },
             },
         },
     },

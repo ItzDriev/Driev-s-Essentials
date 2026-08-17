@@ -1,6 +1,6 @@
 local addonName, addon = ...
 
-addon.version = "1.3.0"
+addon.version = "1.3.4"
 addon.title   = "Driev's Essentials"
 
 -- Public event bus for addons that don't use WeakAuras (TTK.lua uses

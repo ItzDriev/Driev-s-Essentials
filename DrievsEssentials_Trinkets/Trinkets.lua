@@ -1839,7 +1839,10 @@ local function getOrCreateDisplay()
     local f = CreateFrame("Frame", "DrievTrinketDisplay", UIParent, "BackdropTemplate")
     -- BTN_PAD pixels of invisible draggable area around the two buttons
     f:SetSize(BTN_SIZE * 2 + BTN_GAP + BTN_PAD * 2, BTN_SIZE + BTN_PAD * 2)
-    f:SetPoint("CENTER", UIParent, "CENTER", 200, 0)
+    -- Just under the middle of the screen, where the eye already is during a
+    -- fight. Kept as an offset from CENTER rather than the absolute px/py the
+    -- drag handler stores, so the starting spot is the same on any resolution.
+    f:SetPoint("CENTER", UIParent, "CENTER", -5, -23)
     f:SetMovable(true)
     f:SetClampedToScreen(true)
     applyFrameLayer(f, getData().displayStrata, getData().displayLevel)
